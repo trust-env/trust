@@ -1,0 +1,27 @@
+{% if has_infra %}#[derive(Clone)]
+pub struct {{ name }}<S0>
+where
+    S0: {{ storage_trait }},
+{
+    {{ field }}: S0,
+}
+
+impl<S0> {{ name }}<S0>
+where
+    S0: {{ storage_trait }},
+{
+    pub fn new({{ field }}: S0) -> Self {
+        Self { {{ field }} }
+    }
+}
+
+{% else %}#[derive(Clone)]
+pub struct {{ name }};
+
+impl {{ name }} {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+{% endif -%}

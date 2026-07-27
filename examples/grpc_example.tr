@@ -1,0 +1,95 @@
+import SQLConnector from "./mod/common/common.tr"
+
+type User {
+    id: Int,
+    name: String,
+    email: String
+}
+
+type CreateUserRequest {
+    name: String,
+    email: String
+}
+
+type GetUserRequest {
+    id: Int
+}
+
+adapter PublicApi {
+    http {
+        routes {
+            POST "/users" {
+                input: CreateUserRequest
+                output: User
+                use_case: CreateUseCase
+                status {
+                    InternalError -> 500
+                }
+            }
+            GET "/users/:id" {
+                input: GetUserRequest
+                output: User
+                use_case: GetUseCase
+                status {
+                    InternalError -> 500
+                }
+            }
+        }
+        on: "${APP_HOST}:${APP_PORT}"
+    }
+}
+
+adapter InternalGrpcApi {
+    grpc {
+        services {
+            rpc CreateUser {
+                input: CreateUserRequest
+                output: User
+                use_case: CreateUseCase
+            }
+            rpc GetUser {
+                input: GetUserRequest
+                output: User
+                use_case: GetUseCase
+            }
+        }
+        on: "${GRPC_HOST}:${GRPC_PORT}"
+    }
+}
+
+use_case CreateUseCase {
+    input: CreateUserRequest
+    output: User
+    call: {
+        name: DefaultInfra.save_one
+        errors {
+            DatabaseError -> InternalError
+            ConversionError -> InternalError
+        }
+    }
+}
+
+use_case GetUseCase {
+    input: GetUserRequest
+    output: User
+    call: {
+        name: DefaultInfra.find_one
+        errors {
+            DatabaseError -> InternalError
+            ConversionError -> InternalError
+        }
+    }
+}
+
+infra DefaultInfra {
+    storage {
+        psql {
+            entity: User
+        }
+    }
+}
+
+app Main: run {
+    PublicApi
+    InternalGrpcApi
+}

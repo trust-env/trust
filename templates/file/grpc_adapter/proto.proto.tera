@@ -1,0 +1,6 @@
+syntax = "proto3";
+package {{ package }};
+
+{% for m in messages %}{{ m }}{% endfor %}service {{ name }} {
+{% for rpc in rpcs %}    rpc {{ rpc.name }}({{ rpc.input_type_name }}) returns ({{ rpc.output_type_name }});
+{% endfor %}}

@@ -1,0 +1,85 @@
+import SQLConnector from "./mod/common/common.tr"
+
+type Item {
+    id: Int,
+    name: String
+}
+
+type CreateItemRequest {
+    name: String
+}
+
+type GetItemRequest {
+    id: Int
+}
+
+adapter ItemAdapter {
+    http {
+        on: "0.0.0.0:8080"
+        routes {
+            POST "/items" {
+                input: CreateItemRequest
+                output: Item
+                use_case: CreateItemUseCase
+                status {
+                    InternalError -> 500
+                }
+            }
+            GET "/items/:id" {
+                input: GetItemRequest
+                output: Item
+                use_case: GetItemUseCase
+                status {
+                    InternalError -> 500
+                }
+            }
+        }
+    }
+}
+
+use_case CreateItemUseCase {
+    input: CreateItemRequest
+    output: Item
+    call: {
+        name: ItemInfra.save_one
+        errors {
+            DatabaseError -> InternalError
+            ConversionError -> InternalError
+        }
+    }
+}
+
+use_case GetItemUseCase {
+    input: GetItemRequest
+    output: Item
+    call: {
+        name: ItemInfra.find_one
+        errors {
+            DatabaseError -> InternalError
+            ConversionError -> InternalError
+        }
+    }
+}
+
+infra ItemInfra {
+    storage {
+        psql {
+            entity: Item
+        }
+    }
+}
+
+app Main: run {
+    load_balancer ItemLoadBalancer {
+        targets {
+            "10.0.0.1:8080"
+            "10.0.0.2:8080"
+            "10.0.0.3:8080"
+        }
+        on: "${LB_HOST}:${LB_PORT}"
+    }
+}
+
+app ItemBackend: run {
+    ItemAdapter
+}

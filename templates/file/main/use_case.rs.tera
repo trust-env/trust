@@ -1,0 +1,1 @@
+    let {{ field }} = {{ name }}::new({{ args }});

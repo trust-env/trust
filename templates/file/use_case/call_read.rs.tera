@@ -1,0 +1,7 @@
+        self.{{ field }}
+            .{{ method }}({{ args }})
+            .await
+            .map_err({{ error }}::from)?
+            .ok_or({{ error }}::NotFound){% if is_tail %}
+            .map({{ output }}::from){% else %}?;
+{% endif -%}

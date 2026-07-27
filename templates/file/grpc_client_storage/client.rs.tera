@@ -1,0 +1,41 @@
+use common::{EntityId, Storage, StorageListQuery};
+use crate::{{ entity }};
+
+pub mod proto {
+    tonic::include_proto!("{{ package }}");
+}
+
+#[derive(Debug)]
+pub enum {{ error_name }} {
+    ConversionError(String),
+    DatabaseError(String),
+}
+
+impl From<tonic::Status> for {{ error_name }} {
+    fn from(error: tonic::Status) -> Self {
+        {{ error_name }}::DatabaseError(error.to_string())
+    }
+}
+
+pub trait {{ entity }}Storage: Storage<{{ entity }}, {{ error_name }}> + Send + Sync {}
+impl {{ entity }}Storage for {{ struct_name }} {}
+
+#[derive(Clone)]
+pub struct {{ struct_name }} {
+    client: proto::{{ client_module }}::{{ service_name }}Client<tonic::transport::Channel>,
+}
+
+impl {{ struct_name }} {
+    // Kept as `tonic::transport::Error` (rather than wrapped in
+    // `{{ error_name }}`) so `main()`'s `?` — which needs `Box<dyn
+    // std::error::Error>` — works without `{{ error_name }}` itself having
+    // to implement `std::error::Error`; that type only needs to round-trip
+    // through use_case `errors {}` mappings, never through `main`.
+    pub async fn connect(addr: &str) -> Result<Self, tonic::transport::Error> {
+        let client = proto::{{ client_module }}::{{ service_name }}Client::connect(format!("http://{}", addr)).await?;
+        Ok(Self { client })
+    }
+}
+
+impl Storage<{{ entity }}, {{ error_name }}> for {{ struct_name }} {
+{{ methods_code }}}

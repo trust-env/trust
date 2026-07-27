@@ -1,0 +1,61 @@
+import SQLConnector from "./mod/common/common.tr"
+
+type Task {
+    id: Int,
+    title: String
+}
+
+type CreateTaskRequest {
+    title: String
+}
+
+type GetTaskRequest {
+    id: Int
+}
+
+infra TaskInfra {
+    storage {
+        psql {
+            entity: Task
+        }
+    }
+}
+
+use_case CreateTaskUseCase {
+    input: CreateTaskRequest
+    output: Task
+    call: TaskInfra.save_one
+}
+
+use_case GetTaskUseCase {
+    input: GetTaskRequest
+    output: Task
+    call: TaskInfra.find_one
+}
+
+use_case ListTasksUseCase {
+    call: TaskInfra.list
+}
+
+adapter HttpAdapter {
+    http {
+        on: "0.0.0.0:8080"
+        routes {
+            POST "/tasks" {
+                input: CreateTaskRequest
+                output: Task
+                use_case: CreateTaskUseCase
+            }
+            GET "/tasks/:id" {
+                use_case: GetTaskUseCase
+            }
+            GET "/tasks" {
+                use_case: ListTasksUseCase
+            }
+        }
+    }
+}
+
+app Main: run {
+    HttpAdapter
+}

@@ -1,0 +1,9 @@
+impl{{ generics }} UseCase<{{ input }}, {{ output }}, {{ error }}> for {{ name }}{{ generics }}
+{{ where_clause }}{
+    async fn execute(&self, _user: i64, input: {{ input }}) -> Result<{{ output }}, {{ error }}> {
+{{ body }}
+    }
+}
+
+impl{{ generics }} {{ trait_name }} for {{ name }}{{ generics }} {{ where_clause }}{
+}

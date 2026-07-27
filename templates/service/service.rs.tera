@@ -1,0 +1,7 @@
+pub struct {{ name }}{% if templates %}<{{ templates | join(sep=", ") }}>{% endif %} {
+{% for attr in attrs %}	{{ attr.scope_str }}{{ attr.name }}: {{ attr.param_type }},
+{% endfor -%}
+}
+
+{% for trait_impl in trait_impls %}{{ trait_impl }}
+{% endfor -%}

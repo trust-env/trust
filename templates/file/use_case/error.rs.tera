@@ -1,0 +1,19 @@
+#[derive(Debug)]
+pub enum {{ name }} {
+    NotFound,
+    StorageError(String),
+{% for target in error_targets %}    {{ target }}(String),
+{% endfor -%}
+}
+
+{% for si in storage_impls %}impl From<{{ si.storage_error }}> for {{ name }} {
+    fn from(error: {{ si.storage_error }}) -> Self {
+{% if si.has_custom_errors %}        match error {
+{% for arm in si.match_arms %}            {{ arm }},
+{% endfor %}{% if si.has_fallback %}            other => {{ name }}::StorageError(format!("{:?}", other)),
+{% endif %}        }
+{% else %}        {{ name }}::StorageError(format!("{:?}", error))
+{% endif %}    }
+}
+
+{% endfor -%}

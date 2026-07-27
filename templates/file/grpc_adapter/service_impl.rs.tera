@@ -1,0 +1,8 @@
+#[tonic::async_trait]
+impl<{{ generics }}> {{ name }}Service for {{ name }}<{{ generics }}>
+where
+{{ where_clause }}{
+{% for m in rpc_methods %}{{ m }}
+{% endfor -%}
+}
+

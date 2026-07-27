@@ -1,0 +1,6 @@
+{% if fields %}<table class="fields"><thead><tr><th>Field</th><th>Type</th></tr></thead><tbody>
+{% for f in fields %}<tr><td><code>{{ f.name }}</code></td><td><code>{{ f.field_type }}</code></td></tr>
+{% endfor -%}
+</tbody></table>
+{% else %}<p class="empty">(no fields)</p>
+{% endif -%}

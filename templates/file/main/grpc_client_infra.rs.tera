@@ -1,0 +1,1 @@
+    let {{ entity_var }}_storage = Grpc{{ entity }}Client::connect({{ target_address_literal }}).await?;

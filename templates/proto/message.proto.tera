@@ -1,0 +1,5 @@
+message {{ name }} {
+{% for field in fields %}    {{ field.proto_type }} {{ field.field_name }} = {{ field.number }};
+{% endfor -%}
+}
+

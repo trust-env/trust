@@ -1,0 +1,106 @@
+import SQLConnector from "./mod/common/common.tr"
+
+type User {
+    id: Int,
+    name: String,
+    email: String
+}
+
+type CreateUserRequest {
+    name: String,
+    email: String
+}
+
+type GetUserRequest {
+    id: Int
+}
+
+infra UserInfra {
+    storage {
+        psql {
+            entity: User
+        }
+    }
+}
+
+use_case CreateUserUseCase {
+    input: CreateUserRequest
+    output: User
+    call: {
+        name: UserInfra.save_one
+        errors {
+            DatabaseError -> InternalError
+            ConversionError -> InternalError
+        }
+    }
+}
+
+use_case GetUserUseCase {
+    input: GetUserRequest
+    output: User
+    call: {
+        name: UserInfra.find_one
+        errors {
+            DatabaseError -> InternalError
+            ConversionError -> InternalError
+        }
+    }
+}
+
+adapter PublicHttpApi {
+    http {
+        on: "0.0.0.0:${PORT}"
+        routes {
+            POST "/users" {
+                input: CreateUserRequest
+                output: User
+                use_case: CreateUserUseCase
+                status {
+                    InternalError -> 500
+                }
+            }
+            GET "/users/:id" {
+                input: GetUserRequest
+                output: User
+                use_case: GetUserUseCase
+                status {
+                    InternalError -> 500
+                }
+            }
+        }
+    }
+}
+
+adapter InternalGrpcApi {
+    grpc {
+        on: "0.0.0.0:50051"
+        services {
+            rpc CreateUser {
+                input: CreateUserRequest
+                output: User
+                use_case: CreateUserUseCase
+            }
+            rpc GetUser {
+                input: GetUserRequest
+                output: User
+                use_case: GetUserUseCase
+            }
+        }
+    }
+}
+
+app Main: run {
+    InternalGrpcApi
+    load_balancer PublicHttpLoadBalancer {
+        targets {
+            "127.0.0.1:51000"
+            "127.0.0.1:51001"
+            "127.0.0.1:51002"
+        }
+        on: "0.0.0.0:19100"
+    }
+}
+
+app PublicHttpBackend: run {
+    PublicHttpApi
+}

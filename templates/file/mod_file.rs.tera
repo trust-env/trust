@@ -1,0 +1,4 @@
+{% for m in mods %}mod {{ m }};
+{% endfor %}
+{% for m in mods %}pub use {{ m }}::*;
+{% endfor -%}

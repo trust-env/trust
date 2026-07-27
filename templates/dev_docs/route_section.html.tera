@@ -1,0 +1,13 @@
+<section class="route">
+<h2><span class="method {{ method_class }}">{{ method }}</span> <code>{{ path }}</code></h2>
+<p class="use-case">use_case: <code>{{ use_case }}</code></p>
+{% if path_params_joined %}<p class="path-params">path params: {{ path_params_joined }}</p>
+{% endif -%}
+<h3>Request body</h3>
+{{ input_table }}
+<h3>Response</h3>
+<p>Returns <code>{{ output_type }}</code></p>
+{{ output_table }}
+<h3>Errors</h3>
+{{ errors_table }}
+</section>

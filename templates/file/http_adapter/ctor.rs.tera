@@ -1,0 +1,10 @@
+impl<{{ generics }}> {{ name }}<{{ generics }}>
+where
+{{ where_clause }}{
+    pub fn new({{ params }}) -> Self {
+        Self {
+{% for f in fields %}            {{ f }},
+{% endfor %}        }
+    }
+}
+

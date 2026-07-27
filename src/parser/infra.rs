@@ -1,0 +1,380 @@
+use crate::{
+    lexer::{Keyword, Token},
+    parser::{
+        Ast, GrpcClientInfraService, GrpcClientMethodMapping, InfraService, InfraServiceType,
+        InfraServiceType::Storage,
+        Parser, PsqlInfraService, StorageType,
+        StorageType::Psql,
+    },
+};
+
+impl Parser {
+    fn unwrap_infra(&mut self) -> Result<Ast, String> {
+        let mut keywords: Vec<Keyword> = Vec::new();
+        let mut i = 0;
+        let name;
+
+        loop {
+            match self.next_token() {
+                Some(Token::Identifier(n)) => {
+                    name = n.clone();
+                    break;
+                }
+                Some(Token::Keyword(k)) => {
+                    i += 1;
+                    keywords.push(k);
+                }
+                Some(Token::Colon) => i += 1,
+                _ => {
+                    self.revert(i);
+                    return Err("Unexpected token while parsing InfraService".to_string());
+                }
+            }
+        }
+        match keywords.as_slice() {
+            [Keyword::Storage, Keyword::Psql] => Ok(Ast::Infra(InfraService {
+                name,
+                service_type: Storage(Psql(self.infra_psql_body()?)),
+            })),
+            _ => return Err("Unknown combination of keywords".to_string()),
+        }
+    }
+
+    fn infra_psql_body(&mut self) -> Result<PsqlInfraService, String> {
+        match self.next_token() {
+            Some(Token::OpenBrace) => {}
+            _ => {
+                self.revert(1);
+                return Err("Expected '{' after Psql declaration".to_string());
+            }
+        }
+
+        let entity = match (self.next_token(), self.next_token()) {
+            (Some(Token::Keyword(Keyword::Entity)), Some(Token::Colon)) => self.try_type()?,
+            _ => {
+                self.revert(2);
+                return Err("Expected 'entity' after Psql declaration".to_string());
+            }
+        };
+
+        match self.next_token() {
+            Some(Token::CloseBrace) => Ok(PsqlInfraService { entity }),
+            _ => {
+                self.revert(2);
+                return Err("Expected '}' after Psql declaration".to_string());
+            }
+        }
+    }
+
+    /// Parses `grpc_client { service: X on: "..." entity: Y methods {
+    /// <storage_method>: <RpcName> ... } }`. Each `methods` line is a bare
+    /// identifier pair (not fixed keywords) — validated against the known
+    /// `Storage<T, E>` verbs at generation time, not here, mirroring how
+    /// `errors {}` source validation happens in `use_case.rs` rather than
+    /// the parser.
+    fn infra_grpc_client_body(&mut self) -> Result<GrpcClientInfraService, String> {
+        match self.next_token() {
+            Some(Token::OpenBrace) => {}
+            _ => {
+                self.revert(1);
+                return Err("Expected '{' after GrpcClient declaration".to_string());
+            }
+        }
+
+        let service = match (self.next_token(), self.next_token()) {
+            (Some(Token::Keyword(Keyword::Service)), Some(Token::Colon)) => match self.next_token() {
+                Some(Token::Identifier(name)) => name,
+                _ => {
+                    self.revert(3);
+                    return Err("Expected identifier after 'service:'".to_string());
+                }
+            },
+            _ => {
+                self.revert(2);
+                return Err("Expected 'service' after GrpcClient declaration".to_string());
+            }
+        };
+
+        let on = match (self.next_token(), self.next_token()) {
+            (Some(Token::Keyword(Keyword::On)), Some(Token::Colon)) => match self.next_token() {
+                Some(Token::StringLiteral(address)) => address,
+                _ => {
+                    self.revert(3);
+                    return Err("Expected string literal after 'on:'".to_string());
+                }
+            },
+            _ => {
+                self.revert(2);
+                return Err("Expected 'on' after 'service' in GrpcClient declaration".to_string());
+            }
+        };
+
+        let entity = match (self.next_token(), self.next_token()) {
+            (Some(Token::Keyword(Keyword::Entity)), Some(Token::Colon)) => self.try_type()?,
+            _ => {
+                self.revert(2);
+                return Err("Expected 'entity' after 'on' in GrpcClient declaration".to_string());
+            }
+        };
+
+        let methods = match (self.next_token(), self.next_token()) {
+            (Some(Token::Keyword(Keyword::Methods)), Some(Token::OpenBrace)) => {
+                let mut methods = Vec::new();
+                loop {
+                    match self.next_token() {
+                        Some(Token::CloseBrace) => break,
+                        Some(Token::Identifier(storage_method)) => {
+                            match (self.next_token(), self.next_token()) {
+                                (Some(Token::Colon), Some(Token::Identifier(rpc))) => {
+                                    methods.push(GrpcClientMethodMapping { storage_method, rpc });
+                                }
+                                _ => {
+                                    self.revert(3);
+                                    return Err(
+                                        "Expected '<storage_method>: <RpcName>' in 'methods' block".to_string()
+                                    );
+                                }
+                            }
+                        }
+                        _ => {
+                            self.revert(1);
+                            return Err(
+                                "Expected '<storage_method>: <RpcName>' or '}' in 'methods' block".to_string()
+                            );
+                        }
+                    }
+                }
+                methods
+            }
+            _ => {
+                self.revert(2);
+                return Err("Expected 'methods' block after 'entity' in GrpcClient declaration".to_string());
+            }
+        };
+
+        match self.next_token() {
+            Some(Token::CloseBrace) => Ok(GrpcClientInfraService { service, on, entity, methods }),
+            _ => {
+                self.revert(1);
+                return Err("Expected '}' after GrpcClient declaration".to_string());
+            }
+        }
+    }
+
+    fn infra_storage_body(&mut self) -> Result<StorageType, String> {
+        match self.next_token() {
+            Some(Token::OpenBrace) => {}
+            _ => {
+                self.revert(1);
+                return Err("Expected '{' after Storage declaration".to_string());
+            }
+        }
+
+        let res = match self.next_token() {
+            Some(Token::Keyword(Keyword::Psql)) => Psql(self.infra_psql_body()?),
+            Some(Token::Keyword(Keyword::GrpcClient)) => {
+                StorageType::GrpcClient(self.infra_grpc_client_body()?)
+            }
+            _ => {
+                self.revert(2);
+                return Err("Expected 'psql' or 'grpc_client' after Storage declaration".to_string());
+            }
+        };
+
+        match self.next_token() {
+            Some(Token::CloseBrace) => Ok(res),
+            _ => {
+                self.revert(2);
+                return Err("Expected '}' after Storage declaration".to_string());
+            }
+        }
+    }
+
+    fn infra_content(&mut self) -> Result<InfraServiceType, String> {
+        let mut i = 0;
+        let mut res: Option<InfraServiceType> = None;
+
+        match self.next_token() {
+            Some(Token::OpenBrace) => {}
+            _ => {
+                self.revert(1);
+                return Err("Expected '{' after InfraService declaration".to_string());
+            }
+        }
+        loop {
+            match self.next_token() {
+                Some(Token::CloseBrace) => break,
+                Some(Token::Keyword(Keyword::Storage)) => {
+                    res = Some(Storage(self.infra_storage_body()?))
+                }
+                _ => {
+                    self.revert(i + 1);
+                    return Err("Unexpected token in InfraService body".to_string());
+                }
+            }
+            i += 1;
+        }
+        match res {
+            Some(service_type) => Ok(service_type),
+            None => Err("No valid service type found in InfraService body".to_string()),
+        }
+    }
+
+    pub(super) fn try_infra_service(&mut self) -> Result<Ast, String> {
+        match self.next_token() {
+            Some(Token::Keyword(Keyword::Infra)) => match self.next_token() {
+                Some(Token::Colon) => self.unwrap_infra(),
+                Some(Token::Identifier(name)) => {
+                    let service_type = self.infra_content()?;
+                    Ok(Ast::Infra(InfraService { name, service_type }))
+                }
+                _ => {
+                    self.revert(2);
+                    return Err("Failed to parse InfraService".to_string());
+                }
+            },
+            _ => {
+                self.revert(1);
+                return Err("Failed to parse InfraService".to_string());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{lexer::Lexer, parser::AllowedType};
+
+    fn parser_for(src: &str) -> Parser {
+        let tokens = Lexer::new(&src.to_string()).run().expect("lex should succeed");
+        Parser::new(tokens)
+    }
+
+    fn parse_infra(src: &str) -> InfraService {
+        match parser_for(src).try_infra_service().unwrap() {
+            Ast::Infra(i) => i,
+            other => panic!("expected Ast::Infra, got {:?}", other),
+        }
+    }
+
+    fn entity_of(infra: &InfraService) -> &AllowedType {
+        match &infra.service_type {
+            Storage(Psql(psql)) => &psql.entity,
+            Storage(StorageType::GrpcClient(cfg)) => &cfg.entity,
+        }
+    }
+
+    #[test]
+    fn block_form_and_shorthand_form_produce_the_same_infra_service() {
+        let block_form = parse_infra(
+            r#"infra Users {
+                storage {
+                    psql {
+                        entity: User
+                    }
+                }
+            }"#,
+        );
+        let shorthand_form = parse_infra("infra: storage psql Users { entity: User }");
+
+        assert_eq!(block_form.name, "Users");
+        assert_eq!(shorthand_form.name, "Users");
+        assert_eq!(entity_of(&block_form), &AllowedType::DefinedType("User".to_string()));
+        assert_eq!(entity_of(&shorthand_form), &AllowedType::DefinedType("User".to_string()));
+    }
+
+    #[test]
+    fn shorthand_form_rejects_unknown_keyword_combination() {
+        // Only `storage psql` is a recognized combination today.
+        let err = parser_for("infra: psql storage Users { entity: User }")
+            .try_infra_service()
+            .unwrap_err();
+        assert_eq!(err, "Unknown combination of keywords");
+    }
+
+    #[test]
+    fn block_form_requires_a_storage_keyword_inside_the_body() {
+        let src = "infra Users { psql { entity: User } }";
+        assert!(parser_for(src).try_infra_service().is_err());
+    }
+
+    #[test]
+    fn missing_infra_keyword_is_an_error() {
+        let err = parser_for("not_infra Users {}").try_infra_service().unwrap_err();
+        assert_eq!(err, "Failed to parse InfraService");
+    }
+
+    #[test]
+    fn grpc_client_block_parses_all_fields_and_method_mappings() {
+        let infra = parse_infra(
+            r#"infra RemoteTaskInfra {
+                storage {
+                    grpc_client {
+                        service: GrpcWorkerAdapter
+                        on: "127.0.0.1:50051"
+                        entity: Task
+                        methods {
+                            find_one: GetTask
+                        }
+                    }
+                }
+            }"#,
+        );
+
+        assert_eq!(infra.name, "RemoteTaskInfra");
+        match &infra.service_type {
+            Storage(StorageType::GrpcClient(cfg)) => {
+                assert_eq!(cfg.service, "GrpcWorkerAdapter");
+                assert_eq!(cfg.on, "127.0.0.1:50051");
+                assert_eq!(cfg.entity, AllowedType::DefinedType("Task".to_string()));
+                assert_eq!(cfg.methods.len(), 1);
+                assert_eq!(cfg.methods[0].storage_method, "find_one");
+                assert_eq!(cfg.methods[0].rpc, "GetTask");
+            }
+            other => panic!("expected Storage(GrpcClient(_)), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn grpc_client_methods_block_can_declare_more_than_one_mapping() {
+        let infra = parse_infra(
+            r#"infra RemoteTaskInfra {
+                storage {
+                    grpc_client {
+                        service: GrpcWorkerAdapter
+                        on: "127.0.0.1:50051"
+                        entity: Task
+                        methods {
+                            find_one: GetTask
+                            save_one: CreateTask
+                        }
+                    }
+                }
+            }"#,
+        );
+
+        match &infra.service_type {
+            Storage(StorageType::GrpcClient(cfg)) => {
+                assert_eq!(cfg.methods.len(), 2);
+                assert_eq!(cfg.methods[1].storage_method, "save_one");
+                assert_eq!(cfg.methods[1].rpc, "CreateTask");
+            }
+            other => panic!("expected Storage(GrpcClient(_)), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn grpc_client_requires_a_methods_block() {
+        let src = r#"infra RemoteTaskInfra {
+            storage {
+                grpc_client {
+                    service: GrpcWorkerAdapter
+                    on: "127.0.0.1:50051"
+                    entity: Task
+                }
+            }
+        }"#;
+        assert!(parser_for(src).try_infra_service().is_err());
+    }
+}

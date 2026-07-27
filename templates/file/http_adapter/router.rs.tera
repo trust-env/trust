@@ -1,0 +1,10 @@
+impl<{{ generics }}> HttpPresenter for {{ name }}<{{ generics }}>
+where
+{{ where_clause }}{
+    fn router(self: Arc<Self>) -> Router {
+        Router::new()
+{% for r in route_lines %}            .route("{{ r.path }}", {{ r.axum_fn }}(Self::{{ r.handler }}))
+{% endfor %}{% if dev_mode %}            .route("/app", get(app_docs::app_docs))
+{% endif %}            .with_state(self)
+    }
+}

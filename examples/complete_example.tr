@@ -1,0 +1,203 @@
+import SQLConnector from "./mod/common/common.tr"
+import Permission from "./mod/user_permission/user_permission.tr"
+
+type Task {
+    id: Int,
+    title: String,
+    description: String,
+    priority: Int
+}
+
+type CreateTaskRequest {
+    title: String,
+    description: String,
+    priority: Int,
+    target: String,
+    action: String
+}
+
+type GetTaskRequest {
+    id: Int
+}
+
+type ListTasksRequest {
+    limit: Int,
+    offset: Int
+}
+
+type UpdateTaskRequest {
+    id: Int,
+    title: String,
+    description: String,
+    priority: Int
+}
+
+type DeleteTaskRequest {
+    id: Int
+}
+
+type ApiKey {
+    id: Int,
+    label: Regex<slug>,
+    secret: Uuid
+}
+
+adapter MainAdapter {
+    http {
+        routes {
+            POST "/tasks" {
+                input {
+                    body: CreateTaskRequest
+                }
+                output: Task
+                use_case: CreateTaskUseCase
+                status {
+                    InternalError -> 500
+                }
+            }
+            GET "/tasks/:id" {
+                input: GetTaskRequest
+                output: Task
+                use_case: GetTaskUseCase
+                status {
+                    InternalError -> 500
+                    BadRequest -> 400
+                }
+            }
+            GET "/tasks" {
+                input: ListTasksRequest
+                output: Task
+                use_case: ListTasksUseCase
+                status {
+                    ServiceUnavailable -> 503
+                    InternalError -> 500
+                }
+            }
+            PUT "/tasks/:id" {
+                input: UpdateTaskRequest
+                output: Task
+                use_case: UpdateTaskUseCase
+                status {
+                    InternalError -> 500
+                    BadRequest -> 400
+                }
+            }
+            DELETE "/tasks/:id" {
+                input: DeleteTaskRequest
+                output: Task
+                use_case: DeleteTaskUseCase
+                auth {
+                    infra: PermissionInfra
+                    target: "task"
+                    action: "delete"
+                }
+                status {
+                    _ -> 500
+                }
+            }
+            POST "/api-keys" {
+                use_case: CreateApiKeyUseCase
+            }
+        }
+        on: "${APP_HOST}:${APP_PORT}"
+    }
+}
+
+use_case CreateTaskUseCase {
+    input: CreateTaskRequest
+    output: Task
+    call: {
+        name: PermissionInfra.save_one
+        errors {
+            DatabaseError -> InternalError
+            ConversionError -> InternalError("permission conversion failed")
+        }
+    }
+    call: {
+        name: TaskInfra.save_one
+        errors {
+            DatabaseError -> InternalError
+            ConversionError -> InternalError("task conversion failed")
+        }
+    }
+}
+
+use_case GetTaskUseCase {
+    input: GetTaskRequest
+    output: Task
+    call: {
+        name: TaskInfra.find_one
+        errors {
+            DatabaseError -> InternalError
+            ConversionError -> BadRequest("invalid task data")
+        }
+    }
+}
+
+use_case ListTasksUseCase {
+    input: ListTasksRequest
+    output: Task
+    call: {
+        name: TaskInfra.list
+        errors {
+            DatabaseError -> ServiceUnavailable
+            ConversionError -> InternalError
+        }
+    }
+}
+
+use_case UpdateTaskUseCase {
+    input: UpdateTaskRequest
+    output: Task
+    call: {
+        name: TaskInfra.update_one
+        errors {
+            DatabaseError -> InternalError
+            ConversionError -> BadRequest("invalid update payload")
+        }
+    }
+}
+
+use_case DeleteTaskUseCase {
+    input: DeleteTaskRequest
+    output: Task
+    call: {
+        name: TaskInfra.delete
+        errors {
+            DatabaseError -> InternalError
+            ConversionError -> InternalError
+        }
+    }
+}
+
+use_case CreateApiKeyUseCase {
+    call: ApiKeyInfra.save_one
+}
+
+infra TaskInfra {
+    storage {
+        psql {
+            entity: Task
+        }
+    }
+}
+
+infra PermissionInfra {
+    storage {
+        psql {
+            entity: Permission
+        }
+    }
+}
+
+infra ApiKeyInfra {
+    storage {
+        psql {
+            entity: ApiKey
+        }
+    }
+}
+
+app Main: run {
+    MainAdapter
+}

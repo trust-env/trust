@@ -1,0 +1,8 @@
+pub struct {{ name }}<{{ generics }}>
+where
+{{ where_clause }}{
+{% for f in use_case_fields %}    {{ f.field }}: {{ f.type_param }},
+{% endfor %}{% for f in auth_fields %}    {{ f.field }}: A{{ f.index }},
+{% endfor -%}
+}
+

@@ -1,0 +1,70 @@
+import SQLConnector from "./mod/common/common.tr"
+
+type User {
+    id: Int,
+    name: String,
+    email: String
+}
+
+type ValidateEmailRequest {
+    email: String
+}
+
+type ValidateEmailResponse {
+    message: String
+}
+
+type GreetUserRequest {
+    id: Int
+}
+
+type GreetUserResponse {
+    greeting: String
+}
+
+adapter DefaultAdapter {
+    http {
+        routes {
+            POST "/validate-email" {
+                input: ValidateEmailRequest
+                output: ValidateEmailResponse
+                use_case: ValidateEmailUseCase
+            }
+            GET "/greet/:id" {
+                input: GreetUserRequest
+                output: GreetUserResponse
+                use_case: GreetUserUseCase
+            }
+        }
+        on: "${APP_HOST}:${APP_PORT}"
+    }
+}
+
+use_case ValidateEmailUseCase {
+    input: ValidateEmailRequest
+    output: ValidateEmailResponse
+    ai {
+        prompt: 'Check whether input.email contains both "@" and a "." after it. If valid, return Ok(ValidateEmailResponse { message: format!("{} looks valid", input.email) }). If invalid, return Err(ValidateEmailUseCaseError::StorageError("invalid email format".to_string())).'
+    }
+}
+
+use_case GreetUserUseCase {
+    input: GreetUserRequest
+    output: GreetUserResponse
+    ai {
+        infra: DefaultInfra
+        prompt: 'Look up the user by input.id using find_one. If not found, return Err(GreetUserUseCaseError::NotFound). Otherwise return Ok(GreetUserResponse { greeting: format!("Hello, {}!", user.name) }).'
+    }
+}
+
+infra DefaultInfra {
+    storage {
+        psql {
+            entity: User
+        }
+    }
+}
+
+app Main: run {
+    DefaultAdapter
+}

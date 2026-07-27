@@ -1,0 +1,8 @@
+    let {{ var }} = {{ name }}::new({{ params }});
+    let {{ var }}_address: std::net::SocketAddr = ({{ address }}).parse()?;
+    let {{ var }}_task = tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service({{ name }}Server::new({{ var }}))
+            .serve({{ var }}_address)
+            .await
+    });

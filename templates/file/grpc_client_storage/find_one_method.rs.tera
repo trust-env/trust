@@ -1,0 +1,21 @@
+    async fn find_one(&self, id: EntityId) -> Result<Option<{{ entity }}>, {{ error_name }}> {
+        let mut client = self.client.clone();
+        let request = proto::{{ input_type }} { id };
+        // `NOT_FOUND` is `find_one`'s normal "no such row" outcome (`Ok(None)`,
+        // matching every other `Storage<T, E>` backend), not an error —
+        // only the target adapter's own error status mapping distinguishes
+        // it from a real failure, so it must be special-cased here rather
+        // than folded into the blanket `From<tonic::Status>` conversion.
+        let response = match client.{{ rpc_method }}(tonic::Request::new(request)).await {
+            Ok(response) => response.into_inner(),
+            Err(status) if status.code() == tonic::Code::NotFound => return Ok(None),
+            Err(status) => return Err(status.into()),
+        };
+{% if has_wrapper %}        Ok(response.{{ wrapper_field }}.map(|e| {{ entity }} {
+{% for f in fields %}            {{ f }}: e.{{ f }},
+{% endfor %}        }))
+{% else %}        Ok(Some({{ entity }} {
+{% for f in fields %}            {{ f }}: response.{{ f }},
+{% endfor %}        }))
+{% endif %}    }
+

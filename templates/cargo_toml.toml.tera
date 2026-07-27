@@ -1,0 +1,17 @@
+[package]
+name = "{{ package_name }}"
+version = "0.1.0"
+edition = "{{ edition }}"
+
+[dependencies]
+{% for dep in dependencies %}{% if dep.kind == "git" %}{{ dep.name }} = { git = "{{ dep.value }}" }
+{% elif dep.kind == "version" %}{{ dep.name }} = "{{ dep.value }}"
+{% elif dep.kind == "version_with_features" %}{{ dep.name }} = { version = "{{ dep.value }}", features = [{{ dep.features_joined }}] }
+{% endif %}{% endfor -%}
+{% if build_dependencies %}
+[build-dependencies]
+{% for dep in build_dependencies %}{% if dep.kind == "git" %}{{ dep.name }} = { git = "{{ dep.value }}" }
+{% elif dep.kind == "version" %}{{ dep.name }} = "{{ dep.value }}"
+{% elif dep.kind == "version_with_features" %}{{ dep.name }} = { version = "{{ dep.value }}", features = [{{ dep.features_joined }}] }
+{% endif %}{% endfor -%}
+{% endif -%}

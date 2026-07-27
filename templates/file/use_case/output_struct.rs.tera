@@ -1,0 +1,11 @@
+#[derive(serde::Serialize)]
+pub struct {{ name }} {
+    pub {{ field }}: {% if is_list %}Vec<{{ entity_type }}>{% else %}{{ entity_type }}{% endif %},
+}
+
+impl From<{% if is_list %}Vec<{{ entity_type }}>{% else %}{{ entity_type }}{% endif %}> for {{ name }} {
+    fn from({{ field }}: {% if is_list %}Vec<{{ entity_type }}>{% else %}{{ entity_type }}{% endif %}) -> Self {
+        Self { {{ field }} }
+    }
+}
+

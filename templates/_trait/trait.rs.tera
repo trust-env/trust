@@ -1,0 +1,4 @@
+pub trait {{ name }}{% if templates %}<{{ templates | join(sep=", ") }}>{% endif %}{% if implements %}: {{ implements | join(sep=" + ") }}{% endif %} {
+{% for method in methods %}{{ method }}
+{% endfor -%}
+}

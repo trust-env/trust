@@ -1,0 +1,5 @@
+use axum::response::Html;
+
+pub(crate) async fn app_docs() -> Html<&'static str> {
+    Html(r##"{{ html }}"##)
+}

@@ -1,0 +1,4 @@
+<table class="errors"><thead><tr><th>Error</th><th>Status</th><th>Message</th></tr></thead><tbody>
+{% for row in rows %}<tr><td><code>{{ row.target }}</code></td><td>{{ row.status }}</td><td>{{ row.message }}</td></tr>
+{% endfor -%}
+</tbody></table>

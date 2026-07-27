@@ -1,0 +1,7 @@
+{% if has_wrapper %}Proto{{ output_type }} {
+            {{ wrapper_field }}: Some(Proto{{ entity }} {
+{% for f in entity_fields %}                {{ f }}: response.{{ wrapper_field }}.{{ f }},
+{% endfor %}            }),
+        }{% else %}Proto{{ output_type }} {
+{% for f in output_fields %}            {{ f }}: response.{{ f }},
+{% endfor %}        }{% endif %}

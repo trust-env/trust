@@ -1,0 +1,4 @@
+    async fn {{ signature }} {
+        Err({{ error_name }}::DatabaseError("{{ verb }} is not supported by this grpc_client infra".to_string()))
+    }
+

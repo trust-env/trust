@@ -1,0 +1,3 @@
+    let {{ db_var }}_db_url = std::env::var({{ env_var_literal }}).expect("{{ env_var }} environment variable not set");
+    let {{ db_var }}_db = SQLConnector::connect(&{{ db_var }}_db_url).await?;
+    let {{ entity_var }}_storage = Psql{{ entity }}Storage::new({{ db_var }}_db.clone());

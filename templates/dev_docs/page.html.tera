@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ adapter_name }} API docs</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { margin-bottom: 0.25rem; }
+  .subtitle { color: #888; margin-top: 0; }
+  section.route { border: 1px solid rgba(128,128,128,0.3); border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1.5rem; }
+  h2 { font-size: 1.1rem; margin-top: 0; }
+  h3 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; color: #888; margin-bottom: 0.4rem; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 0.5rem; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.3rem 0.6rem; border-bottom: 1px solid rgba(128,128,128,0.2); }
+  .empty { color: #888; font-style: italic; margin: 0 0 0.5rem; }
+  .method { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; color: #fff; }
+  .method.get { background: #2563eb; }
+  .method.post { background: #16a34a; }
+  .method.put { background: #ca8a04; }
+  .method.patch { background: #ca8a04; }
+  .method.delete { background: #dc2626; }
+  .use-case { color: #888; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<h1>{{ adapter_name }}</h1>
+<p class="subtitle">Generated API documentation (--dev mode)</p>
+{% for s in sections %}{{ s }}{% endfor %}
+</body>
+</html>

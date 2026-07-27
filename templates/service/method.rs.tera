@@ -1,0 +1,3 @@
+{% if is_pub %}pub {% endif %}{% if is_async %}async {% endif %}fn {{ name }}{% if templates %}<{{ templates | join(sep=", ") }}>{% endif %}(&self{% for p in parameters %}, {{ p.name }}: {{ p.param_type }}{% endfor %}) -> {{ return_type }} {
+{{ content }}
+}

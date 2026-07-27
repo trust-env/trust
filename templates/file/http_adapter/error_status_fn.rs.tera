@@ -1,0 +1,8 @@
+fn {{ fn_name }}(error: &{{ error_type }}) -> StatusCode {
+    match error {
+        {{ error_type }}::NotFound => StatusCode::NOT_FOUND,
+        {{ error_type }}::StorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+{% for t in targets %}        {{ error_type }}::{{ t.target }}(_) => StatusCode::from_u16({{ t.status }}).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+{% endfor %}    }
+}
+

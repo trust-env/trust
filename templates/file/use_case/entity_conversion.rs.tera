@@ -1,0 +1,8 @@
+impl From<{{ input_name }}> for {{ entity_type }} {
+    fn from(input: {{ input_name }}) -> Self {
+        Self {
+{% for line in field_lines %}            {{ line }}
+{% endfor %}        }
+    }
+}
+

@@ -1,0 +1,17 @@
+impl<{{ generics }}> {{ name }}<{{ generics }}>
+where
+{{ where_clause }}{
+    pub(crate) async fn {{ handler }}(
+{{ full_params }}    ) -> HttpResult<{{ output_type }}> {
+{{ full_prelude }}        let response = presenter
+            .{{ field }}
+            .execute(0, input)
+            .await
+            .map_err(|error| {
+                let status = {{ status_fn }}(&error);
+                HttpError::new(status, format!("{:?}", error))
+            })?;
+
+        Ok(Json(response))
+    }
+}

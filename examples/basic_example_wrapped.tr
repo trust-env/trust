@@ -1,0 +1,46 @@
+type User {
+    id: Int,
+    name: String,
+    email: String,
+}
+
+adapter DefaultAdapter {
+    http {
+        routes {
+            POST "/" { use_case: CreateUseCase }
+            GET "/get" { use_case: GetUseCase }
+            GET "/list" { use_case: ListUseCase }
+            PATCH "/update" { use_case: UpdateUseCase }
+            DELETE "/delete" { use_case: DeleteUseCase }
+        }
+        on: "${APP_HOST}:${APP_PORT}"
+    }
+}
+
+use_case CreateUseCase {
+    call: DefaultInfra.save_one
+}
+
+use_case GetUseCase {
+    call: DefaultInfra.find_one
+}
+
+use_case ListUseCase {
+    call: DefaultInfra.list
+}
+
+use_case UpdateUseCase {
+    call: DefaultInfra.update_one
+}
+
+use_case DeleteUseCase {
+    call: DefaultInfra.delete
+}
+
+infra: storage:psql DefaultInfra {
+    entity: User
+}
+
+app Main: run {
+    DefaultAdapter
+}

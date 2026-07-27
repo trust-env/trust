@@ -1,0 +1,18 @@
+        let has_permission = presenter
+            .{{ field }}
+            .list(StorageListQuery {
+                limit: 1,
+                offset: 0,
+                predicates: vec![
+                    StoragePredicate { field: "user_id".to_string(), operator: StoragePredicateOperator::Eq, value: user_context.user_id.to_string() },
+                    StoragePredicate { field: "target".to_string(), operator: StoragePredicateOperator::Eq, value: {{ target_literal }}.to_string() },
+                    StoragePredicate { field: "action".to_string(), operator: StoragePredicateOperator::Eq, value: {{ action_literal }}.to_string() },
+                ],
+            })
+            .await
+            .map_err(|error| HttpError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("{:?}", error)))?;
+
+        if has_permission.is_empty() {
+            return Err(HttpError::new(StatusCode::FORBIDDEN, "Missing permission".to_string()));
+        }
+

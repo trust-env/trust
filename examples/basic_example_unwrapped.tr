@@ -1,0 +1,179 @@
+import SQLConnector from "./mod/common/common.tr"
+import Permission from "./mod/user_permission/user_permission.tr"
+
+type User {
+    id: Int,
+    name: String,
+    email: String,
+}
+
+type CreateUserRequest {
+    name: String,
+    email: String,
+    target: String,
+    action: String
+}
+
+type GetUserRequest {
+    id: Int
+}
+
+type ListUsersRequest {
+    limit: Int,
+    offset: Int
+}
+
+type UpdateUserRequest {
+    id: Int,
+    name: String,
+    email: String
+}
+
+type DeleteUserRequest {
+    id: Int
+}
+
+adapter DefaultAdapter {
+    http {
+        routes {
+            POST "/" {
+                input {
+                    body: CreateUserRequest
+                }
+                output: User
+                use_case: CreateUseCase
+                status {
+                    InternalError -> 500
+                }
+            }
+            GET "/get/:id" {
+                input: GetUserRequest
+                output: User
+                use_case: GetUseCase
+                status {
+                    InternalError -> 500
+                    BadRequest -> 400
+                }
+            }
+            GET "/list" {
+                input: ListUsersRequest
+                output: User
+                use_case: ListUseCase
+                status {
+                    ServiceUnavailable -> 503
+                    InternalError -> 500
+                }
+            }
+            PATCH "/update/:id" {
+                input: UpdateUserRequest
+                output: User
+                use_case: UpdateUseCase
+                status {
+                    InternalError -> 500
+                    BadRequest -> 400
+                }
+            }
+            DELETE "/delete/:id" {
+                input: DeleteUserRequest
+                output: User
+                use_case: DeleteUseCase
+                auth {
+                    infra: PermissionInfra
+                    target: "user"
+                    action: "delete"
+                }
+                status {
+                    _ -> 500
+                }
+            }
+        }
+        on: "${APP_HOST}:${APP_PORT}"
+    }
+}
+
+use_case CreateUseCase {
+    input: CreateUserRequest
+    output: User
+    call: {
+        name: PermissionInfra.save_one
+        errors {
+            DatabaseError -> InternalError
+            ConversionError -> InternalError("With a message now")
+        }
+    }
+    call: {
+        name: DefaultInfra.save_one
+        errors {
+            DatabaseError -> InternalError
+            ConversionError -> InternalError("With a message now")
+        }
+    }
+}
+
+use_case GetUseCase {
+    input: GetUserRequest
+    output: User
+    call: {
+        name: DefaultInfra.find_one
+        errors {
+            DatabaseError -> InternalError
+            ConversionError -> BadRequest("Invalid data returned by storage")
+        }
+    }
+}
+
+use_case ListUseCase {
+    input: ListUsersRequest
+    output: User
+    call: {
+        name: DefaultInfra.list
+        errors {
+            DatabaseError -> ServiceUnavailable
+            ConversionError -> InternalError
+        }
+    }
+}
+
+use_case UpdateUseCase {
+    input: UpdateUserRequest
+    output: User
+    call: {
+        name: DefaultInfra.update_one
+        errors {
+            DatabaseError -> InternalError
+            ConversionError -> BadRequest("Invalid update payload")
+        }
+    }
+}
+
+use_case DeleteUseCase {
+    input: DeleteUserRequest
+    output: User
+    call: {
+        name: DefaultInfra.delete
+        errors {
+            DatabaseError -> InternalError
+            ConversionError -> InternalError
+        }
+    }
+}
+
+infra DefaultInfra {
+    storage {
+        psql {
+            entity: User
+        }
+    }
+}
+
+infra PermissionInfra {
+    storage {
+        psql {
+            entity: Permission
+        }
+    }
+}
+
+app Main: run {
+    DefaultAdapter
+}

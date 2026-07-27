@@ -1,0 +1,4 @@
+message {{ name }} {
+    {{ entity_message_name }} {{ field_name }} = 1;
+}
+

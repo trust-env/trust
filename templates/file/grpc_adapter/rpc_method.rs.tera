@@ -1,0 +1,17 @@
+    async fn {{ method }}(&self, request: Request<Proto{{ input_type }}>) -> Result<Response<Proto{{ output_type }}>, Status> {
+        let request = request.into_inner();
+        let input = {{ input_type }} {
+{% for f in input_fields %}            {{ f }}: request.{{ f }},
+{% endfor %}        };
+
+        let response = self
+            .{{ field }}
+            .execute(0, input)
+            .await
+            .map_err(|error| match error {
+                {{ error_type }}::NotFound => Status::not_found("not found"),
+                other => Status::internal(format!("{:?}", other)),
+            })?;
+
+        Ok(Response::new({{ output_construction }}))
+    }

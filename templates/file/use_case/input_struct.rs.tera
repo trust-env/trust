@@ -1,0 +1,6 @@
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct {{ name }} {
+{% for field in fields %}    pub {{ field.name }}: {{ field.field_type }},
+{% endfor -%}
+}
+
