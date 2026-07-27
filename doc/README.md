@@ -7,6 +7,8 @@ This folder contains feature and language documentation for Trust.
 - `language-overview.md`: what Trust is, compilation model, and core concepts.
 - `keywords.md`: all currently recognized DSL keywords, what they do, and how to use them.
 - `features.md`: full feature catalog, including HTTP, gRPC, storage, AI, plugins, and multi-app workflows.
+- `conversions.md`: the exhaustive reference for every `.tr` → Rust conversion — types, names, storage traits, error enums, path params, env interpolation, proto, dependencies.
+- `cli.md`: full CLI reference — every flag, output/exit behavior, and dev mode.
 - `recipes.md`: practical copy-paste patterns for common use cases.
 - `limitations.md`: current known limitations and unsupported behaviors.
 

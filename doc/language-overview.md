@@ -56,3 +56,14 @@ app Main: run {
     HttpApi
 }
 ```
+
+## Two Things Worth Knowing Immediately
+
+- **Declaration order never matters.** Types, infra, use cases, adapters,
+  and apps can reference each other in any order in the file — a two-pass
+  resolution registers every name before generating anything.
+- **`./out` is fully deleted and rebuilt on every compile.** Never hand-edit
+  generated code under `out/` — it will not survive the next run. See
+  [cli.md](cli.md) for full CLI/output behavior and
+  [conversions.md](conversions.md) for exactly what every construct compiles
+  down to.

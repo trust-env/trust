@@ -1,6 +1,37 @@
 # Keywords
 
-This page lists all language keywords currently recognized by Trust.
+This page lists all language keywords currently recognized by Trust, what
+each one does, and how to use it. For exact type/name conversion rules and
+generated-code shapes, see [conversions.md](conversions.md); for full CLI
+usage see [cli.md](cli.md).
+
+## Syntax Notes
+
+These apply across the whole language and aren't tied to one keyword:
+
+- **No comment syntax.** There is no `#`, `//`, or `/* */` form. Any stray
+  character that isn't part of a token (including `#`) is a hard lexer error.
+- **Struct field separators are optional.** Commas between `type { ... }`
+  fields may be present or omitted; both are accepted.
+- **HTTP verbs (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`) are not reserved
+  keywords.** They lex as plain identifiers and are matched by name when
+  parsing a route. Any other word in that position is a parse error
+  (`Unknown HTTP method: ...`).
+- **Numbers are not a distinct token type.** Integer literals (e.g. HTTP
+  status codes) lex as identifiers and are parsed as numbers contextually;
+  a non-numeric word where a number is expected is a parse error.
+- **Declaration order never matters.** `type`, `infra`, `use_case`,
+  `adapter`, and `app` blocks can reference each other regardless of which
+  one appears first in the file — a two-pass resolution (`build_lookup_context`)
+  registers every name before any file is actually generated, and this is
+  regression-tested to produce byte-identical output either way. Order
+  declarations however reads best to you.
+- **Adapter `on:` (not load-balancer `targets`) supports `${VAR}`
+  interpolation.** See the [`on`](#on) entry below — this is a common point
+  of confusion, so it's called out twice.
+- **Undefined type references fail at codegen, not at parse time.** A typo'd
+  type name in a field lexes and parses fine; you only find out when you
+  actually compile ("Undefined type reference: ...").
 
 ## Core Structural Keywords
 
@@ -16,8 +47,14 @@ type User {
 }
 ```
 
+Trailing commas and inter-field commas are both optional — `id: Int name: String`
+on separate lines with no commas is equally valid. Every field becomes a
+`pub` field on the generated struct; there's no visibility control.
+
 ### `export`
 Marks a struct declaration as importable by name from another `.tr` module.
+Has **zero** effect on the type's own generated code (same derives, same
+visibility) — it only changes whether another file's `import` can find it.
 
 ```tr
 type PublicUser {
@@ -35,19 +72,26 @@ import PublicUser from "./shared.tr"
 import { User, Role } from "./shared.tr"
 ```
 
+Only local path imports (`"./shared.tr"`) actually work end to end.
+`import X from "git@github.com:org/repo.git"` **parses** successfully but
+codegen hard-errors with "Git imports are not supported yet" the moment it
+tries to resolve one — despite this exact form appearing in the top-level
+README's own example. Don't rely on git imports today.
+
 ### `from`
-Used in import declarations to specify source module.
+Used in import declarations to specify the source module.
 
 ## Type Keywords
 
 ### `String`
-Built-in text type.
+Built-in text type → Rust `String`.
 
 ### `Uuid`
-Built-in UUID type.
+Built-in UUID type → Rust `Uuid` (from the `uuid` crate, added automatically
+with the `serde` feature).
 
 ### `Int`
-Built-in integer type.
+Built-in integer type → Rust `i64` (always 64-bit, never `i32`).
 
 ### `Regex`
 Regex-annotated type form (`Regex<pattern>`).
@@ -59,8 +103,16 @@ type ApiKey {
 }
 ```
 
+**The pattern is purely documentation today** — `Regex<slug>` compiles down
+to a plain `String` field, byte-identical to writing `String` directly. No
+regex crate is added, no validation is generated or enforced anywhere. Also
+note the pattern itself must be a single alphanumeric/`_` word — real regex
+metacharacters (e.g. a literal `-`) break lexing.
+
 ### `entity`
-Specifies the entity type for storage infra.
+Specifies the entity type for storage infra. The entity name (snake_cased,
+pluralized with a trailing `s`) becomes both the SQL table name (`psql`) and
+the output struct's collection field name for list-shaped results.
 
 ## Infrastructure Keywords
 
@@ -83,8 +135,36 @@ infra TaskInfra {
 }
 ```
 
+Generates a full `Storage<Task, PsqlTaskStorageError>` implementation with
+all 8 CRUD/list methods (`save_one`, `save_many`, `find_one`, `find_many`,
+`list`, `update_one`, `delete`, `delete_many`) — see
+[conversions.md](conversions.md#3-storage-trait-shape-psql) for exact
+signatures.
+
+#### Shorthand forms
+
+The full block above can be collapsed into a single line. Two equivalent
+shorthand spellings exist for `psql`:
+
+```tr
+infra: storage psql TaskInfra { entity: Task }
+
+infra: storage:psql TaskInfra { entity: Task }
+```
+
+Both are parser-recognized and generate identical code to the block form.
+There is no shorthand for `grpc_client` — it must use the full block form.
+
 ### `grpc_client`
-gRPC client storage backend for cross-binary calls.
+gRPC client storage backend for cross-binary calls. Implements the same
+generic `Storage<T, E>` trait shape as `psql`, so downstream `call:`/`errors {}`
+syntax is unchanged regardless of backend.
+
+> **Limitation:** only `find_one` is currently implemented as a mappable
+> storage method for `grpc_client`. Mapping any other operation
+> (`save_one`, `list`, `update_one`, `delete`, etc.) in `methods { ... }`
+> is accepted by the parser but not supported by codegen yet. See
+> [limitations.md](limitations.md).
 
 ### `service`
 Inside `grpc_client`, points to the target gRPC adapter service.
@@ -113,10 +193,16 @@ infra RemoteTaskInfra {
 Declares business logic entry points.
 
 ### `input`
-Sets input type.
+Sets input type. Shared by **every** `call` on the same use case — you
+can't give different calls different input shapes. If omitted, it's
+inferred from the `call` chain (e.g. from the target storage entity/method).
+This is the **authoritative** input shape — see the note on route/`rpc`
+`input:` below, which is not the same thing.
 
 ### `output`
-Sets output type.
+Sets output type. Determined by the **last** declared `call` if multiple
+calls are present (see [`call`](#call) below), or inferred if omitted.
+Authoritative for the same reason as `input`.
 
 ### `call`
 Binds use case logic to infra operations.
@@ -128,6 +214,29 @@ use_case GetTaskUseCase {
     call: TaskInfra.find_one
 }
 ```
+
+**Multiple `call:` lines are allowed** and have specific semantics — this is
+easy to miss:
+
+```tr
+use_case ArchiveTaskUseCase {
+    call: AuditLogInfra.save_one
+    call: TaskInfra.update_one
+}
+```
+
+- Calls run in declaration order; only the **last** one shapes the generated
+  `{Name}Output` and drives `NotFound`/list-vs-single semantics. Earlier
+  calls act as shared side effects/guards using the same input.
+- The same infra target appearing in more than one `call` is deduplicated to
+  one struct field/generic — you don't get two handles to it.
+- Each `call` keeps its own independent `errors {}` mapping, even when two
+  calls share an infra target.
+- Only calls bound to `save_one`/`update_one` generate a `From<Input> for
+  Entity` conversion (reads/deletes/lists don't need one).
+
+See [conversions.md](conversions.md#5-use_case-multi-call-semantics) for the
+full breakdown.
 
 ### `errors`
 Maps infra/storage errors into use case errors.
@@ -142,8 +251,26 @@ call: {
 }
 ```
 
+Notes:
+- Storage errors always have exactly two source variants to map from:
+  `DatabaseError` and `ConversionError` (fixed regardless of backend).
+- The literal message argument (`BadRequest("...")`) is optional — a bare
+  target name (`InternalError`) is also valid. With a literal message, the
+  real underlying error is discarded and the literal is always used; without
+  one, the real error string is threaded through into your target variant.
+- Each source variant may be mapped at most once per `call`; mapping the
+  same source twice is a parse-time error.
+- Mapping is **partial, not all-or-nothing**: any source variant you don't
+  mention still falls back to the use case's built-in `StorageError(String)`
+  variant.
+- `NotFound` and `StorageError` always exist on the generated `{Name}Error`
+  enum regardless of what you map, and (see [`status`](#status) below) their
+  eventual HTTP status codes are hardcoded and **not** overridable.
+
 ### `ai`
 Switches use case implementation to AI-authored function body generation.
+Mutually exclusive with `call` — a use case declaring both is a hard error
+(`cannot declare both 'call' and 'ai' — they're mutually exclusive`).
 
 ### `prompt`
 Prompt text used by `ai` generation.
@@ -158,6 +285,27 @@ use_case ValidateEmailUseCase {
 }
 ```
 
+An `ai` block may optionally carry an `infra:` reference, giving the
+AI-authored function access to a storage infra the same way a `call` would:
+
+```tr
+use_case SummarizeDocUseCase {
+    ai {
+        infra: DocInfra
+        prompt: 'Summarize the document fetched from infra in two sentences.'
+    }
+}
+```
+
+The AI call happens **once, at compile time** (a real HTTP call to the
+Anthropic Messages API from inside the `trust` binary itself, using
+`--ai-api-key`/`ANTHROPIC_API_KEY`); the returned code is spliced directly
+into the generated function body. The generated project itself gets **no**
+extra runtime dependency and never talks to any AI provider at runtime. An
+AI use case's error enum is always exactly `{Name}Error::{NotFound,
+StorageError(String)}` — `errors {}` customization isn't available for `ai`
+use cases.
+
 ## Adapter Keywords
 
 ### `adapter`
@@ -169,11 +317,48 @@ Declares HTTP adapter configuration.
 ### `routes`
 Route list for HTTP adapter.
 
+> **A route's `input`/`output` don't define the generated shape — the
+> use_case's own `input`/`output` does.** If the referenced use case has no
+> explicit signature of its own, whatever you write here is silently
+> ignored. If it does, what you write here must exactly match it, or it's a
+> hard codegen error. Treat route-level `input`/`output` as an optional,
+> self-documenting contract check, not the source of truth. Full detail:
+> [conversions.md §10](conversions.md#10-routerpc-inputoutput-are-a-cross-check-not-the-source-of-truth).
+
 ### `status`
-Route-level error-to-HTTP status mapping.
+Route-level error-to-HTTP-status mapping.
+
+```tr
+status {
+    InternalError -> 500
+    BadRequest -> 400
+    _ -> 502
+}
+```
+
+- `NotFound` and `StorageError` are **hardcoded** to `404` and `500`
+  respectively and **cannot be overridden** by a `status {}` entry — the
+  generated match always emits those two arms unconditionally, regardless of
+  what you write here.
+- For every other (custom) error target: an exact `Target -> N` entry wins;
+  otherwise the route's own `_ -> N` wildcard (if present) is used;
+  otherwise it falls back to `500`.
+- gRPC `rpc` methods have **no equivalent** — there is no way to customize
+  gRPC error-to-status mapping at all (see [`rpc`](#rpc) below).
 
 ### `body`
 Used in wrapped input style (`input { body: Type }`).
+
+> **HTTP-only.** The `input { body: Type }` block form is only accepted on
+> HTTP routes. A gRPC `rpc` requires the bare `input: Type` colon form —
+> using the block form there is a parse error. Both forms generate
+> identical code where they are both valid; this is purely a syntax
+> restriction on `rpc`.
+
+Path-param fields (`:id` in the route) and body fields can be mixed freely
+in one input type — Trust automatically splits them into a path extractor
+and a JSON body extractor behind the scenes, then reassembles them before
+calling your use case. See [conversions.md](conversions.md#6-http-path-parameter-conversion).
 
 ### `auth`
 Route-level authorization requirement.
@@ -192,6 +377,24 @@ DELETE "/tasks/:id" {
 }
 ```
 
+This is a **permission-row lookup gated behind JWT identity**, not a bare
+JWT-claims check. At request time the generated handler:
+
+1. Extracts a `UserContext` from the request (JWT decoding, via the external
+   `auth` crate — this logic isn't regenerated per project).
+2. Queries `infra:`'s storage for a row matching `user_id == <from JWT>`,
+   `target == "<target>"`, `action == "<action>"`.
+3. If no matching row is found, the request short-circuits with
+   **403 Forbidden**. A storage failure during the lookup itself maps to
+   **500**.
+
+`infra:` should point at a storage infra whose entity models permission
+grants (see `mod/user_permission` for a reference shape). Any HTTP adapter
+with at least one `auth`-requiring route pulls in the `auth` crate as a
+dependency, and (in `--dev` mode) gets a scaffolded `JWT_SECRET=changeme`
+line in its `.env` — `auth::UserContext` reads that variable to validate
+JWTs at runtime.
+
 ### `grpc`
 Declares gRPC adapter configuration.
 
@@ -200,6 +403,11 @@ gRPC service RPC declaration block.
 
 ### `rpc`
 Declares one gRPC method endpoint.
+
+> Same rule as HTTP `routes`: `input:`/`output:` here are an optional
+> cross-check against the referenced use_case's own signature, not the
+> source of truth for the generated proto message shape — see
+> [conversions.md §10](conversions.md#10-routerpc-inputoutput-are-a-cross-check-not-the-source-of-truth).
 
 ```tr
 adapter InternalGrpcApi {
@@ -216,10 +424,29 @@ adapter InternalGrpcApi {
 }
 ```
 
+> **Field type limitation, not currently in limitations.md at HTTP-parity
+> visibility:** gRPC message fields only support `String` and `Int` (`i64`).
+> `Uuid`, list-shaped (`Vec<...>`) outputs, and nested struct fields are a
+> **generation-time error** ("gRPC doesn't support field type '...' yet —
+> only String and Int fields are supported"). Design gRPC-exposed types with
+> flat `String`/`Int` fields only.
+
+Error mapping for `rpc` is **not customizable** — the generated match always
+maps your error enum's `NotFound` variant to `Status::not_found(...)` and
+every other variant to `Status::internal(...)`, with no `status {}` block
+equivalent.
+
+A CRUD-style use case's entity output is wrapped in a single-field "wrapper"
+proto message (e.g. `message CreateUserOutput { User user = 1; }`) rather
+than duplicating the entity's fields inline.
+
 ## App and Runtime Keywords
 
 ### `app`
-Declares a runnable app unit.
+Declares a runnable app unit. Any `.tr` file with at least one `app` block
+compiles to a **Cargo workspace** in `./out` — even with just a single
+`app` — with one crate per app. A file with **zero** `app` blocks falls back
+to one flat, non-workspace crate.
 
 ### `run`
 App runtime binding block.
@@ -232,13 +459,20 @@ app Main: run {
 ```
 
 ### `load_balancer`
-Declares a round-robin reverse proxy app component.
+Declares a round-robin reverse proxy app component. It never constructs any
+adapter itself — it only proxies to independently-deployed, already-running
+backend processes at the addresses in `targets`.
 
 ### `targets`
-Load balancer backend address list.
+Load balancer backend address list. **These are always static string
+literals** — `${VAR}` interpolation does **not** apply here, even though it
+does apply to the load balancer's own `on:` and to adapter `on:` fields (see
+[`on`](#on) below and [conversions.md](conversions.md#7-address-string--env-var-interpolation)).
+Changing the backend fleet currently requires recompiling.
 
 ### `on`
-Bind/listen address in adapters and load balancer.
+Bind/listen address in adapters, `grpc_client` infra, and the load balancer
+(its own listen address — not `targets`).
 
 ```tr
 app Gateway: run {
@@ -251,3 +485,24 @@ app Gateway: run {
     }
 }
 ```
+
+Address strings on `on:` (adapters and the load balancer's own bind address)
+accept `${VAR}` interpolation, resolved from the environment at runtime
+rather than baked in as a fixed literal:
+
+```tr
+adapter HttpApi {
+    http {
+        on: "${HOST}:${PORT}"
+        routes { ... }
+    }
+}
+```
+
+This generates a runtime lookup (`std::env::var("HOST")`,
+`std::env::var("PORT")`) instead of a hardcoded address. In `--dev` mode,
+any interpolated variable found this way is also written into that app's
+generated `.env` file with a sniffed default (`PORT`-containing names share
+a counter starting at 3000 and incrementing per variable within the app,
+`HOST`-containing names default to `0.0.0.0`, everything else defaults to
+`changeme`). Full detail: [cli.md](cli.md#dev-mode---dev).
