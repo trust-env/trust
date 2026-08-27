@@ -137,10 +137,28 @@ pub struct GrpcClientInfraService {
     pub methods: Vec<GrpcClientMethodMapping>,
 }
 
+/// `storage { s3 { bucket: "..." entity: MediaObject } }`: an object-storage
+/// backend (MinIO or any S3-compatible service) for blob data — photos,
+/// videos, arbitrary files. Unlike `psql`/`grpc_client`, this does **not**
+/// implement the shared `Storage<T, E>` trait: objects aren't rows, so a
+/// `use_case` binds to it via `blob:` (see `BlobCall`), not `call:`.
+/// `entity:` is metadata only (e.g. `key`, `content_type`) — the object
+/// bytes themselves never pass through a Trust-generated struct. Endpoint,
+/// access key, and secret key are never written in `.tr` source (same
+/// "credentials are always environment-only" precedent `psql`'s connection
+/// string already sets) — they're always read from three env vars derived
+/// from the infra name at runtime.
+#[derive(Debug, Clone)]
+pub struct S3InfraService {
+    pub bucket: String,
+    pub entity: AllowedType,
+}
+
 #[derive(Debug, Clone)]
 pub enum StorageType {
     Psql(PsqlInfraService),
     GrpcClient(GrpcClientInfraService),
+    S3(S3InfraService),
 }
 
 #[derive(Debug, Clone)]
@@ -182,6 +200,33 @@ pub struct AiSpec {
     pub prompt: String,
 }
 
+/// `blob: Target.operation` — binds a use case to one `s3 {}` infra
+/// operation. Unlike `UseCaseCall`, there's exactly one per use case (no
+/// declaration-order chaining) and no `errors {}` customization — same
+/// "fixed `{NotFound, StorageError(String)}` enum" precedent `ai {}` use
+/// cases already follow. `operation` is validated at codegen time (one of
+/// `presigned_put_url`/`presigned_get_url`/`delete`), not here — mirrors how
+/// `grpc_client`'s `methods {}` storage-method names are validated at
+/// codegen, not parse time.
+#[derive(Debug, Clone)]
+pub struct BlobCall {
+    pub target: String,
+    pub operation: String,
+}
+
+/// One `<field>: input.<input_field>` line inside a use case's `filters {}`
+/// block — an equality predicate scoping a `list`-bound primary call's
+/// results, comparing a storage field against one of the use case's own
+/// input fields (e.g. `spot_id: input.spot_id` for "ratings where
+/// spot_id = the route's :spot_id"). Only meaningful when the primary
+/// `call:` is bound to `list` — validated at codegen, not parse time, same
+/// split as `grpc_client`'s `methods {}` storage-verb names.
+#[derive(Debug, Clone)]
+pub struct FilterMapping {
+    pub field: String,
+    pub input_field: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct UseCaseService {
     pub name: String,
@@ -193,9 +238,16 @@ pub struct UseCaseService {
     /// earlier calls run first, as side effects / guards, sharing the same
     /// `input`.
     pub calls: Vec<UseCaseCall>,
-    /// Mutually exclusive with `calls`: an AI-authored body instead of the
-    /// deterministic CRUD template.
+    /// Mutually exclusive with `calls`/`blob`: an AI-authored body instead
+    /// of the deterministic CRUD template.
     pub ai: Option<AiSpec>,
+    /// Mutually exclusive with `calls`/`ai`: binds directly to one `s3 {}`
+    /// infra operation instead of the CRUD `Storage<T, E>` template.
+    pub blob: Option<BlobCall>,
+    /// Zero or more equality predicates narrowing a `list`-bound primary
+    /// `call:`'s results — see `FilterMapping`. Empty unless a `filters {}`
+    /// block was declared.
+    pub filters: Vec<FilterMapping>,
 }
 
 #[derive(Debug, Clone)]
@@ -209,6 +261,8 @@ pub enum AllowedType {
     String,
     Uuid,
     Int,
+    Float,
+    Decimal,
     Regex(String),
     DefinedType(String),
 }
@@ -219,6 +273,8 @@ impl AllowedType {
             AllowedType::String => "string".to_string(),
             AllowedType::Uuid => "uuid".to_string(),
             AllowedType::Int => "int".to_string(),
+            AllowedType::Float => "float".to_string(),
+            AllowedType::Decimal => "decimal".to_string(),
             AllowedType::Regex(_) => "regex".to_string(),
             AllowedType::DefinedType(name) => name.to_snake_case(),
         }

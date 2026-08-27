@@ -3,7 +3,7 @@ use crate::{
     parser::{
         Ast, GrpcClientInfraService, GrpcClientMethodMapping, InfraService, InfraServiceType,
         InfraServiceType::Storage,
-        Parser, PsqlInfraService, StorageType,
+        Parser, PsqlInfraService, S3InfraService, StorageType,
         StorageType::Psql,
     },
 };
@@ -161,6 +161,51 @@ impl Parser {
         }
     }
 
+    /// Parses `s3 { bucket: "..." entity: MediaObject }`. `bucket` is a
+    /// literal string (not secret, so it's fine in source — unlike
+    /// endpoint/access key/secret key, which are never declared in `.tr` at
+    /// all and are always read from env vars at runtime, same precedent as
+    /// psql's connection string). No shorthand form, same as `grpc_client`.
+    fn infra_s3_body(&mut self) -> Result<S3InfraService, String> {
+        match self.next_token() {
+            Some(Token::OpenBrace) => {}
+            _ => {
+                self.revert(1);
+                return Err("Expected '{' after S3 declaration".to_string());
+            }
+        }
+
+        let bucket = match (self.next_token(), self.next_token()) {
+            (Some(Token::Keyword(Keyword::Bucket)), Some(Token::Colon)) => match self.next_token() {
+                Some(Token::StringLiteral(bucket)) => bucket,
+                _ => {
+                    self.revert(3);
+                    return Err("Expected string literal after 'bucket:'".to_string());
+                }
+            },
+            _ => {
+                self.revert(2);
+                return Err("Expected 'bucket' after S3 declaration".to_string());
+            }
+        };
+
+        let entity = match (self.next_token(), self.next_token()) {
+            (Some(Token::Keyword(Keyword::Entity)), Some(Token::Colon)) => self.try_type()?,
+            _ => {
+                self.revert(2);
+                return Err("Expected 'entity' after 'bucket' in S3 declaration".to_string());
+            }
+        };
+
+        match self.next_token() {
+            Some(Token::CloseBrace) => Ok(S3InfraService { bucket, entity }),
+            _ => {
+                self.revert(1);
+                return Err("Expected '}' after S3 declaration".to_string());
+            }
+        }
+    }
+
     fn infra_storage_body(&mut self) -> Result<StorageType, String> {
         match self.next_token() {
             Some(Token::OpenBrace) => {}
@@ -175,9 +220,10 @@ impl Parser {
             Some(Token::Keyword(Keyword::GrpcClient)) => {
                 StorageType::GrpcClient(self.infra_grpc_client_body()?)
             }
+            Some(Token::Keyword(Keyword::S3)) => StorageType::S3(self.infra_s3_body()?),
             _ => {
                 self.revert(2);
-                return Err("Expected 'psql' or 'grpc_client' after Storage declaration".to_string());
+                return Err("Expected 'psql', 'grpc_client', or 's3' after Storage declaration".to_string());
             }
         };
 
@@ -262,6 +308,7 @@ mod tests {
         match &infra.service_type {
             Storage(Psql(psql)) => &psql.entity,
             Storage(StorageType::GrpcClient(cfg)) => &cfg.entity,
+            Storage(StorageType::S3(cfg)) => &cfg.entity,
         }
     }
 
@@ -362,6 +409,53 @@ mod tests {
             }
             other => panic!("expected Storage(GrpcClient(_)), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn s3_block_parses_bucket_and_entity() {
+        let infra = parse_infra(
+            r#"infra MediaInfra {
+                storage {
+                    s3 {
+                        bucket: "media"
+                        entity: MediaObject
+                    }
+                }
+            }"#,
+        );
+
+        assert_eq!(infra.name, "MediaInfra");
+        match &infra.service_type {
+            Storage(StorageType::S3(cfg)) => {
+                assert_eq!(cfg.bucket, "media");
+                assert_eq!(cfg.entity, AllowedType::DefinedType("MediaObject".to_string()));
+            }
+            other => panic!("expected Storage(S3(_)), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn s3_requires_a_bucket_field() {
+        let src = r#"infra MediaInfra {
+            storage {
+                s3 {
+                    entity: MediaObject
+                }
+            }
+        }"#;
+        assert!(parser_for(src).try_infra_service().is_err());
+    }
+
+    #[test]
+    fn s3_requires_an_entity_field() {
+        let src = r#"infra MediaInfra {
+            storage {
+                s3 {
+                    bucket: "media"
+                }
+            }
+        }"#;
+        assert!(parser_for(src).try_infra_service().is_err());
     }
 
     #[test]

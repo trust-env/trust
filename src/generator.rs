@@ -67,6 +67,16 @@ pub struct CodeGenContext {
     /// grpc-client infra apart from a psql one, since both register an
     /// entity in `infra_entities` the same way.
     infra_target_addresses: HashMap<String, String>,
+    /// `s3 {}` infra entities, kept deliberately separate from
+    /// `infra_entities` (rather than reusing it like `psql`/`grpc_client`
+    /// do) so `is_storage_entity` — which drives `sqlx::FromRow` + the
+    /// `sqlx` dependency in `gen_domain` — never fires for a blob-storage
+    /// entity. Blob entities are metadata only; they're never queried via
+    /// `sqlx::query_as`.
+    blob_infra_entities: HashMap<String, AllowedType>,
+    /// The literal `bucket:` string per `s3 {}` infra (never env-driven,
+    /// unlike endpoint/credentials — see `S3InfraService`'s doc comment).
+    blob_infra_buckets: HashMap<String, String>,
     use_case_signatures: HashMap<String, (AllowedType, AllowedType)>,
     known_use_cases: Vec<String>,
     /// Use cases declared with `ai {}` and no `infra:` — legitimately have
@@ -89,6 +99,10 @@ pub struct CodeGenContext {
     /// `mod grpc_client;` when at least one `grpc_client` infra was
     /// actually generated.
     grpc_client_entity_modules: Vec<String>,
+    /// Module names (bare, no `.rs`) written under
+    /// `src/infrastructures/storage/s3/` — same opt-in pattern as
+    /// `grpc_client_entity_modules`.
+    s3_entity_modules: Vec<String>,
     /// Module names (bare, no `.rs`) written under `src/plugins/` by
     /// `generate_plugin` — derived from each plugin codegen call's own
     /// `output_file`, which need not match the owning plugin's `name`.
@@ -104,6 +118,8 @@ impl CodeGenContext {
             types: Vec::new(),
             infra_entities: HashMap::new(),
             infra_target_addresses: HashMap::new(),
+            blob_infra_entities: HashMap::new(),
+            blob_infra_buckets: HashMap::new(),
             use_case_signatures: HashMap::new(),
             known_use_cases: Vec::new(),
             ai_use_cases_without_infra: Vec::new(),
@@ -118,6 +134,7 @@ impl CodeGenContext {
             adapter_grpc_modules: Vec::new(),
             infra_entity_modules: Vec::new(),
             grpc_client_entity_modules: Vec::new(),
+            s3_entity_modules: Vec::new(),
             plugin_modules: Vec::new(),
             grpc_proto_paths: Vec::new(),
         }
@@ -153,6 +170,23 @@ impl CodeGenContext {
 
     pub fn find_infra_target_address(&self, infra_name: &str) -> Option<&str> {
         self.infra_target_addresses.get(infra_name).map(String::as_str)
+    }
+
+    pub fn register_blob_infra(&mut self, infra_name: String, bucket: String, entity: AllowedType) {
+        self.blob_infra_entities.insert(infra_name.clone(), entity);
+        self.blob_infra_buckets.insert(infra_name, bucket);
+    }
+
+    pub fn find_blob_infra_entity(&self, infra_name: &str) -> Option<&AllowedType> {
+        self.blob_infra_entities.get(infra_name)
+    }
+
+    pub fn find_blob_infra_bucket(&self, infra_name: &str) -> Option<&str> {
+        self.blob_infra_buckets.get(infra_name).map(String::as_str)
+    }
+
+    pub fn is_blob_infra(&self, infra_name: &str) -> bool {
+        self.blob_infra_entities.contains_key(infra_name)
     }
 
     pub fn register_use_case_signature(
@@ -301,6 +335,12 @@ impl CodeGenContext {
     pub fn register_grpc_client_entity_module(&mut self, name: String) {
         if !self.grpc_client_entity_modules.contains(&name) {
             self.grpc_client_entity_modules.push(name);
+        }
+    }
+
+    pub fn register_s3_entity_module(&mut self, name: String) {
+        if !self.s3_entity_modules.contains(&name) {
+            self.s3_entity_modules.push(name);
         }
     }
 
@@ -475,6 +515,9 @@ impl CodeGen {
                         context.register_infra_entity(infra.name.clone(), cfg.entity.clone());
                         context.register_infra_target_address(infra.name.clone(), cfg.on.clone());
                     }
+                    Storage(crate::parser::StorageType::S3(cfg)) => {
+                        context.register_blob_infra(infra.name.clone(), cfg.bucket.clone(), cfg.entity.clone());
+                    }
                 },
                 Ast::UseCase(use_case) => {
                     context.register_known_use_case(use_case.name.clone());
@@ -502,6 +545,9 @@ impl CodeGen {
                                 context.register_ai_use_case_without_infra(use_case.name.clone());
                             }
                         }
+                    }
+                    if let Some(blob) = &use_case.blob {
+                        context.register_use_case_infra(use_case.name.clone(), blob.target.clone());
                     }
                 }
                 _ => {}
@@ -616,6 +662,14 @@ impl CodeGen {
                 .with_mods(context.grpc_client_entity_modules.clone())
                 .write()?;
             storage_mods.push("grpc_client".to_string());
+        }
+        if !context.s3_entity_modules.is_empty() {
+            let s3_dir = storage_dir.join("s3");
+            create_dir_all(&s3_dir).map_err(|e| format!("Error when creating the folder s3: {}", e))?;
+            ModFile::new(storage_dir.join("s3.rs"))?
+                .with_mods(context.s3_entity_modules.clone())
+                .write()?;
+            storage_mods.push("s3".to_string());
         }
         ModFile::new(infra_path.join("storage.rs"))?
             .with_mods(storage_mods)

@@ -16,6 +16,8 @@ impl CodeGen {
             AllowedType::String => Ok(RustType::primitive("String")),
             AllowedType::Uuid => Ok(RustType::primitive("Uuid")),
             AllowedType::Int => Ok(RustType::primitive("i64")),
+            AllowedType::Float => Ok(RustType::primitive("f64")),
+            AllowedType::Decimal => Ok(RustType::primitive("Decimal")),
             AllowedType::Regex(_) => Ok(RustType::primitive("String")),
             AllowedType::DefinedType(name) => {
                 if let Some(t) = context.find_type(name) {

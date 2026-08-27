@@ -77,6 +77,9 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
                 infra_names.insert(infra_name.clone());
             }
         }
+        if let Some(blob) = &use_case.blob {
+            infra_names.insert(blob.target.clone());
+        }
         if let Some(input) = &use_case.input {
             collect_defined_type_name(input, &mut type_names);
         }
@@ -95,6 +98,7 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
             // It's resolved separately, read-only, against the full
             // unfiltered ast list at codegen time.
             Storage(StorageType::GrpcClient(cfg)) => collect_defined_type_name(&cfg.entity, &mut type_names),
+            Storage(StorageType::S3(cfg)) => collect_defined_type_name(&cfg.entity, &mut type_names),
         }
     }
 
@@ -234,6 +238,8 @@ mod tests {
                 errors: vec![],
             }],
             ai: None,
+            blob: None,
+            filters: vec![],
         })
     }
 

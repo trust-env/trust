@@ -1,5 +1,6 @@
 mod grpc_client;
 mod psql;
+mod s3;
 
 use std::{fs::create_dir_all, path::PathBuf};
 
@@ -27,6 +28,7 @@ impl CodeGen {
             StorageType::GrpcClient(cfg) => {
                 self.gen_grpc_client_storage(context, cfg, storage_folder_path, full_asts, proto_dir)
             }
+            StorageType::S3(cfg) => self.gen_s3_storage(context, cfg, storage_folder_path),
         }
     }
 }

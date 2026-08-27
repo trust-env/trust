@@ -13,7 +13,7 @@ Trust is a declarative DSL that generates Rust service code.
 ## Main Building Blocks
 
 - `type`: define data models and request/response shapes.
-- `infra`: define storage backends (`psql` or `grpc_client`).
+- `infra`: define storage backends (`psql`, `grpc_client`, or `s3` for blob storage).
 - `use_case`: define application logic through deterministic calls or AI-authored bodies.
 - `adapter`: expose use cases via `http` routes or `grpc` services.
 - `app`: choose what runs together in one generated binary.

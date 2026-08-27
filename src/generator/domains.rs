@@ -36,6 +36,16 @@ impl CodeGen {
         if imports.needs_uuid {
             context.require_version_dependency_with_features("uuid", "1", vec!["serde"]);
         }
+        if imports.needs_decimal {
+            // "serde-str" forces Decimal to (de)serialize as a JSON string
+            // rather than a float, so money/precision fields never round-trip
+            // through IEEE-754 float imprecision over the wire.
+            context.require_version_dependency_with_features(
+                "rust_decimal",
+                "1",
+                vec!["serde-str"],
+            );
+        }
 
         context.require_version_dependency_with_features("serde", "1", vec!["derive"]);
         let is_storage_entity = context.is_storage_entity(&t.name);
@@ -43,6 +53,9 @@ impl CodeGen {
             let mut features = vec!["runtime-tokio", "tls-rustls", "postgres"];
             if imports.needs_uuid {
                 features.push("uuid");
+            }
+            if imports.needs_decimal {
+                features.push("rust_decimal");
             }
             context.require_version_dependency_with_features("sqlx", "0.9.0", features);
         }

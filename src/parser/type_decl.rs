@@ -12,6 +12,8 @@ impl Parser {
             Some(Token::Keyword(Keyword::String)) => Ok(AllowedType::String),
             Some(Token::Keyword(Keyword::Uuid)) => Ok(AllowedType::Uuid),
             Some(Token::Keyword(Keyword::Int)) => Ok(AllowedType::Int),
+            Some(Token::Keyword(Keyword::Float)) => Ok(AllowedType::Float),
+            Some(Token::Keyword(Keyword::Decimal)) => Ok(AllowedType::Decimal),
             Some(Token::Keyword(Keyword::Regex)) => match self.next_token() {
                 Some(Token::OpenAngle) => match self.next_token() {
                     Some(Token::Identifier(regex_pattern)) => match self.next_token() {
@@ -118,6 +120,8 @@ mod tests {
         assert_eq!(parser_for("String").try_type().unwrap(), AllowedType::String);
         assert_eq!(parser_for("Uuid").try_type().unwrap(), AllowedType::Uuid);
         assert_eq!(parser_for("Int").try_type().unwrap(), AllowedType::Int);
+        assert_eq!(parser_for("Float").try_type().unwrap(), AllowedType::Float);
+        assert_eq!(parser_for("Decimal").try_type().unwrap(), AllowedType::Decimal);
         assert_eq!(
             parser_for("Regex<slug>").try_type().unwrap(),
             AllowedType::Regex("slug".to_string())

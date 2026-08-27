@@ -210,7 +210,69 @@ actually be running for the end-to-end path to work. See
 `scenarios/05-cross-binary-grpc/` for a fully live version of this pattern
 (real Postgres, both binaries spawned as processes, a real HTTP round-trip).
 
-## Recipe 8: Dev Mode (Live Docs + Scaffolded `.env`)
+## Recipe 8: MinIO/S3 Blob Storage (Presigned Upload/Download URLs)
+
+```tr
+type MediaObject {
+    key: String,
+    content_type: String
+}
+
+infra MediaInfra {
+    storage {
+        s3 {
+            bucket: "media"
+            entity: MediaObject
+        }
+    }
+}
+
+use_case RequestUploadUrlUseCase {
+    blob: MediaInfra.presigned_put_url
+}
+
+use_case RequestDownloadUrlUseCase {
+    blob: MediaInfra.presigned_get_url
+}
+
+use_case DeleteMediaUseCase {
+    blob: MediaInfra.delete
+}
+
+adapter HttpApi {
+    http {
+        on: "0.0.0.0:8080"
+        routes {
+            POST "/media/upload-url" {
+                use_case: RequestUploadUrlUseCase
+            }
+            GET "/media/download-url" {
+                use_case: RequestDownloadUrlUseCase
+            }
+            DELETE "/media" {
+                use_case: DeleteMediaUseCase
+            }
+        }
+    }
+}
+
+app Main: run {
+    HttpApi
+}
+```
+
+The mobile/web client calls `POST /media/upload-url` with `{ "key": "..." }`,
+gets back `{ "url": "..." }`, and uploads the file bytes directly to that
+presigned URL — the generated backend never sees or proxies the file
+content. Same idea in reverse for downloads via `GET /media/download-url`.
+
+Endpoint/access key/secret key are never in `.tr` source — set
+`MEDIA_INFRA_S3_ENDPOINT`, `MEDIA_INFRA_S3_ACCESS_KEY`, and
+`MEDIA_INFRA_S3_SECRET_KEY` in the environment (or run with `--dev`, which
+scaffolds them into `.env` with local-MinIO defaults —
+`http://localhost:9000` / `minioadmin` / `minioadmin`).
+
+## Recipe 9: Dev Mode (Live Docs + Scaffolded `.env`)
 
 ```bash
 cargo run -- app.tr --dev
@@ -223,3 +285,60 @@ starter `.env` into that app's crate root with sniffed defaults for any
 `JWT_SECRET=changeme` if any route uses `auth {}`. See
 [cli.md](cli.md#dev-mode---dev) for the exact defaulting rules — treat the
 scaffolded values as local-dev placeholders, not production secrets.
+
+## Recipe 10: Filtered List ("X's children" Routes)
+
+```tr
+type Spot {
+    id: Int,
+    lat: Float,
+    lng: Float
+}
+
+type Rating {
+    id: Int,
+    spot_id: Int,
+    temperature: Int,
+    safety: Int
+}
+
+infra RatingInfra {
+    storage {
+        psql {
+            entity: Rating
+        }
+    }
+}
+
+use_case ListRatingsForSpotUseCase {
+    call: RatingInfra.list
+    filters {
+        spot_id: input.spot_id
+    }
+}
+
+adapter HttpApi {
+    http {
+        on: "0.0.0.0:8080"
+        routes {
+            GET "/spots/:spot_id/ratings" {
+                use_case: ListRatingsForSpotUseCase
+            }
+        }
+    }
+}
+
+app Main: run {
+    HttpApi
+}
+```
+
+No explicit `input` needed — the route's `:spot_id` path segment reaches
+the use case because `filters {}` (with no declared `input`) auto-adds a
+`spot_id: Int` field to the guessed `{ limit, offset }` list input, and the
+existing path-param-by-name matching (see
+[conversions.md §6](conversions.md#6-http-path-parameter-conversion)) picks
+it up automatically. `limit`/`offset` arrive via the **query string**
+(`GET /spots/:spot_id/ratings?limit=20&offset=0`), not a JSON body — `GET`
+routes always read their non-path fields that way, since a real HTTP
+client refuses to send a body on `GET` at all.

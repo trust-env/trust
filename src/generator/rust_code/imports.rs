@@ -18,11 +18,13 @@ pub fn crate_use(items: &[String]) -> String {
 }
 
 /// Tracks the imports a generated file needs for types that aren't
-/// resolved from the `common` crate: `Uuid` (from the `uuid` crate)
-/// and any other locally-generated domain type (`crate::{...}`).
+/// resolved from the `common` crate: `Uuid` (from the `uuid` crate),
+/// `Decimal` (from the `rust_decimal` crate), and any other
+/// locally-generated domain type (`crate::{...}`).
 #[derive(Default)]
 pub struct LocalImports {
     pub needs_uuid: bool,
+    pub needs_decimal: bool,
     pub types: Vec<String>,
 }
 
@@ -39,7 +41,8 @@ impl LocalImports {
     pub fn add(&mut self, rust_type: &RustType, exclude: &str) {
         match rust_type.name.as_str() {
             "Uuid" => self.needs_uuid = true,
-            "String" | "i64" => {}
+            "Decimal" => self.needs_decimal = true,
+            "String" | "i64" | "f64" => {}
             name if name != exclude && !self.types.contains(&name.to_string()) => {
                 self.types.push(name.to_string());
             }
@@ -52,6 +55,9 @@ impl LocalImports {
 
         if self.needs_uuid {
             code.push_str("use uuid::Uuid;\n");
+        }
+        if self.needs_decimal {
+            code.push_str("use rust_decimal::Decimal;\n");
         }
         code.push_str(&crate_use(&self.types));
         if !code.is_empty() {

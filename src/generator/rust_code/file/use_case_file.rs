@@ -9,7 +9,7 @@ use crate::{
         render::render,
         types::{RustField, RustType},
     },
-    parser::ErrorMapping,
+    parser::{ErrorMapping, FilterMapping},
 };
 use serde::Serialize;
 use tera::Context;
@@ -78,6 +78,10 @@ pub struct UseCaseFile {
     /// ever true when there's exactly one call (guessing requires an
     /// unambiguous primary).
     copy_id: bool,
+    /// Non-empty only when the primary call is `list` and a `filters {}`
+    /// block was declared — each becomes one equality `StoragePredicate` in
+    /// the generated `StorageListQuery`. See `FilterMapping`.
+    filters: Vec<FilterMapping>,
     file: File,
 }
 
@@ -87,6 +91,7 @@ impl UseCaseFile {
         input: RustType,
         calls: Vec<ResolvedCall>,
         copy_id: bool,
+        filters: Vec<FilterMapping>,
         folder: PathBuf,
     ) -> Result<Self, String> {
         let file_path = folder.join(format!("{}.rs", name.to_snake_case()));
@@ -98,6 +103,7 @@ impl UseCaseFile {
             input,
             calls,
             copy_id,
+            filters,
         })
     }
 
@@ -402,6 +408,35 @@ impl UseCaseFile {
         render("file/use_case/struct.rs.tera", &context)
     }
 
+    /// Builds the `StorageListQuery { ... }` expression a `list` call binds
+    /// to — `predicates` is empty unless `filters {}` was declared, in
+    /// which case each entry becomes one equality `StoragePredicate`
+    /// comparing the entity field against the matching input field
+    /// (`.to_string()`'d, same conversion `auth {}`'s own permission-row
+    /// lookup already uses for its own predicates).
+    fn list_query_expr(&self) -> String {
+        if self.filters.is_empty() {
+            return "StorageListQuery {\n                limit: input.limit,\n                offset: input.offset,\n                predicates: vec![],\n            }"
+                .to_string();
+        }
+
+        let predicates: Vec<String> = self
+            .filters
+            .iter()
+            .map(|f| {
+                format!(
+                    "StoragePredicate {{ field: {:?}.to_string(), operator: StoragePredicateOperator::Eq, value: input.{}.to_string() }}",
+                    f.field, f.input_field
+                )
+            })
+            .collect();
+
+        format!(
+            "StorageListQuery {{\n                limit: input.limit,\n                offset: input.offset,\n                predicates: vec![\n                    {}\n                ],\n            }}",
+            predicates.join(",\n                    ")
+        )
+    }
+
     /// Renders one call's expression: `is_tail` (the primary, always the
     /// last declared call) produces the function's tail expression (no
     /// trailing `;`); every earlier call produces a statement that clones
@@ -426,10 +461,7 @@ impl UseCaseFile {
             CallKind::Create => entity_expr(),
             CallKind::Read | CallKind::Delete => id_expr(),
             CallKind::Update => format!("{}, {}", id_expr(), entity_expr()),
-            CallKind::List => {
-                "StorageListQuery {\n                limit: input.limit,\n                offset: input.offset,\n                predicates: vec![],\n            }"
-                    .to_string()
-            }
+            CallKind::List => self.list_query_expr(),
         };
 
         let mut context = Context::new();
@@ -490,6 +522,10 @@ impl UseCaseFile {
         let mut common_items = vec!["UseCase"];
         if self.calls.iter().any(|c| c.call_kind == CallKind::List) {
             common_items.push("StorageListQuery");
+        }
+        if !self.filters.is_empty() {
+            common_items.push("StoragePredicate");
+            common_items.push("StoragePredicateOperator");
         }
 
         let mut code = common_use(&common_items);

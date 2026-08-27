@@ -1,0 +1,47 @@
+use s3::{Bucket, Region, creds::Credentials};
+
+#[derive(Clone)]
+pub struct {{ struct_name }} {
+    bucket: Box<Bucket>,
+}
+
+impl {{ struct_name }} {
+    pub fn new(
+        endpoint: String,
+        access_key: String,
+        secret_key: String,
+        bucket_name: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let credentials = Credentials::new(Some(&access_key), Some(&secret_key), None, None, None)?;
+        let bucket = Bucket::new(
+            bucket_name,
+            Region::Custom { region: "us-east-1".to_string(), endpoint },
+            credentials,
+        )?
+        .with_path_style();
+
+        Ok(Self { bucket })
+    }
+
+    pub async fn presigned_put_url(&self, key: &str) -> Result<String, String> {
+        self.bucket
+            .presign_put(key, 900, None, None)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn presigned_get_url(&self, key: &str) -> Result<String, String> {
+        self.bucket
+            .presign_get(key, 900, None)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn delete(&self, key: &str) -> Result<(), String> {
+        self.bucket
+            .delete_object(key)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}

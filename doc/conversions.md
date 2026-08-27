@@ -15,6 +15,8 @@ compiler if behavior seems to have changed.
 | `String` | `String` | — |
 | `Uuid` | `Uuid` | Pulls in `use uuid::Uuid;` and a `uuid = "1"` dependency with the `serde` feature. If the type is also used as a storage `entity:`, the crate's `sqlx` dependency additionally gets the `uuid` feature. |
 | `Int` | `i64` | Not `i32` — always 64-bit. |
+| `Float` | `f64` | No extra dependency — Postgres `DOUBLE PRECISION`/`REAL` map to `f64` natively via `sqlx`. **HTTP/`psql` only**, not usable on a gRPC-exposed type (generation-time error, same gap as `Uuid`). |
+| `Decimal` | `rust_decimal::Decimal` | Pulls in `rust_decimal = "1"` with the `serde-str` feature (JSON (de)serializes as a **string**, e.g. `"19.99"`, never a float — avoids IEEE-754 rounding drift for money). If the type is also used as a storage `entity:`, the crate's `sqlx` dependency additionally gets the `rust_decimal` feature (maps to Postgres `NUMERIC`). **HTTP/`psql` only**, same gRPC gap as `Uuid`/`Float`. |
 | `Regex<pattern>` | `String` | **The pattern is discarded.** `label: Regex<slug>` and `label: String` generate byte-identical code — no runtime validator, no regex crate dependency, nothing. Treat `Regex<...>` as a documentation-only annotation today (see [limitations.md](limitations.md)). |
 | a `DefinedType` (another `type`/struct name) | the matching generated struct | Resolved against everything already registered in the compilation unit (own file + successfully imported types). Referencing a name that doesn't resolve is a **codegen-time** error ("Undefined type reference: `{name}`"), not a parse-time one — a typo'd type name will lex and parse fine and only fail when you actually compile. |
 
@@ -90,6 +92,37 @@ backend) — but today only `find_one` actually has real codegen; every other
 method mapped in a `grpc_client`'s `methods {}` block is accepted by the
 parser and rejected at codegen time (see [limitations.md](limitations.md)).
 
+## 3b. Storage trait shape (`s3`)
+
+For `infra X { storage { s3 { bucket: "media" entity: MediaObject } } }`,
+Trust generates `src/infrastructures/storage/s3/media_object.rs` containing:
+
+- **No error enum** of its own — unlike `psql`/`grpc_client`, s3 storage
+  methods return `Result<T, String>` directly (a raw error string), since
+  a `blob {}` use case's fixed error enum (`{NotFound, StorageError(String)}`,
+  same shape `ai {}` uses) accepts a bare `String` without needing a
+  `From<...>` impl to bridge through.
+- **Struct** `#[derive(Clone)] pub struct S3{Entity}Storage { bucket:
+  Box<Bucket> }` (`Bucket` from the `rust-s3` crate), built via
+  `S3{Entity}Storage::new(endpoint: String, access_key: String, secret_key:
+  String, bucket_name: &str) -> Result<Self, Box<dyn std::error::Error>>` —
+  region is always hardcoded `"us-east-1"` (a placeholder value MinIO/most
+  S3-compatible services ignore) and path-style addressing is always on
+  (`.with_path_style()`), required for MinIO.
+- **Does *not* implement `Storage<T, E>`** — there is no generic trait here
+  at all. Instead, exactly three inherent async methods, each a thin
+  wrapper over the `rust-s3` crate:
+
+| Method | Signature |
+|---|---|
+| `presigned_put_url` | `async fn presigned_put_url(&self, key: &str) -> Result<String, String>` |
+| `presigned_get_url` | `async fn presigned_get_url(&self, key: &str) -> Result<String, String>` |
+| `delete` | `async fn delete(&self, key: &str) -> Result<(), String>` |
+
+Presigned URLs are generated with a **fixed 900-second (15 minute) expiry**,
+not configurable from `.tr` source today. `entity:`'s own fields are never
+read here — see [`entity`](keywords.md#entity)'s doc comment.
+
 ## 4. Error enum generation
 
 For every `use_case Name { ... }`, Trust generates:
@@ -149,6 +182,65 @@ isn't documented syntax sugar — it has real, specific semantics:
   `list` expects `limit`+`offset`; `save_one` expects plain entity data
   (no `id`).
 
+## 5b. `blob` use case semantics
+
+A `blob: Target.operation` use case (see [keywords.md](keywords.md#blob))
+generates a shape entirely independent of `call:`'s guessing logic:
+
+- Input is always `{Name}Input { key: String }`. Output is always
+  `{Name}Output { url: String }` (`presigned_put_url`/`presigned_get_url`)
+  or `{Name}Output { key: String }` (`delete`, echoing the deleted key
+  back). There's no entity-field guessing — declaring an explicit
+  `input`/`output` is a hard error, since there's nothing for it to
+  narrow.
+- The generated struct's storage field is the **concrete** `S3{Entity}Storage`
+  type (not a generic `S0: Storage<T, E>` parameter) — see
+  [conversions.md §3b](#3b-storage-trait-shape-s3).
+- Error handling is a direct `.map_err({Name}Error::StorageError)?` against
+  the storage method's own `Result<T, String>` — no per-call `errors {}`
+  mapping, no intermediate storage error enum, unlike `call:`.
+
+## 5c. `filters` and `StorageListQuery` predicates
+
+A `filters { field: input.input_field ... }` block (see
+[keywords.md](keywords.md#filters)) rewrites how a `list`-bound primary
+call's `StorageListQuery` is built. Without `filters {}`:
+
+```rust
+StorageListQuery {
+    limit: input.limit,
+    offset: input.offset,
+    predicates: vec![],
+}
+```
+
+With one or more `filters {}` entries, each becomes one
+`common::StoragePredicate` in `predicates` — reusing the exact same
+`StorageListQuery`/`StoragePredicate`/`StoragePredicateOperator` types (and
+the same `.to_string()`-the-value convention) the `auth {}` permission-row
+lookup already builds internally:
+
+```rust
+StorageListQuery {
+    limit: input.limit,
+    offset: input.offset,
+    predicates: vec![
+        StoragePredicate { field: "spot_id".to_string(), operator: StoragePredicateOperator::Eq, value: input.spot_id.to_string() },
+    ],
+}
+```
+
+- Every predicate is `StoragePredicateOperator::Eq` — `filters {}` has no
+  syntax for any other comparison.
+- The use case file additionally imports `StoragePredicate`/
+  `StoragePredicateOperator` from `common` only when `filters {}` is
+  actually present — an unfiltered `list` use case's imports/generated
+  code are byte-identical to before this feature existed.
+- If `input` is guessed (not explicitly declared), each `filters {}`
+  entry's `field` is looked up on the primary call's entity and appended
+  to the guessed input struct with that field's own type — e.g. a `Uuid`
+  entity field produces a `Uuid` guessed input field, not a `String`.
+
 ## 6. HTTP path parameter conversion
 
 - A path segment `:name` in a `.tr` route is extracted (`path_params_of`)
@@ -157,12 +249,25 @@ isn't documented syntax sugar — it has real, specific semantics:
 - If the route's `input` type has **only** fields that are path params (or
   no fields at all), the handler extracts the whole input struct directly:
   `Path(input): Path<TaskIdInput>`.
-- If the input type mixes path-param fields with other (body) fields, Trust
-  splits it into **two** generated structs and extracts them separately —
-  `Path(path): Path<...PathFields>` and `Json(body): Json<...BodyFields>` —
-  then reassembles them into the original input type before calling the use
-  case. A field is routed to the path extractor purely by matching its name
-  against the `:name` segments in the route path.
+- If the input type mixes path-param fields with other fields, Trust splits
+  it into **two** generated structs and extracts them separately —
+  `Path(path): Path<...PathFields>` and either `Json(body): Json<...BodyFields>`
+  or `Query(body): Query<...BodyFields>` (see below) — then reassembles them
+  into the original input type before calling the use case. A field is
+  routed to the path extractor purely by matching its name against the
+  `:name` segments in the route path.
+- **The non-path portion is `Json` for every method except `GET`, and
+  `Query` (the URL query string) for `GET`.** This isn't cosmetic: a real
+  HTTP client's `fetch()`/`XMLHttpRequest` refuses to send a body on a `GET`
+  request at all (`fetch()` throws `TypeError: Request with GET/HEAD method
+  cannot have body` before the request is even sent) — so a `GET` route
+  needing non-path fields (a plain `list` call's `limit`/`offset`, or any
+  `filters {}` field not itself a path param) is unreachable from any
+  standard client unless those fields come from the query string instead.
+  A `GET /spots/:spot_id/ratings?limit=20&offset=0` request is what a
+  client actually sends; the JSON-body shape never was. This applies
+  identically whether the field came from a guessed input or an explicit
+  one — only the HTTP method decides `Json` vs `Query`, never the call kind.
 
 ## 7. Address string / env var interpolation
 
@@ -222,11 +327,13 @@ dependencies as the AST is walked — nothing is added speculatively:
 |---|---|
 | any `use_case`/`infra` at all | `common` (git), `serde` (`derive`), `tokio` (`full`), `dotenvy` |
 | a type field of `Uuid`, or `psql` storage | `uuid` (`serde` feature; `+uuid` feature on `sqlx` if it's an entity) |
+| a type field of `Decimal` | `rust_decimal` (`serde-str` feature; `+rust_decimal` feature on `sqlx` if it's an entity) |
 | `psql` storage | `sqlx = "0.9.0"` |
 | any `http` adapter | `axum = "0.8"` |
 | any route with `auth {}` | `auth` (git) |
 | any `grpc` adapter, or `grpc_client` storage | `tonic = "0.12"`, `prost = "0.13"` (plus `tonic-build`/`protoc-bin-vendored` as **build**-dependencies, adapter side only) |
 | `load_balancer {}` | `axum = "0.8"`, `reqwest = "0.12"` |
+| `s3` storage | `rust-s3 = "0.37"` (never `sqlx` — see [conversions.md §3b](#3b-storage-trait-shape-s3)) |
 | `ai {}` | **nothing.** The Anthropic call happens once, at *compile time*, inside the `trust` binary itself. The generated project never talks to any AI provider at runtime and gets no extra dependency for it. |
 
 ## 10. Route/`rpc` `input`/`output` are a cross-check, not the source of truth

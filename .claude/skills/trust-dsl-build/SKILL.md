@@ -118,11 +118,29 @@ Useful flags (full table in `doc/cli.md`):
   Shorthand: `infra: storage psql Name { entity: T }`.
 - `infra Name { storage { grpc_client { service on entity methods { verb: Rpc } } } }`
   — cross-binary storage. **Only `find_one` actually works today.**
+- `infra Name { storage { s3 { bucket: "..." entity: T } } }` — MinIO/S3
+  blob storage. `entity:` is metadata-only; endpoint/access key/secret key
+  are **never** in `.tr` source — always three env vars derived from the
+  infra name (`<INFRA>_S3_ENDPOINT`/`_S3_ACCESS_KEY`/`_S3_SECRET_KEY`).
 - `use_case Name { input output call: Infra.method ... }` — deterministic
   logic. Multiple `call:` lines are allowed; the **last** one shapes the
   output, earlier ones run first as shared side effects.
 - `use_case Name { ai { infra prompt } }` — LLM-authored body, generated
-  **once at compile time** (not a runtime call). Mutually exclusive with `call`.
+  **once at compile time** (not a runtime call). Mutually exclusive with
+  `call`/`blob`.
+- `use_case Name { blob: S3Infra.presigned_put_url }` — binds straight to
+  one `s3 {}` operation (`presigned_put_url`/`presigned_get_url`/`delete`).
+  Fixed `{ key: String }` in / `{ url: String }` (or `{ key: String }` for
+  `delete`) out — don't declare your own `input`/`output`. Mutually
+  exclusive with `call`/`ai`.
+- `use_case Name { call: Infra.list filters { field: input.field ... } }`
+  — scopes a `list` call's results by one or more **equality-only**
+  predicates. Only valid when the primary call is `list`. Leave `input`
+  undeclared and the filtered field is auto-added to the guessed
+  `{ limit, offset }` input — a route's `:field` path param then reaches
+  it for free via the existing name-matching, so `GET
+  "/spots/:spot_id/ratings"` on a `filters { spot_id: input.spot_id }`
+  use case just works with zero extra wiring.
 - `adapter Name { http { on routes { METHOD "/path" { input output use_case status auth } } } }`
 - `adapter Name { grpc { on services { rpc Name { use_case } } } }`
 - `app Name: run { AdapterA AdapterB load_balancer L { targets { "..." } on: "..." } }`
@@ -141,11 +159,20 @@ Useful flags (full table in `doc/cli.md`):
   listen address), never on `targets` entries.
 - **`NotFound`/`StorageError` HTTP statuses are hardcoded** (404/500) and
   cannot be overridden by a route's `status {}` block.
-- **gRPC message fields only support `String` and `Int`** — `Uuid`, list
-  outputs, and nested structs are a generation-time error.
+- **gRPC message fields only support `String` and `Int`** — `Uuid`, `Float`,
+  `Decimal`, list outputs, and nested structs are a generation-time error.
 - **`Regex<pattern>` discards the pattern** — it's just `String` with no
   validation generated, ever.
-- **`Int` is always `i64`**, never `i32`.
+- **`Int` is always `i64`**, never `i32`. `Float` is `f64`. `Decimal` is
+  `rust_decimal::Decimal`, serialized as a JSON **string** (not a number) —
+  use it instead of `Float` for anything money-shaped.
+- **`s3 {}` storage doesn't implement `Storage<T, E>`** — a `use_case`
+  binds to it with `blob:`, never `call:`. A `blob {}` use case's
+  input/output shape is fixed and non-overridable — declaring your own
+  `input`/`output` is a hard error, not a narrowing.
+- **`filters {}` is equality-only and AND-only** — no `>`/`<`/`LIKE`, no
+  OR between entries, and it only works on a `list`-bound primary call
+  (not `find_many`).
 - A missing/unreadable `.tr` file path panics (exit 101) instead of
   printing a clean error — double-check paths first if you see a panic.
 

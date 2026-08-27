@@ -202,6 +202,23 @@ impl CodeGen {
             bindings.push(self.resolve_route_binding(context, route, type_param)?);
         }
 
+        // The generated route file/handler function is named
+        // `{use_case_name}_{http_method}` (see `HttpAdapterFile`) — keyed
+        // by that pair, not by path. Two routes sharing both would collide
+        // on the same generated filename and function, which only shows up
+        // once the generated crate is actually compiled (a duplicate-module
+        // error). Catch it here instead, with both conflicting paths named.
+        for (i, a) in bindings.iter().enumerate() {
+            for b in &bindings[i + 1..] {
+                if a.use_case_name == b.use_case_name && a.method == b.method {
+                    return Err(format!(
+                        "adapter '{}': routes '{} {}' and '{} {}' both bind use_case '{}' — a use case can't be reused across two routes sharing the same HTTP method (the generated route file is named '{{use_case}}_{{method}}', not by path); give one of them its own use_case",
+                        name, a.method.as_axum_fn(), a.path, b.method.as_axum_fn(), b.path, a.use_case_name
+                    ));
+                }
+            }
+        }
+
         if bindings.iter().any(|b| b.auth.is_some()) {
             context.require_git_dependency("auth", "ssh://git@github.com/BH-World/auth.git");
         }

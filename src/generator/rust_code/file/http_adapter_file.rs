@@ -366,6 +366,37 @@ impl HttpAdapterFile {
         render("file/http_adapter/split_structs.rs.tera", &context)
     }
 
+    /// When the route locally declares a `{Name}PathParams`/`{Name}Body`
+    /// struct (i.e. `input_extraction` isn't `BodyOnly` — see
+    /// `gen_split_structs`), those structs echo each field's type string
+    /// verbatim. Unlike the crate-level `{Name}Input` struct (whose own
+    /// file's `LocalImports` already handles this), nothing else imports
+    /// for *this* file's locally-declared structs — so a `Uuid`/`Decimal`/
+    /// other non-primitive field type here needs its own import, or the
+    /// generated route file fails with "cannot find type" the moment any
+    /// path/body field isn't a plain `String`/`Int`/`Float`.
+    fn local_struct_imports(route: &HttpRouteBinding) -> (bool, bool, Vec<String>) {
+        let mut needs_uuid = false;
+        let mut needs_decimal = false;
+        let mut other_types: Vec<String> = Vec::new();
+
+        if route.path_params.is_empty() {
+            return (needs_uuid, needs_decimal, other_types);
+        }
+        for (_, ty) in &route.input_fields {
+            match ty.as_str() {
+                "Uuid" => needs_uuid = true,
+                "Decimal" => needs_decimal = true,
+                "String" | "i64" | "f64" => {}
+                other if !other_types.iter().any(|t| t == other) => {
+                    other_types.push(other.to_string());
+                }
+                _ => {}
+            }
+        }
+        (needs_uuid, needs_decimal, other_types)
+    }
+
     fn route_file_imports(&self, route: &HttpRouteBinding) -> String {
         let mut code = String::new();
 
@@ -373,6 +404,14 @@ impl HttpAdapterFile {
         let mut axum_items = vec!["Json", "extract::State", "http::StatusCode"];
         if !route.path_params.is_empty() {
             axum_items.push("extract::Path");
+        }
+        // `Json` (the response type, and the request body extractor for
+        // every non-GET route) is already unconditional above — only a GET
+        // route with a non-path-only input needs the extra `Query` import,
+        // since it reads those fields from the query string instead (see
+        // `body_extractor`'s doc comment for why).
+        if route.method == HttpMethod::Get && !matches!(Self::input_extraction(route), InputExtraction::PathOnly) {
+            axum_items.push("extract::Query");
         }
         code.push_str(&format!("use axum::{{{}}};\n", axum_items.join(", ")));
         if route.auth.is_some() {
@@ -389,7 +428,15 @@ impl HttpAdapterFile {
         }
         code.push_str(&format!("use super::{};\n", self.name));
 
-        let mut crate_items = Vec::new();
+        let (needs_uuid, needs_decimal, other_types) = Self::local_struct_imports(route);
+        if needs_uuid {
+            code.push_str("use uuid::Uuid;\n");
+        }
+        if needs_decimal {
+            code.push_str("use rust_decimal::Decimal;\n");
+        }
+
+        let mut crate_items = other_types;
         for binding in self.unique_bindings() {
             crate_items.push(format!("{}Trait", binding.use_case_name));
         }
@@ -472,15 +519,28 @@ impl HttpAdapterFile {
         render("file/http_adapter/error_status_fn.rs.tera", &context)
     }
 
+    /// Which axum extractor reads a route's non-path input fields: `Json`
+    /// (request body) for every method except `GET`, and `Query` (URL query
+    /// string) for `GET` — a real HTTP client's `fetch()`/`XMLHttpRequest`
+    /// refuses to send a body on a GET request at all (verified: `fetch()`
+    /// throws `TypeError: Request with GET/HEAD method cannot have body`
+    /// before the request is even sent), so a `GET` route that put
+    /// `limit`/`offset`/`filters {}` fields in a JSON body would be
+    /// unreachable from any standard client, not just an awkward API shape.
+    fn body_extractor(route: &HttpRouteBinding) -> &'static str {
+        if route.method == HttpMethod::Get { "Query" } else { "Json" }
+    }
+
     fn route_file_content(&self, route: &HttpRouteBinding) -> String {
         let mut code = self.route_file_imports(route);
 
         code.push_str(&self.gen_error_status_fn(route));
 
+        let extractor = Self::body_extractor(route);
         let (pre_structs, params, prelude) = match Self::input_extraction(route) {
             InputExtraction::BodyOnly => (
                 String::new(),
-                format!("        Json(input): Json<{}>,\n", route.input_type_name),
+                format!("        {extractor}(input): {extractor}<{input_type}>,\n", input_type = route.input_type_name),
                 String::new(),
             ),
             InputExtraction::PathOnly => (
@@ -491,8 +551,9 @@ impl HttpAdapterFile {
             InputExtraction::Split { path_fields, body_fields } => {
                 let structs = Self::gen_split_structs(route, &path_fields, &body_fields);
                 let params = format!(
-                    "        Path(path): Path<{path_name}>,\n        Json(body): Json<{body_name}>,\n",
+                    "        Path(path): Path<{path_name}>,\n        {extractor}(body): {extractor}<{body_name}>,\n",
                     path_name = Self::path_struct_name(route),
+                    extractor = extractor,
                     body_name = Self::body_struct_name(route),
                 );
                 let mut field_lines = String::new();

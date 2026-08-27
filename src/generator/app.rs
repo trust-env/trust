@@ -49,18 +49,27 @@ impl CodeGen {
         let mut next_port: u16 = 3000;
 
         for infra in infras {
-            // `grpc_client` infras connect to a static address baked
-            // directly into the generated code, not an env-var-driven DB
-            // URL — nothing to scaffold here for them.
-            if !matches!(infra.kind, InfraKind::Psql) {
-                continue;
+            match &infra.kind {
+                InfraKind::Psql => {
+                    let var = MainFile::db_url_env_var(&infra.infra_name);
+                    lines.push(format!(
+                        "{}=postgres://postgres:postgres@localhost:5432/{}",
+                        var,
+                        infra.entity_name.to_lowercase()
+                    ));
+                }
+                InfraKind::S3 { .. } => {
+                    let (endpoint_var, access_key_var, secret_key_var) =
+                        MainFile::s3_env_vars(&infra.infra_name);
+                    lines.push(format!("{}=http://localhost:9000", endpoint_var));
+                    lines.push(format!("{}=minioadmin", access_key_var));
+                    lines.push(format!("{}=minioadmin", secret_key_var));
+                }
+                // `grpc_client` infras connect to a static address baked
+                // directly into the generated code, not an env-var-driven
+                // URL — nothing to scaffold here for them.
+                InfraKind::GrpcClient { .. } => {}
             }
-            let var = MainFile::db_url_env_var(&infra.infra_name);
-            lines.push(format!(
-                "{}=postgres://postgres:postgres@localhost:5432/{}",
-                var,
-                infra.entity_name.to_lowercase()
-            ));
         }
 
         let ons: Vec<&str> = adapters
@@ -104,18 +113,29 @@ impl CodeGen {
         if infra_bindings.iter().any(|i| i.infra_name == infra_name) {
             return Ok(());
         }
-        let entity = context.find_infra_entity(infra_name).ok_or_else(|| {
-            format!("Unknown infra '{}' referenced by {}", infra_name, referenced_by)
-        })?;
+        let entity = if context.is_blob_infra(infra_name) {
+            context.find_blob_infra_entity(infra_name)
+        } else {
+            context.find_infra_entity(infra_name)
+        }
+        .ok_or_else(|| format!("Unknown infra '{}' referenced by {}", infra_name, referenced_by))?;
         let entity_name = match entity {
             AllowedType::DefinedType(name) => name.clone(),
             _ => {
                 return Err(format!("Infra '{}' entity must be a declared type", infra_name));
             }
         };
-        let kind = match context.find_infra_target_address(infra_name) {
-            Some(address) => InfraKind::GrpcClient { target_address: address.to_string() },
-            None => InfraKind::Psql,
+        let kind = if context.is_blob_infra(infra_name) {
+            let bucket = context
+                .find_blob_infra_bucket(infra_name)
+                .ok_or_else(|| format!("Infra '{}' is missing its bucket", infra_name))?
+                .to_string();
+            InfraKind::S3 { bucket }
+        } else {
+            match context.find_infra_target_address(infra_name) {
+                Some(address) => InfraKind::GrpcClient { target_address: address.to_string() },
+                None => InfraKind::Psql,
+            }
         };
         infra_bindings.push(InfraBinding {
             infra_name: infra_name.to_string(),

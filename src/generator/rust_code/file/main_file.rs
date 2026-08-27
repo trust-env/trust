@@ -6,12 +6,15 @@ use crate::generator::rust_code::{env_template, imports::use_statement, render::
 use tera::Context;
 
 /// Distinguishes how `gen_infra` connects a `psql` infra (an env-var-driven
-/// DB URL) from a `grpc_client` infra (a static address baked directly into
-/// the `.tr` file, no env var) — see `CodeGenContext::find_infra_target_address`,
-/// the source of truth `register_infra_binding` checks to pick a kind.
+/// DB URL), a `grpc_client` infra (a static address baked directly into the
+/// `.tr` file, no env var), and an `s3` infra (three env-var-driven
+/// credentials plus a literal bucket name) — see
+/// `CodeGenContext::find_infra_target_address`/`is_blob_infra`, the source
+/// of truth `register_infra_binding` checks to pick a kind.
 pub enum InfraKind {
     Psql,
     GrpcClient { target_address: String },
+    S3 { bucket: String },
 }
 
 pub struct InfraBinding {
@@ -70,7 +73,25 @@ impl MainFile {
         format!("{}_DB_URL", infra_name.to_shouty_snake_case())
     }
 
+    /// `(endpoint, access_key, secret_key)` env var names for an `s3 {}`
+    /// infra — same "derived from the infra name" precedent as
+    /// `db_url_env_var`, since endpoint/credentials are never written in
+    /// `.tr` source (see `S3InfraService`'s doc comment).
+    pub fn s3_env_vars(infra_name: &str) -> (String, String, String) {
+        let upper = infra_name.to_shouty_snake_case();
+        (format!("{}_S3_ENDPOINT", upper), format!("{}_S3_ACCESS_KEY", upper), format!("{}_S3_SECRET_KEY", upper))
+    }
+
     fn gen_infra(infra: &InfraBinding) -> String {
+        // The constructed storage variable is always named after the
+        // *infra*, not the entity: `register_infra_binding` dedupes by
+        // infra name (unique by construction), but two different infras
+        // — e.g. a `psql` metadata infra and an `s3` blob infra — can
+        // legitimately target the *same* entity (see `S3InfraService`'s
+        // doc comment). Naming the variable after the entity would give
+        // both a `let media_storage = ...`, silently shadowing one with
+        // the other.
+        let infra_var = infra.infra_name.to_snake_case();
         match &infra.kind {
             InfraKind::Psql => {
                 let db_var = infra.infra_name.to_snake_case();
@@ -80,32 +101,40 @@ impl MainFile {
                 context.insert("db_var", &db_var);
                 context.insert("env_var_literal", &format!("{:?}", env_var));
                 context.insert("env_var", &env_var);
-                context.insert("entity_var", &infra.entity_name.to_snake_case());
+                context.insert("entity_var", &infra_var);
                 context.insert("entity", &infra.entity_name);
                 render("file/main/infra.rs.tera", &context)
             }
             InfraKind::GrpcClient { target_address } => {
                 let mut context = Context::new();
-                context.insert("entity_var", &infra.entity_name.to_snake_case());
+                context.insert("entity_var", &infra_var);
                 context.insert("entity", &infra.entity_name);
                 context.insert("target_address_literal", &format!("{:?}", target_address));
                 render("file/main/grpc_client_infra.rs.tera", &context)
             }
+            InfraKind::S3 { bucket } => {
+                let (endpoint_var, access_key_var, secret_key_var) = Self::s3_env_vars(&infra.infra_name);
+
+                let mut context = Context::new();
+                context.insert("entity_var", &infra_var);
+                context.insert("entity", &infra.entity_name);
+                context.insert("endpoint_var_literal", &format!("{:?}", endpoint_var));
+                context.insert("endpoint_var", &endpoint_var);
+                context.insert("access_key_var_literal", &format!("{:?}", access_key_var));
+                context.insert("access_key_var", &access_key_var);
+                context.insert("secret_key_var_literal", &format!("{:?}", secret_key_var));
+                context.insert("secret_key_var", &secret_key_var);
+                context.insert("bucket_literal", &format!("{:?}", bucket));
+                render("file/main/s3_infra.rs.tera", &context)
+            }
         }
     }
 
-    fn gen_use_case(use_case: &UseCaseBinding, infras: &[InfraBinding]) -> String {
+    fn gen_use_case(use_case: &UseCaseBinding) -> String {
         let args = use_case
             .infra_names
             .iter()
-            .map(|infra_name| {
-                let entity_name = infras
-                    .iter()
-                    .find(|i| &i.infra_name == infra_name)
-                    .map(|i| i.entity_name.as_str())
-                    .unwrap_or(infra_name.as_str());
-                format!("{}_storage.clone()", entity_name.to_snake_case())
-            })
+            .map(|infra_name| format!("{}_storage.clone()", infra_name.to_snake_case()))
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -116,16 +145,11 @@ impl MainFile {
         render("file/main/use_case.rs.tera", &context)
     }
 
-    fn gen_adapter(adapter: &AdapterBinding, infras: &[InfraBinding]) -> String {
+    fn gen_adapter(adapter: &AdapterBinding) -> String {
         let var = adapter.adapter_name.to_snake_case();
         let mut params: Vec<String> = adapter.use_cases.iter().map(|u| format!("{}.clone()", u.to_snake_case())).collect();
         for infra_name in &adapter.auth_infra_names {
-            let entity_name = infras
-                .iter()
-                .find(|i| &i.infra_name == infra_name)
-                .map(|i| i.entity_name.as_str())
-                .unwrap_or(infra_name.as_str());
-            params.push(format!("{}_storage.clone()", entity_name.to_snake_case()));
+            params.push(format!("{}_storage.clone()", infra_name.to_snake_case()));
         }
         let params = params.join(", ");
         let address_expr = env_template::to_rust_expr(&adapter.on);
@@ -203,6 +227,7 @@ impl MainFile {
             lib_items.push(match &infra.kind {
                 InfraKind::Psql => format!("Psql{}Storage", infra.entity_name),
                 InfraKind::GrpcClient { .. } => format!("Grpc{}Client", infra.entity_name),
+                InfraKind::S3 { .. } => format!("S3{}Storage", infra.entity_name),
             });
         }
         for use_case in use_cases {
@@ -234,12 +259,12 @@ impl MainFile {
         code.push('\n');
 
         for use_case in use_cases {
-            code.push_str(&Self::gen_use_case(use_case, infras));
+            code.push_str(&Self::gen_use_case(use_case));
         }
         code.push('\n');
 
         for adapter in adapters {
-            code.push_str(&Self::gen_adapter(adapter, infras));
+            code.push_str(&Self::gen_adapter(adapter));
             code.push('\n');
         }
 

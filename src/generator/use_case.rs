@@ -9,6 +9,7 @@ use crate::{
         rust_code::{
             file::{
                 ai_use_case_file::{AiInfraBinding, AiUseCaseFile},
+                blob_use_case_file::{BlobOperation, BlobUseCaseFile},
                 psql_storage_file::STORAGE_ERROR_VARIANTS,
                 use_case_file::{CallKind, ResolvedCall, UseCaseFile},
             },
@@ -16,7 +17,7 @@ use crate::{
             types::{RustField, RustType},
         },
     },
-    parser::{AiSpec, AllowedType, UseCaseService},
+    parser::{AiSpec, AllowedType, BlobCall, FilterMapping, UseCaseService},
 };
 
 pub(super) struct UseCaseShape {
@@ -24,6 +25,9 @@ pub(super) struct UseCaseShape {
     /// In declaration order; the last entry is primary.
     pub calls: Vec<ResolvedCall>,
     pub copy_id: bool,
+    /// Non-empty only when the primary call is `list` and a `filters {}`
+    /// block was declared — see `FilterMapping`.
+    pub filters: Vec<FilterMapping>,
 }
 
 impl CodeGen {
@@ -43,8 +47,14 @@ impl CodeGen {
 
     /// When a use case doesn't declare an explicit `input`, guess a shape
     /// from the call kind: `save_one`/`update_one` take the whole entity,
-    /// `find_one`/`delete` just need an `id`, and `list` needs paging.
-    fn guess_input_type(call_kind: CallKind, entity_type: &RustType) -> RustType {
+    /// `find_one`/`delete` just need an `id`, and `list` needs paging (plus
+    /// one field per `filters {}` entry, if any — each already validated
+    /// against `entity_type`'s own fields by the caller).
+    fn guess_input_type(
+        call_kind: CallKind,
+        entity_type: &RustType,
+        filters: &[FilterMapping],
+    ) -> RustType {
         match call_kind {
             CallKind::Create | CallKind::Update => entity_type.clone(),
             CallKind::Read | CallKind::Delete => {
@@ -64,10 +74,8 @@ impl CodeGen {
                     }],
                 )
             }
-            CallKind::List => RustType::generic(
-                "GuessedListInput",
-                vec![],
-                vec![
+            CallKind::List => {
+                let mut fields = vec![
                     RustField {
                         name: "limit".to_string(),
                         field_type: RustType::primitive("i64"),
@@ -76,8 +84,23 @@ impl CodeGen {
                         name: "offset".to_string(),
                         field_type: RustType::primitive("i64"),
                     },
-                ],
-            ),
+                ];
+                for filter in filters {
+                    // `filter.field` is guaranteed present on `entity_type`
+                    // by the validation in `resolve_use_case_shape`.
+                    let field_type = entity_type
+                        .fields
+                        .iter()
+                        .find(|f| f.name == filter.field)
+                        .map(|f| f.field_type.clone())
+                        .unwrap_or_else(|| RustType::primitive("String"));
+                    fields.push(RustField {
+                        name: filter.input_field.clone(),
+                        field_type,
+                    });
+                }
+                RustType::generic("GuessedListInput", vec![], fields)
+            }
         }
     }
 
@@ -115,6 +138,27 @@ impl CodeGen {
             let entity_type = self.resolve_named_type(context, entity)?;
             let call_kind = CallKind::from_method(&call.method)
                 .map_err(|e| format!("UseCase '{}': {}", use_case.name, e))?;
+
+            // The shared `Storage<T, E>` trait (in the external `common`
+            // crate) defines find_one/update_one/delete in terms of a
+            // fixed `EntityId` — concretely `i64`, not a type parameter
+            // tied to whatever the entity's own `id` field declares. An
+            // entity with e.g. `id: Uuid` parses and generates fine here,
+            // but the generated project then fails to compile the moment
+            // this call passes `input.id` to it — a confusing mismatch
+            // that only surfaces once someone builds the generated crate
+            // against the real `common` checkout. Catch it here instead,
+            // with a message that says why. See doc/limitations.md.
+            if matches!(call_kind, CallKind::Read | CallKind::Update | CallKind::Delete)
+                && let Some(id_field) = entity_type.fields.iter().find(|f| f.name == "id")
+                && id_field.field_type.name != "i64"
+            {
+                return Err(format!(
+                    "UseCase '{}': call '{}.{}' requires entity '{}''s 'id' field to be 'Int' — the underlying Storage trait's EntityId is always i64, so 'id: {}' will fail to compile the generated project",
+                    use_case.name, call.target, call.method, entity_type.name, id_field.field_type.name
+                ));
+            }
+
             let storage_trait = format!("{}Storage", entity_type.name);
             // `grpc_client` infras back the same `{Entity}Storage` trait
             // as `psql`, but under their own error type (see
@@ -158,6 +202,23 @@ impl CodeGen {
         let primary_entity = resolved_calls.last().unwrap().entity_type.clone();
         let primary_call_kind = resolved_calls.last().unwrap().call_kind;
 
+        if !use_case.filters.is_empty() {
+            if primary_call_kind != CallKind::List {
+                return Err(format!(
+                    "UseCase '{}': 'filters' is only valid when the primary call is 'list'",
+                    use_case.name
+                ));
+            }
+            for filter in &use_case.filters {
+                if !primary_entity.fields.iter().any(|f| f.name == filter.field) {
+                    return Err(format!(
+                        "UseCase '{}': 'filters' references unknown field '{}' on entity '{}'",
+                        use_case.name, filter.field, primary_entity.name
+                    ));
+                }
+            }
+        }
+
         let (input_type, copy_id) = match &use_case.input {
             Some(input) => {
                 let input_type = self.resolve_named_type(context, input)?;
@@ -171,6 +232,18 @@ impl CodeGen {
                         }
                     }
                 }
+                for filter in &use_case.filters {
+                    if !input_type
+                        .fields
+                        .iter()
+                        .any(|f| f.name == filter.input_field)
+                    {
+                        return Err(format!(
+                            "UseCase '{}': 'filters' references 'input.{}', but input '{}' has no such field",
+                            use_case.name, filter.input_field, input_type.name
+                        ));
+                    }
+                }
                 (input_type, false)
             }
             None => {
@@ -180,7 +253,8 @@ impl CodeGen {
                         use_case.name
                     ));
                 }
-                let guessed = Self::guess_input_type(primary_call_kind, &primary_entity);
+                let guessed =
+                    Self::guess_input_type(primary_call_kind, &primary_entity, &use_case.filters);
                 let copy_id = matches!(primary_call_kind, CallKind::Create | CallKind::Update);
                 (guessed, copy_id)
             }
@@ -200,6 +274,7 @@ impl CodeGen {
             input_type,
             calls: resolved_calls,
             copy_id,
+            filters: use_case.filters.clone(),
         }))
     }
 
@@ -236,6 +311,27 @@ impl CodeGen {
                     output_type_name: output_type.name.clone(),
                     output_entity: output_type.name.clone(),
                     output_fields: Self::field_docs(&output_type.fields),
+                    output_is_list: false,
+                    output_wrapper_field: None,
+                },
+            );
+            return Ok(());
+        }
+
+        if let Some(blob) = &use_case.blob {
+            let operation = BlobOperation::from_operation(&blob.operation)
+                .map_err(|e| format!("UseCase '{}': {}", use_case.name, e))?;
+            let field_docs = |fields: Vec<(&str, &str)>| {
+                fields.into_iter().map(|(n, t)| (n.to_string(), t.to_string())).collect()
+            };
+            context.register_use_case_io(
+                use_case.name.clone(),
+                UseCaseIo {
+                    input_type_name: format!("{}Input", use_case.name),
+                    input_fields: field_docs(BlobOperation::input_fields()),
+                    output_type_name: format!("{}Output", use_case.name),
+                    output_entity: use_case.name.clone(),
+                    output_fields: field_docs(operation.output_fields()),
                     output_is_list: false,
                     output_wrapper_field: None,
                 },
@@ -374,6 +470,53 @@ impl CodeGen {
         Ok(())
     }
 
+    /// `blob:` binds a use case straight to one `s3 {}` infra operation —
+    /// no CRUD `call:` chain, no `errors {}` customization (same precedent
+    /// `ai {}` sets: a fixed `{NotFound, StorageError}` enum, see
+    /// `BlobUseCaseFile`'s doc comment). Input/output are always the fixed
+    /// synthetic shape `BlobOperation` defines, so — unlike CRUD, where an
+    /// explicit `input`/`output` narrows an otherwise-guessed shape — a
+    /// `blob {}` use case declaring its own is a hard error, since there's
+    /// nothing for it to override.
+    fn generate_blob_use_case(
+        &mut self,
+        context: &mut CodeGenContext,
+        use_case: &UseCaseService,
+        blob: &BlobCall,
+        folder: PathBuf,
+    ) -> Result<(), String> {
+        if use_case.input.is_some() || use_case.output.is_some() {
+            return Err(format!(
+                "UseCase '{}': 'blob' use cases have a fixed input/output shape and cannot declare their own",
+                use_case.name
+            ));
+        }
+
+        let operation = BlobOperation::from_operation(&blob.operation)
+            .map_err(|e| format!("UseCase '{}': {}", use_case.name, e))?;
+
+        if !context.is_blob_infra(&blob.target) {
+            return Err(format!(
+                "UseCase '{}': 'blob' references '{}', which isn't an s3 {{}} infra",
+                use_case.name, blob.target
+            ));
+        }
+        let entity = context.find_blob_infra_entity(&blob.target).ok_or_else(|| {
+            format!("UseCase '{}': 'blob' references unknown infra '{}'", use_case.name, blob.target)
+        })?;
+        let entity_type = self.resolve_named_type(context, entity)?;
+        let storage_type = format!("S3{}Storage", entity_type.name);
+        let infra_field = blob.target.to_snake_case();
+
+        context.require_git_dependency("common", "ssh://git@github.com/BH-World/common.git");
+        context.require_version_dependency_with_features("serde", "1", vec!["derive"]);
+
+        let mut file = BlobUseCaseFile::new(use_case.name.clone(), operation, infra_field, storage_type, folder)?;
+        file.write()?;
+        context.register_use_case_module(use_case.name.to_snake_case());
+        Ok(())
+    }
+
     pub(super) fn generate_use_case(
         &mut self,
         context: &mut CodeGenContext,
@@ -383,6 +526,9 @@ impl CodeGen {
     ) -> Result<(), String> {
         if let Some(ai) = use_case.ai.clone() {
             return self.generate_ai_use_case(context, &use_case, &ai, folder, ai_config);
+        }
+        if let Some(blob) = use_case.blob.clone() {
+            return self.generate_blob_use_case(context, &use_case, &blob, folder);
         }
 
         match self.resolve_use_case_shape(context, &use_case)? {
@@ -403,6 +549,7 @@ impl CodeGen {
                     shape.input_type,
                     shape.calls,
                     shape.copy_id,
+                    shape.filters,
                     folder,
                 )?;
 

@@ -1,4 +1,5 @@
 pub mod ai_use_case_file;
+pub mod blob_use_case_file;
 pub mod grpc_adapter_file;
 pub mod grpc_client_storage_file;
 pub mod http_adapter_file;
@@ -6,4 +7,5 @@ pub mod load_balancer_file;
 pub mod main_file;
 pub mod mod_file;
 pub mod psql_storage_file;
+pub mod s3_storage_file;
 pub mod use_case_file;

@@ -79,6 +79,18 @@ mod tests {
     }
 
     #[test]
+    fn proto_scalar_type_rejects_float_and_decimal() {
+        // Float/Decimal are HTTP+psql only for now, same gap as Uuid — this
+        // pins it as deliberate rather than an oversight if gRPC support is
+        // ever added for either.
+        let err = proto_scalar_type("f64").unwrap_err();
+        assert!(err.contains("f64"));
+
+        let err = proto_scalar_type("Decimal").unwrap_err();
+        assert!(err.contains("Decimal"));
+    }
+
+    #[test]
     fn render_message_produces_one_numbered_field_per_entry() {
         let fields = vec![
             ("id".to_string(), "String".to_string()),

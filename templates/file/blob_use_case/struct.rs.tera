@@ -1,0 +1,10 @@
+#[derive(Clone)]
+pub struct {{ name }} {
+    {{ field }}: {{ storage_type }},
+}
+
+impl {{ name }} {
+    pub fn new({{ field }}: {{ storage_type }}) -> Self {
+        Self { {{ field }} }
+    }
+}

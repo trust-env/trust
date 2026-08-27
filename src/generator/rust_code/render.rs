@@ -190,6 +190,26 @@ static TEMPLATES: LazyLock<RwLock<Tera>> = LazyLock::new(|| {
             "file/grpc_client_storage/unsupported_method.rs.tera",
             include_str!("../../../templates/file/grpc_client_storage/unsupported_method.rs.tera"),
         ),
+        (
+            "file/s3_storage/storage.rs.tera",
+            include_str!("../../../templates/file/s3_storage/storage.rs.tera"),
+        ),
+        (
+            "file/main/s3_infra.rs.tera",
+            include_str!("../../../templates/file/main/s3_infra.rs.tera"),
+        ),
+        (
+            "file/blob_use_case/output_struct.rs.tera",
+            include_str!("../../../templates/file/blob_use_case/output_struct.rs.tera"),
+        ),
+        (
+            "file/blob_use_case/struct.rs.tera",
+            include_str!("../../../templates/file/blob_use_case/struct.rs.tera"),
+        ),
+        (
+            "file/blob_use_case/impl.rs.tera",
+            include_str!("../../../templates/file/blob_use_case/impl.rs.tera"),
+        ),
     ])
     .expect("all bundled templates should be valid Tera syntax");
     RwLock::new(tera)
@@ -299,5 +319,10 @@ mod tests {
         assert!(names.contains(&"file/grpc_client_storage/client.rs.tera"));
         assert!(names.contains(&"file/grpc_client_storage/find_one_method.rs.tera"));
         assert!(names.contains(&"file/grpc_client_storage/unsupported_method.rs.tera"));
+        assert!(names.contains(&"file/s3_storage/storage.rs.tera"));
+        assert!(names.contains(&"file/main/s3_infra.rs.tera"));
+        assert!(names.contains(&"file/blob_use_case/output_struct.rs.tera"));
+        assert!(names.contains(&"file/blob_use_case/struct.rs.tera"));
+        assert!(names.contains(&"file/blob_use_case/impl.rs.tera"));
     }
 }

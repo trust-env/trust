@@ -93,6 +93,27 @@ with the `serde` feature).
 ### `Int`
 Built-in integer type → Rust `i64` (always 64-bit, never `i32`).
 
+### `Float`
+Built-in floating-point type → Rust `f64`. No extra dependency, no extra
+`sqlx` feature — Postgres `DOUBLE PRECISION`/`REAL` map to `f64` natively.
+**HTTP/`psql` only** — same gRPC gap as `Uuid` (see [`rpc`](#rpc) below):
+using a `Float` field on a gRPC-exposed type is a generation-time error.
+
+### `Decimal`
+Built-in fixed-point type → Rust `Decimal` (from the `rust_decimal` crate,
+added automatically with the `serde-str` feature). Use this instead of
+`Float` for anything money-shaped — `f64` has real rounding drift that's a
+known source of billing bugs; `Decimal` doesn't.
+
+- **Serializes as a JSON string, not a number** (`"amount": "19.99"`, not
+  `"amount": 19.99`) — a deliberate choice (`serde-str`) so precision never
+  gets silently lost round-tripping through a JS/JSON client's float type.
+- If the type is also used as a storage `entity:`, the crate's `sqlx`
+  dependency additionally gets the `rust_decimal` feature (same pattern as
+  `Uuid`'s `uuid` feature), mapping to Postgres `NUMERIC`.
+- **HTTP/`psql` only**, same gRPC gap as `Uuid`/`Float` — see
+  [`rpc`](#rpc) below.
+
 ### `Regex`
 Regex-annotated type form (`Regex<pattern>`).
 
@@ -110,9 +131,13 @@ note the pattern itself must be a single alphanumeric/`_` word — real regex
 metacharacters (e.g. a literal `-`) break lexing.
 
 ### `entity`
-Specifies the entity type for storage infra. The entity name (snake_cased,
-pluralized with a trailing `s`) becomes both the SQL table name (`psql`) and
-the output struct's collection field name for list-shaped results.
+Specifies the entity type for storage infra. For `psql`/`grpc_client`, the
+entity name (snake_cased, pluralized with a trailing `s`) becomes both the
+SQL table name (`psql`) and the output struct's collection field name for
+list-shaped results. For [`s3`](#s3), `entity:` is metadata-only — it names
+the generated storage struct (`S3{Entity}Storage`) but has no table/list
+semantics, since blob operations always take a fixed `{ key: String }`
+shape (see [`blob`](#blob)) rather than an entity-driven one.
 
 ## Infrastructure Keywords
 
@@ -187,6 +212,54 @@ infra RemoteTaskInfra {
 }
 ```
 
+### `s3`
+Object-storage backend (MinIO, or any other S3-compatible service) for blob
+data — photos, videos, arbitrary files.
+
+```tr
+infra MediaInfra {
+    storage {
+        s3 {
+            bucket: "media"
+            entity: MediaObject
+        }
+    }
+}
+```
+
+**Does not implement the `Storage<T, E>` trait** `psql`/`grpc_client` share —
+objects aren't rows. A `use_case` binds to it with [`blob`](#blob), not
+`call`. `entity:` is **metadata only** today (e.g. `key`, `content_type`) —
+the object's bytes never pass through a Trust-generated struct; nothing in
+the entity's own fields is read or validated by the generated storage code
+in this iteration. No shorthand form, same as `grpc_client`.
+
+`bucket` is a plain string literal — it's not a secret, so it's fine in
+source. Endpoint, access key, and secret key are **never** written in `.tr`
+source at all (not even as `${VAR}` — there's no field for them in the DSL).
+They're always read from three env vars derived from the infra name at
+runtime, the same "credentials are environment-only" precedent `psql`'s
+connection string already sets:
+
+| Env var | Purpose |
+|---|---|
+| `<INFRA_NAME>_S3_ENDPOINT` | e.g. `http://localhost:9000` for local MinIO |
+| `<INFRA_NAME>_S3_ACCESS_KEY` | — |
+| `<INFRA_NAME>_S3_SECRET_KEY` | — |
+
+In `--dev` mode these are scaffolded into `.env` with local-MinIO-friendly
+defaults (`http://localhost:9000` / `minioadmin` / `minioadmin`) — see
+[cli.md](cli.md#dev-mode---dev).
+
+See [conversions.md §3b](conversions.md#3b-storage-trait-shape-s3) for the
+exact generated shape, and [limitations.md](limitations.md) for what's not
+supported yet (gRPC exposure, non-fixed input/output, `errors {}`
+customization, operations beyond the three below).
+
+### `bucket`
+Inside `s3`, the literal bucket name (a plain string, not env-driven —
+see [`s3`](#s3) above for why this differs from endpoint/credentials).
+
 ## Use Case Keywords
 
 ### `use_case`
@@ -238,6 +311,47 @@ use_case ArchiveTaskUseCase {
 See [conversions.md](conversions.md#5-use_case-multi-call-semantics) for the
 full breakdown.
 
+### `filters`
+Scopes a `list`-bound primary `call:`'s results by one or more equality
+predicates, each comparing a storage field against one of the use case's
+own input fields.
+
+```tr
+use_case ListRatingsForSpotUseCase {
+    call: RatingInfra.list
+    filters {
+        spot_id: input.spot_id
+    }
+}
+```
+
+- Only valid when the **primary** (last) `call:` is bound to `list` — a
+  hard codegen error otherwise (`'filters' is only valid when the primary
+  call is 'list'`).
+- The left-hand side (`spot_id`) must be a field on the primary call's
+  entity — checked at codegen (`'filters' references unknown field '...'
+  on entity '...'`).
+- The right-hand side must be exactly `input.<field>` — no other
+  expression form is accepted (no literals, no operators beyond implied
+  equality). If you don't declare an explicit `input`, the referenced
+  field is **added automatically** to the guessed list input (alongside
+  `limit`/`offset`), with the same type as the matching entity field. If
+  you do declare an explicit `input`, it must already have a field with
+  that name, or it's a codegen error.
+- Every `filters {}` entry becomes exactly one **equality** predicate
+  (`StoragePredicateOperator::Eq`) in the generated `StorageListQuery` —
+  there's no way to express `>`/`<`/`LIKE`/etc. today.
+- A route's `:name` path parameter reaches a filtered field exactly the
+  way it reaches any other input field — by name match against the
+  guessed/declared input (see [conversions.md §6](conversions.md#6-http-path-parameter-conversion)).
+  No extra wiring is needed: `GET "/spots/:spot_id/ratings"` on a use case
+  filtering by `spot_id` "just works".
+- Mutually exclusive with `ai`/`blob` (which don't have a `list`-shaped
+  `call:` to scope in the first place).
+
+See [conversions.md §5c](conversions.md#5c-filters-and-storagelistquery-predicates)
+for the exact generated shape.
+
 ### `errors`
 Maps infra/storage errors into use case errors.
 
@@ -269,8 +383,9 @@ Notes:
 
 ### `ai`
 Switches use case implementation to AI-authored function body generation.
-Mutually exclusive with `call` — a use case declaring both is a hard error
-(`cannot declare both 'call' and 'ai' — they're mutually exclusive`).
+Mutually exclusive with `call` and `blob` — a use case declaring more than
+one is a hard error (`cannot declare more than one of 'call', 'ai', 'blob'
+— they're mutually exclusive`).
 
 ### `prompt`
 Prompt text used by `ai` generation.
@@ -305,6 +420,42 @@ extra runtime dependency and never talks to any AI provider at runtime. An
 AI use case's error enum is always exactly `{Name}Error::{NotFound,
 StorageError(String)}` — `errors {}` customization isn't available for `ai`
 use cases.
+
+### `blob`
+Binds a use case directly to one [`s3`](#s3) infra operation. Mutually
+exclusive with `call` and `ai`.
+
+```tr
+use_case RequestUploadUrlUseCase {
+    blob: MediaInfra.presigned_put_url
+}
+```
+
+- `Target` must name an `s3 {}` infra (not `psql`/`grpc_client`) — a hard
+  codegen error otherwise (`'blob' references '...', which isn't an s3 {}
+  infra`).
+- `operation` is one of exactly three values, validated at codegen time (not
+  parse time — same pattern as `grpc_client`'s `methods {}` mapping names):
+  `presigned_put_url`, `presigned_get_url`, `delete`. Anything else is a
+  clear error (`Unsupported blob operation '...'`).
+- **Input/output are always a fixed, non-overridable shape** — there's no
+  entity-driven guessing the way CRUD `call:` has. Every operation takes
+  `{ key: String }`; `presigned_put_url`/`presigned_get_url` return
+  `{ url: String }`, `delete` echoes `{ key: String }` back. Declaring an
+  explicit `input`/`output` on a `blob {}` use case is a hard error
+  (`'blob' use cases have a fixed input/output shape and cannot declare
+  their own`) — unlike a route/`rpc`'s `input`/`output`, there's nothing
+  here for one to narrow or cross-check.
+- Same fixed error enum as `ai {}`: `{Name}Error::{NotFound,
+  StorageError(String)}`, no `errors {}` customization. `NotFound` is never
+  actually constructed by a blob operation today — it stays part of the
+  shape purely so the adapter's status-mapping match stays exhaustive
+  regardless of use case kind.
+- The generated use case struct holds a **concrete** `S3{Entity}Storage`
+  field, not a generic `S0: Storage<T, E>` bound the way CRUD use cases
+  do — blob storage doesn't implement that trait. This is transparent to
+  routing: the HTTP/gRPC adapter's own genericity (`{Name}Trait`) still
+  applies the same way regardless.
 
 ## Adapter Keywords
 
@@ -426,10 +577,10 @@ adapter InternalGrpcApi {
 
 > **Field type limitation, not currently in limitations.md at HTTP-parity
 > visibility:** gRPC message fields only support `String` and `Int` (`i64`).
-> `Uuid`, list-shaped (`Vec<...>`) outputs, and nested struct fields are a
-> **generation-time error** ("gRPC doesn't support field type '...' yet —
-> only String and Int fields are supported"). Design gRPC-exposed types with
-> flat `String`/`Int` fields only.
+> `Uuid`, `Float`, `Decimal`, list-shaped (`Vec<...>`) outputs, and nested
+> struct fields are a **generation-time error** ("gRPC doesn't support field
+> type '...' yet — only String and Int fields are supported"). Design
+> gRPC-exposed types with flat `String`/`Int` fields only.
 
 Error mapping for `rpc` is **not customizable** — the generated match always
 maps your error enum's `NotFound` variant to `Status::not_found(...)` and

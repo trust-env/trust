@@ -4,7 +4,7 @@
 
 What it does:
 - Defines domain entities, request, and response shapes.
-- Supports built-in scalar types (`String`, `Uuid`, `Int`, `Regex<pattern>`) and user-defined types.
+- Supports built-in scalar types (`String`, `Uuid`, `Int`, `Float`, `Decimal`, `Regex<pattern>`) and user-defined types.
 
 How to use:
 - Create struct types with fields.
@@ -12,9 +12,11 @@ How to use:
 - Use `export` on types you plan to import from other `.tr` files.
 
 Conversions: see [conversions.md §1](conversions.md#1-scalar-type-mapping) —
-notably, `Int` becomes `i64` (not `i32`), and `Regex<pattern>` becomes a
-plain `String` with the pattern discarded (no runtime validation is
-generated).
+notably, `Int` becomes `i64` (not `i32`), `Float` becomes `f64`, `Decimal`
+becomes `rust_decimal::Decimal` (serialized as a JSON string, never a float,
+so money-shaped fields don't drift), and `Regex<pattern>` becomes a plain
+`String` with the pattern discarded (no runtime validation is generated).
+`Float`/`Decimal` are HTTP/`psql` only — not usable on a gRPC-exposed type.
 
 ## 2. Import and Reuse
 
@@ -56,11 +58,30 @@ How to use:
   generation time.
 - Set the static target address with `on`.
 
+### Object Storage (`s3`)
+What it does:
+- Backs blob data (photos, videos, arbitrary files) via MinIO or any other
+  S3-compatible service, generating presigned upload/download URLs so a
+  client uploads/downloads directly — the generated backend never proxies
+  the actual file bytes.
+
+How to use:
+- Declare `infra` with `storage { s3 { bucket: "..." entity: YourEntity } }`
+  — `entity:` is metadata-only (see [conversions.md §3b](conversions.md#3b-storage-trait-shape-s3)).
+  No shorthand form.
+- Bind a use case to it with `blob: YourInfra.presigned_put_url` (or
+  `presigned_get_url`/`delete`) instead of `call:` — see [Blob Use Cases](#12-blob-use-cases) below.
+- Endpoint/access key/secret key are never in `.tr` source — always three
+  env vars derived from the infra name (`<INFRA>_S3_ENDPOINT`/
+  `_S3_ACCESS_KEY`/`_S3_SECRET_KEY`), scaffolded with local-MinIO defaults
+  in `--dev` mode.
+
 ## 4. Use Cases
 
 What it does:
-- Defines application behavior and error mapping, either deterministically
-  (`call`) or via AI-authored code (`ai`).
+- Defines application behavior and error mapping: deterministically
+  (`call`), via AI-authored code (`ai`), or bound to one blob-storage
+  operation (`blob`).
 
 How to use:
 - Deterministic mode: one or more `call` entries. Multiple `call`s run in
@@ -69,6 +90,10 @@ How to use:
 - AI mode: one `ai` block with `prompt`, optionally with `infra:` for
   storage access. Mutually exclusive with `call`.
 - Optionally provide explicit `input` and `output` types.
+- A `list`-bound `call:` can be narrowed with `filters { field: input.field
+  ... }` — equality-only predicates that make "list X where field = Y"
+  routes possible (e.g. `GET /spots/:spot_id/ratings`). See
+  [conversions.md §5c](conversions.md#5c-filters-and-storagelistquery-predicates).
 
 ## 5. HTTP Adapter
 
@@ -98,8 +123,9 @@ How to use:
 
 Limitations (real, not currently in `limitations.md` at equal visibility to
 the `grpc_client` one):
-- Message fields only support `String` and `Int` — `Uuid`, list-shaped
-  outputs, and nested struct fields are a generation-time error.
+- Message fields only support `String` and `Int` — `Uuid`, `Float`,
+  `Decimal`, list-shaped outputs, and nested struct fields are a
+  generation-time error.
 - Error mapping is entirely hardcoded (`NotFound` → `Status::not_found`,
   everything else → `Status::internal`); there is no `status {}` equivalent
   for `rpc`.
@@ -171,7 +197,22 @@ CLI-related flags (full detail in [cli.md](cli.md)):
 - `--ai-model=...` (default `claude-sonnet-4-5`)
 - `--ai-base-url=...` (default `https://api.anthropic.com`)
 
-## 11. Plugin Extensibility
+## 11. Blob Use Cases
+
+What it does:
+- Binds a use case straight to one `s3 {}` infra operation
+  (`presigned_put_url`/`presigned_get_url`/`delete`) instead of a CRUD
+  `call:` chain — the mechanism behind generating direct-to-bucket upload
+  and download URLs.
+
+How to use:
+- Add `blob: YourS3Infra.presigned_put_url` (or `presigned_get_url`/
+  `delete`) in a use case. Mutually exclusive with `call` and `ai`.
+- Don't declare `input`/`output` — the shape is always fixed (`{ key:
+  String }` in, `{ url: String }` or `{ key: String }` out depending on
+  operation). See [conversions.md §5b](conversions.md#5b-blob-use-case-semantics).
+
+## 12. Plugin Extensibility
 
 What it does:
 - Dynamically loads compiler plugins (`.so`/`cdylib`) over a stable C-ABI +
@@ -189,7 +230,7 @@ currently introduce a new field/expression *type* usable elsewhere in the
 language, and there's no plugin registry — every invocation must pass
 `--plugin=` explicitly.
 
-## 12. Dev Mode Artifacts
+## 13. Dev Mode Artifacts
 
 What it does:
 - Adds a live `GET /app` HTML docs route to every HTTP adapter (method,
@@ -201,7 +242,7 @@ What it does:
 How to use:
 - Run with `--dev`. Full defaulting rules: [cli.md](cli.md#dev-mode---dev).
 
-## 13. Scenarios and E2E Workflows
+## 14. Scenarios and E2E Workflows
 
 What it does:
 - Demonstrates complete, live-executed workflows (not just compile checks):

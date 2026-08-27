@@ -1,0 +1,8 @@
+impl UseCase<{{ input }}, {{ output }}, {{ error }}> for {{ name }} {
+    async fn execute(&self, _user: i64, input: {{ input }}) -> Result<{{ output }}, {{ error }}> {
+{{ body }}
+    }
+}
+
+impl {{ trait_name }} for {{ name }} {
+}

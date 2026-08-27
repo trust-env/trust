@@ -1,0 +1,4 @@
+    let {{ entity_var }}_s3_endpoint = std::env::var({{ endpoint_var_literal }}).expect("{{ endpoint_var }} environment variable not set");
+    let {{ entity_var }}_s3_access_key = std::env::var({{ access_key_var_literal }}).expect("{{ access_key_var }} environment variable not set");
+    let {{ entity_var }}_s3_secret_key = std::env::var({{ secret_key_var_literal }}).expect("{{ secret_key_var }} environment variable not set");
+    let {{ entity_var }}_storage = S3{{ entity }}Storage::new({{ entity_var }}_s3_endpoint, {{ entity_var }}_s3_access_key, {{ entity_var }}_s3_secret_key, {{ bucket_literal }})?;

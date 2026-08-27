@@ -8,6 +8,8 @@ pub enum Keyword {
     String,
     Uuid,
     Int,
+    Float,
+    Decimal,
     Regex,
     Type,
     Entity,
@@ -36,6 +38,10 @@ pub enum Keyword {
     GrpcClient,
     Service,
     Methods,
+    S3,
+    Bucket,
+    Blob,
+    Filters,
 }
 
 impl TryFrom<String> for Keyword {
@@ -52,6 +58,8 @@ impl TryFrom<String> for Keyword {
             "String" => Ok(Keyword::String),
             "Uuid" => Ok(Keyword::Uuid),
             "Int" => Ok(Keyword::Int),
+            "Float" => Ok(Keyword::Float),
+            "Decimal" => Ok(Keyword::Decimal),
             "Regex" => Ok(Keyword::Regex),
             "entity" => Ok(Keyword::Entity),
             "export" => Ok(Keyword::Export),
@@ -79,6 +87,10 @@ impl TryFrom<String> for Keyword {
             "grpc_client" => Ok(Keyword::GrpcClient),
             "service" => Ok(Keyword::Service),
             "methods" => Ok(Keyword::Methods),
+            "s3" => Ok(Keyword::S3),
+            "bucket" => Ok(Keyword::Bucket),
+            "blob" => Ok(Keyword::Blob),
+            "filters" => Ok(Keyword::Filters),
             _ => Err(format!("Unknown keyword: {}", s)),
         }
     }
@@ -96,6 +108,8 @@ impl ToString for Keyword {
             Keyword::String => "String".to_string(),
             Keyword::Uuid => "Uuid".to_string(),
             Keyword::Int => "Int".to_string(),
+            Keyword::Float => "Float".to_string(),
+            Keyword::Decimal => "Decimal".to_string(),
             Keyword::Regex => "Regex".to_string(),
             Keyword::Entity => "entity".to_string(),
             Keyword::Export => "export".to_string(),
@@ -123,6 +137,10 @@ impl ToString for Keyword {
             Keyword::GrpcClient => "grpc_client".to_string(),
             Keyword::Service => "service".to_string(),
             Keyword::Methods => "methods".to_string(),
+            Keyword::S3 => "s3".to_string(),
+            Keyword::Bucket => "bucket".to_string(),
+            Keyword::Blob => "blob".to_string(),
+            Keyword::Filters => "filters".to_string(),
         }
     }
 }

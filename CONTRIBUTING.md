@@ -64,7 +64,7 @@ For most changes:
 
 The e2e tests generate real Rust crates and build them with Cargo.
 
-All required crates.io dependencies (`axum`, `sqlx`, `tokio`, `tonic`, etc.) are expected to already exist in your local Cargo registry. Running `cargo build` once in this repository is usually sufficient.
+All required crates.io dependencies (`axum`, `sqlx`, `tokio`, `tonic`, `rust_decimal`, `rust-s3`, etc.) are expected to already exist in your local Cargo registry. Running `cargo build` once in this repository is usually sufficient — except `rust_decimal` and `rust-s3`, which the compiler itself doesn't depend on (only generated projects do), so a fixture using `Decimal` or `s3 {}` storage needs one online `cargo build`/`cargo fetch` against a generated project first to seed it into the offline e2e registry cache.
 
 ### Private repositories
 
@@ -97,6 +97,16 @@ docker run --rm -d \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=trust_e2e \
   postgres:16
+```
+
+Likewise, the current `s3 {}` storage tests (`tests/generator_s3_storage.rs`) only check generated source text, not a live bucket. A future fixture that actually exercises `presigned_put_url`/`presigned_get_url`/`delete` against a real backend can start a disposable MinIO instance:
+
+```bash
+docker run --rm -d \
+  -p 9000:9000 \
+  -e MINIO_ROOT_USER=minioadmin \
+  -e MINIO_ROOT_PASSWORD=minioadmin \
+  minio/minio server /data
 ```
 
 Prefer a non-default port if you already have PostgreSQL running locally, and avoid pointing tests at a long-lived development database.

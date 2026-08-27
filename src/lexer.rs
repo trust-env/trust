@@ -222,6 +222,8 @@ mod tests {
             ("String", Keyword::String),
             ("Uuid", Keyword::Uuid),
             ("Int", Keyword::Int),
+            ("Float", Keyword::Float),
+            ("Decimal", Keyword::Decimal),
             ("Regex", Keyword::Regex),
             ("type", Keyword::Type),
             ("entity", Keyword::Entity),
@@ -250,6 +252,10 @@ mod tests {
             ("grpc_client", Keyword::GrpcClient),
             ("service", Keyword::Service),
             ("methods", Keyword::Methods),
+            ("s3", Keyword::S3),
+            ("bucket", Keyword::Bucket),
+            ("blob", Keyword::Blob),
+            ("filters", Keyword::Filters),
         ];
         for (src, expected) in cases {
             let tokens = lex(src).unwrap();
