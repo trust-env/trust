@@ -1,11 +1,45 @@
-use std::{fs::create_dir_all, path::PathBuf};
+use std::{
+    fs::create_dir_all,
+    path::{Path, PathBuf},
+};
 
 use crate::{
-    generator::{CodeGen, CodeGenContext, rust_code::file::psql_storage_file::PsqlStorageFile},
+    generator::{
+        CodeGen, CodeGenContext,
+        rust_code::{file::psql_storage_file::PsqlStorageFile, migration},
+    },
     parser::{AllowedType, PsqlInfraService},
 };
 
 impl CodeGen {
+    /// Writes `migrations/<table>.sql` (and `<table>.seed.sql`, copied from
+    /// the infra's `seed:` path, resolved against the working directory
+    /// like every other `.tr` path) into the generated crate.
+    fn write_migrations(
+        entity: &crate::generator::rust_code::types::RustType,
+        seed: Option<&str>,
+        crate_root: &Path,
+    ) -> Result<(), String> {
+        let dir = crate_root.join("migrations");
+        create_dir_all(&dir).map_err(|e| format!("Failed to create migrations folder: {}", e))?;
+        std::fs::write(
+            dir.join(migration::migration_file_name(&entity.name)),
+            migration::render_create_table(entity)?,
+        )
+        .map_err(|e| format!("Failed to write migration for '{}': {}", entity.name, e))?;
+        if let Some(seed) = seed {
+            let content = std::fs::read_to_string(seed).map_err(|e| {
+                format!(
+                    "Failed to read seed file '{}' for entity '{}': {}",
+                    seed, entity.name, e
+                )
+            })?;
+            std::fs::write(dir.join(migration::seed_file_name(&entity.name)), content)
+                .map_err(|e| format!("Failed to write seed for '{}': {}", entity.name, e))?;
+        }
+        Ok(())
+    }
+
     fn entity_storage_file_path(&self, psql: &PsqlInfraService, folder: &PathBuf) -> PathBuf {
         folder
             .join("psql")
@@ -17,6 +51,7 @@ impl CodeGen {
         context: &mut CodeGenContext,
         psql: PsqlInfraService,
         folder: PathBuf,
+        crate_root: &Path,
     ) -> Result<(), String> {
         let psql_folder_path = folder.join("psql");
 
@@ -31,6 +66,7 @@ impl CodeGen {
                     let mut file = PsqlStorageFile::new(rust_type.clone(), folder.clone())?;
 
                     file.write()?;
+                    Self::write_migrations(rust_type, psql.seed.as_deref(), crate_root)?;
                     context.require_git_dependency(
                         "common",
                         "ssh://git@github.com/BH-World/common.git",

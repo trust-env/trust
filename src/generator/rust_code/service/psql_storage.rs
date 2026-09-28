@@ -1,4 +1,3 @@
-use heck::ToSnakeCase;
 
 use crate::generator::rust_code::{
     _trait::{Trait, TraitImpl},
@@ -43,7 +42,7 @@ impl PsqlStorageService {
     }
 
     fn table_name(&self) -> String {
-        format!("{}s", self.entity.name.to_snake_case())
+        crate::generator::rust_code::migration::table_name(&self.entity.name)
     }
 
     fn id_field(&self) -> String {

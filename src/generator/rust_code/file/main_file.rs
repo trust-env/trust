@@ -2,7 +2,9 @@ use std::{fs::File, io::Write, path::PathBuf};
 
 use heck::{ToShoutySnakeCase, ToSnakeCase};
 
-use crate::generator::rust_code::{env_template, imports::use_statement, render::render};
+use crate::generator::rust_code::{
+    env_template, imports::use_statement, migration, render::render,
+};
 use tera::Context;
 
 /// Distinguishes how `gen_infra` connects a `psql` infra (an env-var-driven
@@ -12,9 +14,22 @@ use tera::Context;
 /// `CodeGenContext::find_infra_target_address`/`is_blob_infra`, the source
 /// of truth `register_infra_binding` checks to pick a kind.
 pub enum InfraKind {
-    Psql,
-    GrpcClient { target_address: String },
-    S3 { bucket: String },
+    /// `seed`: the infra declares a `seed:` file, applied after its table.
+    Psql {
+        seed: bool,
+    },
+    GrpcClient {
+        target_address: String,
+    },
+    S3 {
+        bucket: String,
+    },
+    /// An `http_client {}` infra: `base_url` and header values are
+    /// `${VAR}` templates resolved at startup.
+    HttpClient {
+        base_url: String,
+        headers: Vec<(String, String)>,
+    },
 }
 
 pub struct InfraBinding {
@@ -39,6 +54,10 @@ pub struct AdapterBinding {
     /// one storage argument per entry, after the use case arguments, in
     /// this order (matches `HttpAdapterFile::unique_auth_bindings`).
     pub auth_infra_names: Vec<String>,
+    /// Any route declares `auth` (either form) — the JWT secret is read.
+    pub requires_jwt: bool,
+    /// The adapter's `cors:` template, scanned for `${VAR}`s in `--dev`.
+    pub cors: Option<String>,
 }
 
 pub struct GrpcAdapterBinding {
@@ -93,9 +112,21 @@ impl MainFile {
         // the other.
         let infra_var = infra.infra_name.to_snake_case();
         match &infra.kind {
-            InfraKind::Psql => {
+            InfraKind::Psql { seed } => {
                 let db_var = infra.infra_name.to_snake_case();
                 let env_var = Self::db_url_env_var(&infra.infra_name);
+
+                let mut migrations = String::new();
+                let mut files = vec![migration::migration_file_name(&infra.entity_name)];
+                if *seed {
+                    files.push(migration::seed_file_name(&infra.entity_name));
+                }
+                for file in files {
+                    let mut context = Context::new();
+                    context.insert("file", &file);
+                    context.insert("db_var", &db_var);
+                    migrations.push_str(&render("file/main/migration.rs.tera", &context));
+                }
 
                 let mut context = Context::new();
                 context.insert("db_var", &db_var);
@@ -103,6 +134,7 @@ impl MainFile {
                 context.insert("env_var", &env_var);
                 context.insert("entity_var", &infra_var);
                 context.insert("entity", &infra.entity_name);
+                context.insert("migrations", &migrations);
                 render("file/main/infra.rs.tera", &context)
             }
             InfraKind::GrpcClient { target_address } => {
@@ -126,6 +158,27 @@ impl MainFile {
                 context.insert("secret_key_var", &secret_key_var);
                 context.insert("bucket_literal", &format!("{:?}", bucket));
                 render("file/main/s3_infra.rs.tera", &context)
+            }
+            InfraKind::HttpClient { base_url, headers } => {
+                #[derive(serde::Serialize)]
+                struct HeaderView {
+                    name: String,
+                    value_expr: String,
+                }
+                let headers: Vec<HeaderView> = headers
+                    .iter()
+                    .map(|(name, value)| HeaderView {
+                        name: format!("{:?}", name),
+                        value_expr: env_template::to_rust_expr(value),
+                    })
+                    .collect();
+
+                let mut context = Context::new();
+                context.insert("var", &infra_var);
+                context.insert("name", &format!("{}Client", infra.infra_name));
+                context.insert("base_url_expr", &env_template::to_rust_expr(base_url));
+                context.insert("headers", &headers);
+                render("file/main/http_client_infra.rs.tera", &context)
             }
         }
     }
@@ -225,9 +278,10 @@ impl MainFile {
         let mut lib_items: Vec<String> = Vec::new();
         for infra in infras {
             lib_items.push(match &infra.kind {
-                InfraKind::Psql => format!("Psql{}Storage", infra.entity_name),
+                InfraKind::Psql { .. } => format!("Psql{}Storage", infra.entity_name),
                 InfraKind::GrpcClient { .. } => format!("Grpc{}Client", infra.entity_name),
                 InfraKind::S3 { .. } => format!("S3{}Storage", infra.entity_name),
+                InfraKind::HttpClient { .. } => format!("{}Client", infra.infra_name),
             });
         }
         for use_case in use_cases {

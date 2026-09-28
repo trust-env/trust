@@ -17,6 +17,9 @@ compiler if behavior seems to have changed.
 | `Int` | `i64` | Not `i32` — always 64-bit. |
 | `Float` | `f64` | No extra dependency — Postgres `DOUBLE PRECISION`/`REAL` map to `f64` natively via `sqlx`. **HTTP/`psql` only**, not usable on a gRPC-exposed type (generation-time error, same gap as `Uuid`). |
 | `Decimal` | `rust_decimal::Decimal` | Pulls in `rust_decimal = "1"` with the `serde-str` feature (JSON (de)serializes as a **string**, e.g. `"19.99"`, never a float — avoids IEEE-754 rounding drift for money). If the type is also used as a storage `entity:`, the crate's `sqlx` dependency additionally gets the `rust_decimal` feature (maps to Postgres `NUMERIC`). **HTTP/`psql` only**, same gRPC gap as `Uuid`/`Float`. |
+| `Bool` | `bool` | Postgres `BOOLEAN`. **HTTP/`psql` only.** |
+| `DateTime` | `DateTime<Utc>` | Pulls in `chrono = "0.4"` (`serde`) and `use chrono::{DateTime, Utc};`; `+chrono` feature on `sqlx` if it's an entity. Postgres `TIMESTAMPTZ`. **HTTP/`psql` only.** |
+| `Option<T>` | `Option<T>` | Nullable column; imports/dependencies follow `T`. Nested `Option<Option<T>>` is a parse error. **HTTP/`psql` only.** |
 | `Regex<pattern>` | `String` | **The pattern is discarded.** `label: Regex<slug>` and `label: String` generate byte-identical code — no runtime validator, no regex crate dependency, nothing. Treat `Regex<...>` as a documentation-only annotation today (see [limitations.md](limitations.md)). |
 | a `DefinedType` (another `type`/struct name) | the matching generated struct | Resolved against everything already registered in the compilation unit (own file + successfully imported types). Referencing a name that doesn't resolve is a **codegen-time** error ("Undefined type reference: `{name}`"), not a parse-time one — a typo'd type name will lex and parse fine and only fail when you actually compile. |
 
@@ -123,6 +126,38 @@ Presigned URLs are generated with a **fixed 900-second (15 minute) expiry**,
 not configurable from `.tr` source today. `entity:`'s own fields are never
 read here — see [`entity`](keywords.md#entity)'s doc comment.
 
+## 3c. Migrations (`psql`)
+
+Every `psql` entity gets `<crate>/migrations/<table>.sql`, applied by
+`main.rs` (`sqlx::raw_sql`) right after the infra's database connects:
+
+```sql
+CREATE TABLE IF NOT EXISTS orders (
+    id BIGSERIAL PRIMARY KEY,
+    paid BOOLEAN NOT NULL,
+    note TEXT
+);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid BOOLEAN;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS note TEXT;
+```
+
+| Field type | Column |
+|---|---|
+| `id: Int` | `BIGSERIAL PRIMARY KEY` (generated `save_one` never inserts `id`) |
+| `id: Uuid` | `UUID PRIMARY KEY DEFAULT gen_random_uuid()` |
+| `Int` / `String` / `Float` / `Decimal` / `Uuid` / `Bool` / `DateTime` | `BIGINT` / `TEXT` / `DOUBLE PRECISION` / `NUMERIC` / `UUID` / `BOOLEAN` / `TIMESTAMPTZ` |
+| `Option<T>` | `T`'s column, nullable |
+| anything else (a nested struct) | codegen error |
+
+- Columns are `NOT NULL` unless `Option`. `ADD COLUMN IF NOT EXISTS` lets a
+  field added to the entity later reach an existing table — as a
+  **nullable** column, since existing rows have no value for it. Removed
+  or retyped fields are never dropped/altered: that's a manual migration.
+- The table name comes from the same function the storage queries use
+  (snake_case + `s`), so the two can't disagree.
+- A `seed: "..."` file is copied to `migrations/<table>.seed.sql` and
+  applied right after the table migration, on every startup.
+
 ## 4. Error enum generation
 
 For every `use_case Name { ... }`, Trust generates:
@@ -181,6 +216,49 @@ isn't documented syntax sugar — it has real, specific semantics:
   the shape is fixed: `find_one`/`update_one`/`delete` expect an `id` field;
   `list` expects `limit`+`offset`; `save_one` expects plain entity data
   (no `id`).
+- In that `From<Input> for Entity` conversion, an entity field missing from
+  the input is `Default::default()` — except `DateTime` fields, which are
+  set to `chrono::Utc::now()` (so a `created_at` is server-stamped). Note
+  this also applies on `update_one`, so a `created_at` not carried by the
+  update input is refreshed.
+- With [`owner: <field>`](keywords.md#owner), the primary call is scoped to
+  the JWT user: `save_one`/`update_one` build the entity as
+  `{ let mut entity = Entity::from(input); entity.<field> = user; entity }`,
+  `list` gets a `<field> = user` predicate, `find_one` filters the found row
+  (`.filter(|entity| entity.<field> == user)` → `NotFound`), and
+  `update_one`/`delete` first run a `find_one` guard that returns
+  `NotFound` for a row owned by someone else.
+
+## 5d. `code` use cases
+
+`use_case X { code { file infra... errors {...} deps {...} } }` generates
+`applications/x.rs`:
+
+```rust
+#[allow(unused_imports)]
+use common::{Storage, StorageListQuery, StoragePredicate, StoragePredicateOperator, UseCase};
+#[allow(unused_imports)]
+use crate::*;
+
+pub enum XError { NotFound, StorageError(String), EmptyCart(String) }
+impl From<PsqlCartLineStorageError> for XError { .. }   // one per storage error type
+impl From<String> for XError { .. }                     // s3 / http_client errors
+
+pub struct X<S0> where S0: CartLineStorage {
+    pub cart_infra: S0,                 // psql / grpc_client: generic
+    pub payment_api: PaymentApiClient,  // http_client / s3: concrete
+}
+
+impl<S0> UseCase<Input, Output, XError> for X<S0> where S0: CartLineStorage {
+    async fn execute(&self, user: i64, input: Input) -> Result<Output, XError> {
+        let _ = user;
+        /* contents of `file`, indented */
+    }
+}
+```
+
+`main.rs` constructs it as `X::new(cart_infra_storage.clone(),
+payment_api_storage.clone())` — arguments in `infra:` declaration order.
 
 ## 5b. `blob` use case semantics
 
@@ -334,6 +412,11 @@ dependencies as the AST is walked — nothing is added speculatively:
 | any `grpc` adapter, or `grpc_client` storage | `tonic = "0.12"`, `prost = "0.13"` (plus `tonic-build`/`protoc-bin-vendored` as **build**-dependencies, adapter side only) |
 | `load_balancer {}` | `axum = "0.8"`, `reqwest = "0.12"` |
 | `s3` storage | `rust-s3 = "0.37"` (never `sqlx` — see [conversions.md §3b](#3b-storage-trait-shape-s3)) |
+| a type field of `Bool` | nothing |
+| a type field of `DateTime` | `chrono = "0.4"` (`serde`; `+chrono` on `sqlx` if it's an entity) |
+| an `http` adapter with `cors:` | `tower-http = "0.6"` (`cors`) |
+| an `http_client` infra | `reqwest = "0.12"` (`json` — added to an existing `reqwest` too), `serde_json = "1"` |
+| a `code {}` use case | whatever its `deps {}` lists |
 | `ai {}` | **nothing.** The Anthropic call happens once, at *compile time*, inside the `trust` binary itself. The generated project never talks to any AI provider at runtime and gets no extra dependency for it. |
 
 ## 10. Route/`rpc` `input`/`output` are a cross-check, not the source of truth

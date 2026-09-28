@@ -1,5 +1,6 @@
 pub mod ai_use_case_file;
 pub mod blob_use_case_file;
+pub mod code_use_case_file;
 pub mod grpc_adapter_file;
 pub mod grpc_client_storage_file;
 pub mod http_adapter_file;

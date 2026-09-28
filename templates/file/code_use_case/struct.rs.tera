@@ -1,0 +1,15 @@
+#[derive(Clone)]
+pub struct {{ name }}{{ generics }}
+{{ where_clause }}{
+{%- for f in fields %}
+    pub {{ f.field }}: {{ f.field_type }},
+{%- endfor %}
+}
+
+impl{{ generics }} {{ name }}{{ generics }}
+{{ where_clause }}{
+    pub fn new({{ params }}) -> Self {
+        Self { {{ ctor_fields }} }
+    }
+}
+

@@ -1,0 +1,6 @@
+        self.{{ field }}
+            .find_one(input.id)
+            .await
+            .map_err({{ error }}::from)?
+            .filter(|existing| existing.{{ owner }} == user)
+            .ok_or({{ error }}::NotFound)?;

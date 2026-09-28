@@ -141,7 +141,21 @@ Useful flags (full table in `doc/cli.md`):
   it for free via the existing name-matching, so `GET
   "/spots/:spot_id/ratings"` on a `filters { spot_id: input.spot_id }`
   use case just works with zero extra wiring.
+- `use_case Name { call: Infra.list owner: user_id }` — scopes a CRUD use
+  case to the JWT user (stamp on save, filter on list, `NotFound` for
+  others' rows on find/update/delete). Routes exposing it need `auth`.
+- `filters { visibility: "public" }` — literal filters (no input field).
+- `use_case Name { input output code { file: "./logic/x.rs" infra: A infra: B errors { E } deps { hex: "0.4" } } }`
+  — hand-written `execute` body (`user`, `input`, `self.a`, `self.b` in scope).
+  `input: RawRequest` (built-in) gives raw body + headers (webhooks).
+- `infra Name { http_client { base_url: "${URL}" headers { "X-Key": "${KEY}" } } }`
+  — outbound JSON client (`get_json`/`post_json`/...), for `code` use cases.
+- Types also include `Bool`, `DateTime`, `Option<T>`.
+- `psql { entity: T seed: "./seed/t.sql" }` — tables are auto-created at
+  startup from generated `migrations/`; seeds re-run every boot (idempotent).
 - `adapter Name { http { on routes { METHOD "/path" { input output use_case status auth } } } }`
+  — `auth: required` (login only) or `auth { infra target action }`;
+  `cors: "${CORS_ORIGINS}"` on the `http` block.
 - `adapter Name { grpc { on services { rpc Name { use_case } } } }`
 - `app Name: run { AdapterA AdapterB load_balancer L { targets { "..." } on: "..." } }`
 

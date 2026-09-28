@@ -5,7 +5,7 @@ where
 {{ full_params }}    ) -> HttpResult<{{ output_type }}> {
 {{ full_prelude }}        let response = presenter
             .{{ field }}
-            .execute(0, input)
+            .execute({{ user_expr }}, input)
             .await
             .map_err(|error| {
                 let status = {{ status_fn }}(&error);

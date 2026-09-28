@@ -5,6 +5,7 @@ where
         Router::new()
 {% for r in route_lines %}            .route("{{ r.path }}", {{ r.axum_fn }}(Self::{{ r.handler }}))
 {% endfor %}{% if dev_mode %}            .route("/app", get(app_docs::app_docs))
-{% endif %}            .with_state(self)
+{% endif %}            .with_state(self){% if cors_expr %}
+            .layer(cors_layer({{ cors_expr }})){% endif %}
     }
 }

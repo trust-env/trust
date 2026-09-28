@@ -57,6 +57,12 @@ pub struct UseCaseIo {
     /// no wrapper: their output type's fields are `output_fields` exactly,
     /// so this is `None`.
     pub output_wrapper_field: Option<String>,
+    /// The use case reads the caller's id (`owner:`), so every route
+    /// exposing it must declare `auth` — without it, handlers pass user 0.
+    pub requires_user: bool,
+    /// The input is the built-in `RawRequest` (raw body + headers) rather
+    /// than a JSON/query-decoded struct.
+    pub raw_input: bool,
 }
 
 pub struct CodeGenContext {
@@ -85,6 +91,8 @@ pub struct CodeGenContext {
     ai_use_cases_without_infra: Vec<String>,
     use_case_infra: HashMap<String, Vec<String>>,
     use_case_errors: HashMap<String, Vec<ErrorMapping>>,
+    /// Infra names whose `psql {}` block declares a `seed:` file.
+    psql_seeded_infras: Vec<String>,
     use_case_io: HashMap<String, UseCaseIo>,
     dependencies: HashMap<String, Dependency>,
     build_dependencies: HashMap<String, Dependency>,
@@ -103,6 +111,10 @@ pub struct CodeGenContext {
     /// `src/infrastructures/storage/s3/` — same opt-in pattern as
     /// `grpc_client_entity_modules`.
     s3_entity_modules: Vec<String>,
+    /// `http_client {}` infras, by infra name.
+    http_client_infras: HashMap<String, crate::parser::HttpClientInfraService>,
+    /// Module names written under `src/infrastructures/http_client/`.
+    http_client_modules: Vec<String>,
     /// Module names (bare, no `.rs`) written under `src/plugins/` by
     /// `generate_plugin` — derived from each plugin codegen call's own
     /// `output_file`, which need not match the owning plugin's `name`.
@@ -125,6 +137,7 @@ impl CodeGenContext {
             ai_use_cases_without_infra: Vec::new(),
             use_case_infra: HashMap::new(),
             use_case_errors: HashMap::new(),
+            psql_seeded_infras: Vec::new(),
             use_case_io: HashMap::new(),
             dependencies: HashMap::new(),
             build_dependencies: HashMap::new(),
@@ -135,6 +148,8 @@ impl CodeGenContext {
             infra_entity_modules: Vec::new(),
             grpc_client_entity_modules: Vec::new(),
             s3_entity_modules: Vec::new(),
+            http_client_infras: HashMap::new(),
+            http_client_modules: Vec::new(),
             plugin_modules: Vec::new(),
             grpc_proto_paths: Vec::new(),
         }
@@ -154,6 +169,37 @@ impl CodeGenContext {
 
     pub fn find_type(&self, name: &str) -> Option<&RustType> {
         self.types.iter().find(|t| t.name == name)
+    }
+
+    pub fn register_http_client_infra(
+        &mut self,
+        infra_name: String,
+        cfg: crate::parser::HttpClientInfraService,
+    ) {
+        self.http_client_infras.insert(infra_name, cfg);
+    }
+
+    pub fn find_http_client_infra(
+        &self,
+        infra_name: &str,
+    ) -> Option<&crate::parser::HttpClientInfraService> {
+        self.http_client_infras.get(infra_name)
+    }
+
+    pub fn register_http_client_module(&mut self, name: String) {
+        if !self.http_client_modules.contains(&name) {
+            self.http_client_modules.push(name);
+        }
+    }
+
+    pub fn register_psql_seed(&mut self, infra_name: String) {
+        if !self.psql_seeded_infras.contains(&infra_name) {
+            self.psql_seeded_infras.push(infra_name);
+        }
+    }
+
+    pub fn has_psql_seed(&self, infra_name: &str) -> bool {
+        self.psql_seeded_infras.iter().any(|n| n == infra_name)
     }
 
     pub fn register_infra_entity(&mut self, infra_name: String, entity: AllowedType) {
@@ -276,14 +322,26 @@ impl CodeGenContext {
         version: &str,
         features: Vec<&str>,
     ) {
-        match self.dependencies.entry(name.to_string()).or_insert_with(|| {
-            Dependency::VersionWithFeatures(version.to_string(), Vec::new())
-        }) {
+        match self
+            .dependencies
+            .entry(name.to_string())
+            .or_insert_with(|| Dependency::VersionWithFeatures(version.to_string(), Vec::new()))
+        {
             Dependency::VersionWithFeatures(_, existing) => {
                 for feature in features {
                     if !existing.iter().any(|f| f == feature) {
                         existing.push(feature.to_string());
                     }
+                }
+            }
+            // Already required without features (e.g. `reqwest` by a load
+            // balancer) — keep its version, add the features.
+            dependency @ Dependency::Version(_) => {
+                if let Dependency::Version(existing_version) = dependency {
+                    *dependency = Dependency::VersionWithFeatures(
+                        existing_version.clone(),
+                        features.into_iter().map(str::to_string).collect(),
+                    );
                 }
             }
             _ => {}
@@ -510,13 +568,23 @@ impl CodeGen {
                 Ast::Infra(infra) => match &infra.service_type {
                     Storage(Psql(psql)) => {
                         context.register_infra_entity(infra.name.clone(), psql.entity.clone());
+                        if psql.seed.is_some() {
+                            context.register_psql_seed(infra.name.clone());
+                        }
                     }
                     Storage(crate::parser::StorageType::GrpcClient(cfg)) => {
                         context.register_infra_entity(infra.name.clone(), cfg.entity.clone());
                         context.register_infra_target_address(infra.name.clone(), cfg.on.clone());
                     }
                     Storage(crate::parser::StorageType::S3(cfg)) => {
-                        context.register_blob_infra(infra.name.clone(), cfg.bucket.clone(), cfg.entity.clone());
+                        context.register_blob_infra(
+                            infra.name.clone(),
+                            cfg.bucket.clone(),
+                            cfg.entity.clone(),
+                        );
+                    }
+                    crate::parser::InfraServiceType::HttpClient(cfg) => {
+                        context.register_http_client_infra(infra.name.clone(), cfg.clone());
                     }
                 },
                 Ast::UseCase(use_case) => {
@@ -548,6 +616,30 @@ impl CodeGen {
                     }
                     if let Some(blob) = &use_case.blob {
                         context.register_use_case_infra(use_case.name.clone(), blob.target.clone());
+                    }
+                    if let Some(code) = &use_case.code {
+                        for infra_name in &code.infras {
+                            context
+                                .register_use_case_infra(use_case.name.clone(), infra_name.clone());
+                        }
+                        if code.infras.is_empty() {
+                            // Same "constructed with no arguments" wiring
+                            // `ai {}` use cases without an infra get.
+                            context.register_ai_use_case_without_infra(use_case.name.clone());
+                        }
+                        // Only the targets matter to routes' `status {}`
+                        // validation and status functions — a `code {}`
+                        // variant has no storage error source.
+                        let errors = code
+                            .errors
+                            .iter()
+                            .map(|variant| ErrorMapping {
+                                source: String::new(),
+                                target: variant.clone(),
+                                message: None,
+                            })
+                            .collect();
+                        context.register_use_case_errors(use_case.name.clone(), errors);
                     }
                 }
                 _ => {}
@@ -639,9 +731,13 @@ impl CodeGen {
                 ),
                 Ast::TypeDecl(t) => self.gen_domain(&mut context, t, domain_path.clone()),
                 Ast::App(_) => Ok(()),
-                Ast::Plugin(plugin_ast) => {
-                    self.generate_plugin(&mut context, plugin_ast, loaded_plugins, &plugins_path, dev_mode)
-                }
+                Ast::Plugin(plugin_ast) => self.generate_plugin(
+                    &mut context,
+                    plugin_ast,
+                    loaded_plugins,
+                    &plugins_path,
+                    dev_mode,
+                ),
             }?
         }
 
@@ -674,8 +770,18 @@ impl CodeGen {
         ModFile::new(infra_path.join("storage.rs"))?
             .with_mods(storage_mods)
             .write()?;
+        let mut infra_mods = vec!["storage".to_string()];
+        if !context.http_client_modules.is_empty() {
+            let http_client_dir = infra_path.join("http_client");
+            create_dir_all(&http_client_dir)
+                .map_err(|e| format!("Error when creating the folder http_client: {}", e))?;
+            ModFile::new(infra_path.join("http_client.rs"))?
+                .with_mods(context.http_client_modules.clone())
+                .write()?;
+            infra_mods.push("http_client".to_string());
+        }
         ModFile::new(src_path.join("infrastructures.rs"))?
-            .with_mods(vec!["storage".to_string()])
+            .with_mods(infra_mods)
             .write()?;
 
         // Only wire up `adapters/http` and `adapters/grpc` (dir + mod file

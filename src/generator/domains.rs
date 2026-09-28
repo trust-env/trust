@@ -1,5 +1,5 @@
-use std::io::Write;
 use crate::generator::rust_code::RustCode;
+use std::io::Write;
 use std::{fs::File, path::PathBuf};
 
 use heck::ToSnakeCase;
@@ -47,6 +47,10 @@ impl CodeGen {
             );
         }
 
+        if imports.needs_chrono {
+            context.require_version_dependency_with_features("chrono", "0.4", vec!["serde"]);
+        }
+
         context.require_version_dependency_with_features("serde", "1", vec!["derive"]);
         let is_storage_entity = context.is_storage_entity(&t.name);
         if is_storage_entity {
@@ -56,6 +60,9 @@ impl CodeGen {
             }
             if imports.needs_decimal {
                 features.push("rust_decimal");
+            }
+            if imports.needs_chrono {
+                features.push("chrono");
             }
             context.require_version_dependency_with_features("sqlx", "0.9.0", features);
         }

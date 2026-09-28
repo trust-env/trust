@@ -1,0 +1,22 @@
+#[derive(Debug)]
+pub enum {{ name }} {
+    NotFound,
+    StorageError(String),
+{%- for variant in variants %}
+    {{ variant }}(String),
+{%- endfor %}
+}
+
+{% for storage_error in storage_errors %}impl From<{{ storage_error }}> for {{ name }} {
+    fn from(error: {{ storage_error }}) -> Self {
+        {{ name }}::StorageError(format!("{:?}", error))
+    }
+}
+
+{% endfor %}/// Lets `?` propagate the `String` errors `s3`/`http_client` infras return.
+impl From<String> for {{ name }} {
+    fn from(error: String) -> Self {
+        {{ name }}::StorageError(error)
+    }
+}
+

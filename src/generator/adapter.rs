@@ -18,7 +18,10 @@ use crate::{
             service::Service,
         },
     },
-    parser::{AdapterService, AdapterType, GrpcAdapterService, GrpcRpc, HttpAdapterService, HttpRoute},
+    parser::{
+        AdapterService, AdapterType, AuthRequirement, GrpcAdapterService, GrpcRpc,
+        HttpAdapterService, HttpRoute,
+    },
 };
 
 impl CodeGen {
@@ -88,27 +91,53 @@ impl CodeGen {
             }
         }
 
-        let (input_type_name, input_fields, output_type_name, output_entity, output_fields, output_is_list) =
-            match context.find_use_case_io(&route.use_case) {
-                Some(io) => (
-                    io.input_type_name.clone(),
-                    io.input_fields.clone(),
-                    io.output_type_name.clone(),
-                    io.output_entity.clone(),
-                    io.output_fields.clone(),
-                    io.output_is_list,
-                ),
-                None => (
-                    format!("{}Input", route.use_case),
-                    Vec::new(),
-                    format!("{}Output", route.use_case),
-                    String::new(),
-                    Vec::new(),
-                    false,
-                ),
-            };
+        if route.auth.is_none()
+            && context
+                .find_use_case_io(&route.use_case)
+                .is_some_and(|io| io.requires_user)
+        {
+            return Err(format!(
+                "HTTP route '{}': use_case '{}' is scoped to the calling user ('owner'), so the route must declare 'auth'",
+                route.path, route.use_case
+            ));
+        }
 
+        let (
+            input_type_name,
+            input_fields,
+            output_type_name,
+            output_entity,
+            output_fields,
+            output_is_list,
+        ) = match context.find_use_case_io(&route.use_case) {
+            Some(io) => (
+                io.input_type_name.clone(),
+                io.input_fields.clone(),
+                io.output_type_name.clone(),
+                io.output_entity.clone(),
+                io.output_fields.clone(),
+                io.output_is_list,
+            ),
+            None => (
+                format!("{}Input", route.use_case),
+                Vec::new(),
+                format!("{}Output", route.use_case),
+                String::new(),
+                Vec::new(),
+                false,
+            ),
+        };
+
+        let raw_input = context
+            .find_use_case_io(&route.use_case)
+            .is_some_and(|io| io.raw_input);
         let path_params = route.path_params();
+        if raw_input && !path_params.is_empty() {
+            return Err(format!(
+                "HTTP route '{}': use_case '{}' takes a RawRequest, so the route can't declare path parameters",
+                route.path, route.use_case
+            ));
+        }
         for name in &path_params {
             if !input_fields.iter().any(|(n, _)| n == name) {
                 return Err(format!(
@@ -118,8 +147,9 @@ impl CodeGen {
             }
         }
 
+        let requires_user = route.auth.is_some();
         let auth = match &route.auth {
-            Some(req) => {
+            Some(AuthRequirement::Permission(req)) => {
                 let entity = context.find_infra_entity(&req.infra).ok_or_else(|| {
                     format!(
                         "HTTP route '{}': auth references unknown infra '{}'",
@@ -142,7 +172,7 @@ impl CodeGen {
                     action: req.action.clone(),
                 })
             }
-            None => None,
+            Some(AuthRequirement::Authenticated) | None => None,
         };
 
         Ok(HttpRouteBinding {
@@ -160,6 +190,8 @@ impl CodeGen {
             output_fields,
             output_is_list,
             path_params,
+            requires_user,
+            raw_input,
             auth,
         })
     }
@@ -219,11 +251,21 @@ impl CodeGen {
             }
         }
 
-        if bindings.iter().any(|b| b.auth.is_some()) {
+        if bindings.iter().any(|b| b.requires_user) {
             context.require_git_dependency("auth", "ssh://git@github.com/BH-World/auth.git");
         }
 
-        let mut file = HttpAdapterFile::new(name, bindings, dev_mode, http_folder_path)?;
+        if http_data.cors.is_some() {
+            context.require_version_dependency_with_features("tower-http", "0.6", vec!["cors"]);
+        }
+
+        let mut file = HttpAdapterFile::new(
+            name,
+            bindings,
+            dev_mode,
+            http_data.cors.clone(),
+            http_folder_path,
+        )?;
         file.write()
     }
 
@@ -267,33 +309,51 @@ impl CodeGen {
             }
         }
 
-        let (input_type_name, input_fields, output_type_name, output_entity, output_fields, output_wrapper_field) =
-            match context.find_use_case_io(&rpc.use_case) {
-                Some(io) => {
-                    if io.output_is_list {
-                        return Err(format!(
-                            "gRPC rpc '{}': use_case '{}' returns a list, which isn't supported over gRPC yet",
-                            rpc.name, rpc.use_case
-                        ));
-                    }
-                    (
-                        io.input_type_name.clone(),
-                        io.input_fields.clone(),
-                        io.output_type_name.clone(),
-                        io.output_entity.clone(),
-                        io.output_fields.clone(),
-                        io.output_wrapper_field.clone(),
-                    )
+        let (
+            input_type_name,
+            input_fields,
+            output_type_name,
+            output_entity,
+            output_fields,
+            output_wrapper_field,
+        ) = match context.find_use_case_io(&rpc.use_case) {
+            Some(io) => {
+                if io.raw_input {
+                    return Err(format!(
+                        "gRPC rpc '{}': use_case '{}' takes a RawRequest, which only HTTP routes can provide",
+                        rpc.name, rpc.use_case
+                    ));
                 }
-                None => (
-                    format!("{}Input", rpc.use_case),
-                    Vec::new(),
-                    format!("{}Output", rpc.use_case),
-                    String::new(),
-                    Vec::new(),
-                    None,
-                ),
-            };
+                if io.requires_user {
+                    return Err(format!(
+                        "gRPC rpc '{}': use_case '{}' is scoped to the calling user ('owner'), which gRPC adapters can't authenticate yet",
+                        rpc.name, rpc.use_case
+                    ));
+                }
+                if io.output_is_list {
+                    return Err(format!(
+                        "gRPC rpc '{}': use_case '{}' returns a list, which isn't supported over gRPC yet",
+                        rpc.name, rpc.use_case
+                    ));
+                }
+                (
+                    io.input_type_name.clone(),
+                    io.input_fields.clone(),
+                    io.output_type_name.clone(),
+                    io.output_entity.clone(),
+                    io.output_fields.clone(),
+                    io.output_wrapper_field.clone(),
+                )
+            }
+            None => (
+                format!("{}Input", rpc.use_case),
+                Vec::new(),
+                format!("{}Output", rpc.use_case),
+                String::new(),
+                Vec::new(),
+                None,
+            ),
+        };
 
         Ok(GrpcRpcBinding {
             name: rpc.name.clone(),

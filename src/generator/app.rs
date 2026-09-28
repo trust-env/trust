@@ -28,6 +28,9 @@ impl CodeGen {
             let port = *next_port;
             *next_port += 1;
             port.to_string()
+        } else if upper.contains("CORS") || upper.contains("ORIGIN") {
+            // Vite's dev server — the usual browser frontend during development.
+            "http://localhost:5173".to_string()
         } else if upper.contains("HOST") {
             "0.0.0.0".to_string()
         } else {
@@ -50,7 +53,7 @@ impl CodeGen {
 
         for infra in infras {
             match &infra.kind {
-                InfraKind::Psql => {
+                InfraKind::Psql { .. } => {
                     let var = MainFile::db_url_env_var(&infra.infra_name);
                     lines.push(format!(
                         "{}=postgres://postgres:postgres@localhost:5432/{}",
@@ -69,12 +72,21 @@ impl CodeGen {
                 // directly into the generated code, not an env-var-driven
                 // URL — nothing to scaffold here for them.
                 InfraKind::GrpcClient { .. } => {}
+                InfraKind::HttpClient { base_url, headers } => {
+                    let templates = std::iter::once(base_url).chain(headers.iter().map(|(_, v)| v));
+                    for var in templates.flat_map(|t| env_template::extract_vars(t)) {
+                        if !lines.iter().any(|l| l.starts_with(&format!("{}=", var))) {
+                            lines.push(format!("{}=changeme", var));
+                        }
+                    }
+                }
             }
         }
 
         let ons: Vec<&str> = adapters
             .iter()
             .map(|a| a.on.as_str())
+            .chain(adapters.iter().filter_map(|a| a.cors.as_deref()))
             .chain(grpc_adapters.iter().map(|a| a.on.as_str()))
             .chain(load_balancers.iter().map(|lb| lb.on.as_str()))
             .collect();
@@ -92,7 +104,7 @@ impl CodeGen {
         // an `auth {}` requirement. A `load_balancer {}` never has its own
         // auth bindings now — it doesn't construct any adapter locally — so
         // only bare adapters are checked.
-        let has_auth = adapters.iter().any(|a| !a.auth_infra_names.is_empty());
+        let has_auth = adapters.iter().any(|a| a.requires_jwt);
         if has_auth {
             lines.push("JWT_SECRET=changeme".to_string());
         }
@@ -113,12 +125,28 @@ impl CodeGen {
         if infra_bindings.iter().any(|i| i.infra_name == infra_name) {
             return Ok(());
         }
+        if let Some(cfg) = context.find_http_client_infra(infra_name) {
+            infra_bindings.push(InfraBinding {
+                infra_name: infra_name.to_string(),
+                entity_name: infra_name.to_string(),
+                kind: InfraKind::HttpClient {
+                    base_url: cfg.base_url.clone(),
+                    headers: cfg.headers.clone(),
+                },
+            });
+            return Ok(());
+        }
         let entity = if context.is_blob_infra(infra_name) {
             context.find_blob_infra_entity(infra_name)
         } else {
             context.find_infra_entity(infra_name)
         }
-        .ok_or_else(|| format!("Unknown infra '{}' referenced by {}", infra_name, referenced_by))?;
+        .ok_or_else(|| {
+            format!(
+                "Unknown infra '{}' referenced by {}",
+                infra_name, referenced_by
+            )
+        })?;
         let entity_name = match entity {
             AllowedType::DefinedType(name) => name.clone(),
             _ => {
@@ -133,8 +161,12 @@ impl CodeGen {
             InfraKind::S3 { bucket }
         } else {
             match context.find_infra_target_address(infra_name) {
-                Some(address) => InfraKind::GrpcClient { target_address: address.to_string() },
-                None => InfraKind::Psql,
+                Some(address) => InfraKind::GrpcClient {
+                    target_address: address.to_string(),
+                },
+                None => InfraKind::Psql {
+                    seed: context.has_psql_seed(infra_name),
+                },
             }
         };
         infra_bindings.push(InfraBinding {
@@ -169,9 +201,9 @@ impl CodeGen {
         // determines the adapter's generated constructor params.
         let mut auth_infra_names: Vec<String> = Vec::new();
         for route in &http_data.routes {
-            if let Some(auth) = &route.auth {
-                if !auth_infra_names.contains(&auth.infra) {
-                    auth_infra_names.push(auth.infra.clone());
+            if let Some(infra) = route.auth.as_ref().and_then(|a| a.permission_infra()) {
+                if !auth_infra_names.iter().any(|n| n == infra) {
+                    auth_infra_names.push(infra.to_string());
                 }
             }
         }
@@ -278,9 +310,8 @@ impl CodeGen {
         let mut load_balancer_bindings: Vec<LoadBalancerRuntime> = Vec::new();
 
         for adapter_name in &app.adapters {
-            let adapter = Self::find_adapter(asts, adapter_name).ok_or_else(|| {
-                format!("app:run references unknown adapter '{}'", adapter_name)
-            })?;
+            let adapter = Self::find_adapter(asts, adapter_name)
+                .ok_or_else(|| format!("app:run references unknown adapter '{}'", adapter_name))?;
 
             match &adapter.adapter_type {
                 AdapterType::Http(http_data) => {
@@ -304,6 +335,8 @@ impl CodeGen {
                         on,
                         use_cases: use_case_names,
                         auth_infra_names,
+                        requires_jwt: http_data.routes.iter().any(|r| r.auth.is_some()),
+                        cors: http_data.cors.clone(),
                     });
                 }
                 AdapterType::Grpc(grpc_data) => {

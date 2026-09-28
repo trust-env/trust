@@ -142,7 +142,13 @@ impl AiUseCaseFile {
     fn indent_body(&self) -> String {
         self.body
             .lines()
-            .map(|line| if line.is_empty() { String::new() } else { format!("        {}", line) })
+            .map(|line| {
+                if line.is_empty() {
+                    String::new()
+                } else {
+                    format!("        {}", line)
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -162,6 +168,7 @@ impl AiUseCaseFile {
         context.insert("name", &self.name);
         context.insert("body", &self.indent_body());
         context.insert("trait_name", &self.trait_name());
+        context.insert("user_param", "_user");
         render("file/ai_use_case/impl.rs.tera", &context)
     }
 

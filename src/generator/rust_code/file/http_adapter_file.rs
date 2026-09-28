@@ -8,8 +8,8 @@ use heck::ToSnakeCase;
 
 use crate::{
     generator::rust_code::{
-        dev_docs,
-        imports::{common_use, crate_use},
+        dev_docs, env_template,
+        imports::{LocalImports, common_use, crate_use},
         render::render,
     },
     parser::{ErrorMapping, HttpMethod, StatusMapping},
@@ -56,6 +56,13 @@ pub struct HttpRouteBinding {
     /// Names of `:name` segments captured from the route path — these
     /// fields of the use case's input come from the URL, not the JSON body.
     pub path_params: Vec<String>,
+    /// Any `auth` form: the handler extracts `auth::UserContext` (401 on a
+    /// missing/invalid JWT) and passes its `user_id` to `execute`.
+    pub requires_user: bool,
+    /// The use case takes the built-in `RawRequest`: the handler passes the
+    /// untouched body and headers instead of decoding JSON/query fields.
+    pub raw_input: bool,
+    /// Only the permission form (`auth { infra target action }`).
     pub auth: Option<ResolvedAuth>,
 }
 
@@ -83,6 +90,7 @@ pub struct HttpAdapterFile {
     routes: Vec<HttpRouteBinding>,
     routes_dir: PathBuf,
     dev_mode: bool,
+    cors: Option<String>,
     file: File,
 }
 
@@ -91,6 +99,7 @@ impl HttpAdapterFile {
         name: String,
         routes: Vec<HttpRouteBinding>,
         dev_mode: bool,
+        cors: Option<String>,
         folder: PathBuf,
     ) -> Result<Self, String> {
         let file_stem = name.to_snake_case();
@@ -107,6 +116,7 @@ impl HttpAdapterFile {
             routes,
             routes_dir,
             dev_mode,
+            cors,
         })
     }
 
@@ -156,7 +166,12 @@ impl HttpAdapterFile {
         let mut code: String = self
             .unique_bindings()
             .iter()
-            .map(|b| format!("    {}: {}Trait + Send + Sync + 'static,\n", b.type_param, b.use_case_name))
+            .map(|b| {
+                format!(
+                    "    {}: {}Trait + Send + Sync + 'static,\n",
+                    b.type_param, b.use_case_name
+                )
+            })
             .collect();
         for (i, auth) in self.unique_auth_bindings().iter().enumerate() {
             code.push_str(&format!("    A{}: {} + Send + Sync + 'static,\n", i, auth.storage_trait));
@@ -301,7 +316,15 @@ impl HttpAdapterFile {
         context.insert("where_clause", &self.where_clause());
         context.insert("route_lines", &route_lines);
         context.insert("dev_mode", &self.dev_mode);
-        render("file/http_adapter/router.rs.tera", &context)
+        context.insert(
+            "cors_expr",
+            &self.cors.as_deref().map(env_template::to_rust_expr),
+        );
+        let mut code = render("file/http_adapter/router.rs.tera", &context);
+        if self.cors.is_some() {
+            code.push_str(&render("file/http_adapter/cors.rs.tera", &Context::new()));
+        }
+        code
     }
 
     /// How a route's use_case input is assembled from the request: entirely
@@ -375,26 +398,14 @@ impl HttpAdapterFile {
     /// other non-primitive field type here needs its own import, or the
     /// generated route file fails with "cannot find type" the moment any
     /// path/body field isn't a plain `String`/`Int`/`Float`.
-    fn local_struct_imports(route: &HttpRouteBinding) -> (bool, bool, Vec<String>) {
-        let mut needs_uuid = false;
-        let mut needs_decimal = false;
-        let mut other_types: Vec<String> = Vec::new();
-
-        if route.path_params.is_empty() {
-            return (needs_uuid, needs_decimal, other_types);
-        }
-        for (_, ty) in &route.input_fields {
-            match ty.as_str() {
-                "Uuid" => needs_uuid = true,
-                "Decimal" => needs_decimal = true,
-                "String" | "i64" | "f64" => {}
-                other if !other_types.iter().any(|t| t == other) => {
-                    other_types.push(other.to_string());
-                }
-                _ => {}
+    fn local_struct_imports(route: &HttpRouteBinding) -> LocalImports {
+        let mut imports = LocalImports::default();
+        if !route.path_params.is_empty() {
+            for (_, ty) in &route.input_fields {
+                imports.add_type_string(ty);
             }
         }
-        (needs_uuid, needs_decimal, other_types)
+        imports
     }
 
     fn route_file_imports(&self, route: &HttpRouteBinding) -> String {
@@ -414,8 +425,10 @@ impl HttpAdapterFile {
             axum_items.push("extract::Query");
         }
         code.push_str(&format!("use axum::{{{}}};\n", axum_items.join(", ")));
-        if route.auth.is_some() {
+        if route.requires_user {
             code.push_str("use auth::UserContext;\n");
+        }
+        if route.auth.is_some() {
             code.push_str(&common_use(&[
                 "HttpError",
                 "HttpResult",
@@ -428,15 +441,18 @@ impl HttpAdapterFile {
         }
         code.push_str(&format!("use super::{};\n", self.name));
 
-        let (needs_uuid, needs_decimal, other_types) = Self::local_struct_imports(route);
-        if needs_uuid {
+        let local = Self::local_struct_imports(route);
+        if local.needs_uuid {
             code.push_str("use uuid::Uuid;\n");
         }
-        if needs_decimal {
+        if local.needs_decimal {
             code.push_str("use rust_decimal::Decimal;\n");
         }
+        if local.needs_chrono {
+            code.push_str("use chrono::{DateTime, Utc};\n");
+        }
 
-        let mut crate_items = other_types;
+        let mut crate_items = local.types;
         for binding in self.unique_bindings() {
             crate_items.push(format!("{}Trait", binding.use_case_name));
         }
@@ -537,41 +553,64 @@ impl HttpAdapterFile {
         code.push_str(&self.gen_error_status_fn(route));
 
         let extractor = Self::body_extractor(route);
-        let (pre_structs, params, prelude) = match Self::input_extraction(route) {
-            InputExtraction::BodyOnly => (
+        let (pre_structs, params, prelude) = if route.raw_input {
+            (
                 String::new(),
-                format!("        {extractor}(input): {extractor}<{input_type}>,\n", input_type = route.input_type_name),
-                String::new(),
-            ),
-            InputExtraction::PathOnly => (
-                String::new(),
-                format!("        Path(input): Path<{}>,\n", route.input_type_name),
-                String::new(),
-            ),
-            InputExtraction::Split { path_fields, body_fields } => {
-                let structs = Self::gen_split_structs(route, &path_fields, &body_fields);
-                let params = format!(
-                    "        Path(path): Path<{path_name}>,\n        {extractor}(body): {extractor}<{body_name}>,\n",
-                    path_name = Self::path_struct_name(route),
-                    extractor = extractor,
-                    body_name = Self::body_struct_name(route),
-                );
-                let mut field_lines = String::new();
-                for (name, _) in &route.input_fields {
-                    let source = if route.path_params.contains(name) { "path" } else { "body" };
-                    field_lines.push_str(&format!("            {name}: {source}.{name},\n", name = name, source = source));
+                // `String` consumes the body, so it must be the last extractor.
+                "        headers: axum::http::HeaderMap,\n        body: String,\n".to_string(),
+                render("file/http_adapter/raw_request.rs.tera", &Context::new()),
+            )
+        } else {
+            match Self::input_extraction(route) {
+                InputExtraction::BodyOnly => (
+                    String::new(),
+                    format!(
+                        "        {extractor}(input): {extractor}<{input_type}>,\n",
+                        input_type = route.input_type_name
+                    ),
+                    String::new(),
+                ),
+                InputExtraction::PathOnly => (
+                    String::new(),
+                    format!("        Path(input): Path<{}>,\n", route.input_type_name),
+                    String::new(),
+                ),
+                InputExtraction::Split {
+                    path_fields,
+                    body_fields,
+                } => {
+                    let structs = Self::gen_split_structs(route, &path_fields, &body_fields);
+                    let params = format!(
+                        "        Path(path): Path<{path_name}>,\n        {extractor}(body): {extractor}<{body_name}>,\n",
+                        path_name = Self::path_struct_name(route),
+                        extractor = extractor,
+                        body_name = Self::body_struct_name(route),
+                    );
+                    let mut field_lines = String::new();
+                    for (name, _) in &route.input_fields {
+                        let source = if route.path_params.contains(name) {
+                            "path"
+                        } else {
+                            "body"
+                        };
+                        field_lines.push_str(&format!(
+                            "            {name}: {source}.{name},\n",
+                            name = name,
+                            source = source
+                        ));
+                    }
+                    let prelude = format!(
+                        "        let input = {input_type} {{\n{fields}        }};\n\n",
+                        input_type = route.input_type_name,
+                        fields = field_lines,
+                    );
+                    (structs, params, prelude)
                 }
-                let prelude = format!(
-                    "        let input = {input_type} {{\n{fields}        }};\n\n",
-                    input_type = route.input_type_name,
-                    fields = field_lines,
-                );
-                (structs, params, prelude)
             }
         };
 
         let mut full_params = String::new();
-        if route.auth.is_some() {
+        if route.requires_user {
             full_params.push_str("        user_context: UserContext,\n");
         }
         full_params.push_str("        State(presenter): State<Arc<Self>>,\n");
@@ -591,6 +630,14 @@ impl HttpAdapterFile {
         context.insert("output_type", &route.output_type_name);
         context.insert("full_prelude", &full_prelude);
         context.insert("field", &route.use_case_field);
+        context.insert(
+            "user_expr",
+            if route.requires_user {
+                "user_context.user_id"
+            } else {
+                "0"
+            },
+        );
         context.insert("status_fn", &format!("{}_status", self.handler_name(route)));
         code.push_str(&render("file/http_adapter/handler.rs.tera", &context));
         code

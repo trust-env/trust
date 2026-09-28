@@ -131,6 +131,50 @@ static TEMPLATES: LazyLock<RwLock<Tera>> = LazyLock::new(|| {
             include_str!("../../../templates/file/use_case/call_read.rs.tera"),
         ),
         (
+            "migration/create_table.sql.tera",
+            include_str!("../../../templates/migration/create_table.sql.tera"),
+        ),
+        (
+            "file/main/migration.rs.tera",
+            include_str!("../../../templates/file/main/migration.rs.tera"),
+        ),
+        (
+            "file/http_adapter/cors.rs.tera",
+            include_str!("../../../templates/file/http_adapter/cors.rs.tera"),
+        ),
+        (
+            "file/http_client/client.rs.tera",
+            include_str!("../../../templates/file/http_client/client.rs.tera"),
+        ),
+        (
+            "file/main/http_client_infra.rs.tera",
+            include_str!("../../../templates/file/main/http_client_infra.rs.tera"),
+        ),
+        (
+            "file/code_use_case/header.rs.tera",
+            include_str!("../../../templates/file/code_use_case/header.rs.tera"),
+        ),
+        (
+            "file/code_use_case/error.rs.tera",
+            include_str!("../../../templates/file/code_use_case/error.rs.tera"),
+        ),
+        (
+            "file/code_use_case/struct.rs.tera",
+            include_str!("../../../templates/file/code_use_case/struct.rs.tera"),
+        ),
+        (
+            "domains/raw_request.rs.tera",
+            include_str!("../../../templates/domains/raw_request.rs.tera"),
+        ),
+        (
+            "file/http_adapter/raw_request.rs.tera",
+            include_str!("../../../templates/file/http_adapter/raw_request.rs.tera"),
+        ),
+        (
+            "file/use_case/owner_guard.rs.tera",
+            include_str!("../../../templates/file/use_case/owner_guard.rs.tera"),
+        ),
+        (
             "file/http_adapter/struct.rs.tera",
             include_str!("../../../templates/file/http_adapter/struct.rs.tera"),
         ),
@@ -304,6 +348,17 @@ mod tests {
         assert!(names.contains(&"file/use_case/struct.rs.tera"));
         assert!(names.contains(&"file/use_case/call_simple.rs.tera"));
         assert!(names.contains(&"file/use_case/call_read.rs.tera"));
+        assert!(names.contains(&"file/use_case/owner_guard.rs.tera"));
+        assert!(names.contains(&"migration/create_table.sql.tera"));
+        assert!(names.contains(&"file/main/migration.rs.tera"));
+        assert!(names.contains(&"file/http_adapter/cors.rs.tera"));
+        assert!(names.contains(&"file/http_client/client.rs.tera"));
+        assert!(names.contains(&"file/code_use_case/header.rs.tera"));
+        assert!(names.contains(&"file/code_use_case/error.rs.tera"));
+        assert!(names.contains(&"file/code_use_case/struct.rs.tera"));
+        assert!(names.contains(&"domains/raw_request.rs.tera"));
+        assert!(names.contains(&"file/http_adapter/raw_request.rs.tera"));
+        assert!(names.contains(&"file/main/http_client_infra.rs.tera"));
         assert!(names.contains(&"file/http_adapter/struct.rs.tera"));
         assert!(names.contains(&"file/http_adapter/ctor.rs.tera"));
         assert!(names.contains(&"file/http_adapter/router.rs.tera"));

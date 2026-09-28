@@ -49,11 +49,31 @@ pub fn to_axum_path(path: &str) -> String {
         .join("/")
 }
 
-/// A route's `auth { infra: ... target: "..." action: "..." }` block: before
-/// the use case runs, the request's JWT (via `auth::UserContext`) is checked
-/// against `infra`'s storage for a permission row matching `target`/`action`.
+/// A route's `auth` requirement. Either form makes the handler extract the
+/// caller's JWT (via `auth::UserContext`, 401 if missing/invalid) and pass
+/// its `user_id` to the use case's `execute`.
 #[derive(Debug, Clone)]
-pub struct AuthRequirement {
+pub enum AuthRequirement {
+    /// `auth: required` — any valid JWT is enough, no permission lookup.
+    Authenticated,
+    /// `auth { infra: ... target: "..." action: "..." }` — additionally
+    /// checks `infra`'s storage for a permission row matching
+    /// `target`/`action`.
+    Permission(PermissionRequirement),
+}
+
+impl AuthRequirement {
+    /// The permission-row infra this requirement queries, if any.
+    pub fn permission_infra(&self) -> Option<&str> {
+        match self {
+            AuthRequirement::Authenticated => None,
+            AuthRequirement::Permission(p) => Some(&p.infra),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PermissionRequirement {
     pub infra: String,
     pub target: String,
     pub action: String,
@@ -80,6 +100,10 @@ impl HttpRoute {
 pub struct HttpAdapterService {
     pub routes: Vec<HttpRoute>,
     pub on: Option<String>,
+    /// `cors: "${CORS_ORIGINS}"` — comma-separated browser origins allowed
+    /// to call this adapter (`*` for any). Supports `${VAR}` interpolation,
+    /// like `on:`.
+    pub cors: Option<String>,
 }
 
 /// One `rpc Name { input: X output: Y use_case: Z }` inside a `grpc {
@@ -113,6 +137,10 @@ pub struct AdapterService {
 #[derive(Debug, Clone)]
 pub struct PsqlInfraService {
     pub entity: AllowedType,
+    /// `seed: "./seed/x.sql"` — SQL run at every startup, right after the
+    /// entity's table is created. Must be idempotent (e.g. `ON CONFLICT
+    /// DO NOTHING`), since it re-runs on every boot.
+    pub seed: Option<String>,
 }
 
 /// One `<storage_method>: <RpcName>` line inside a `grpc_client { methods {
@@ -164,6 +192,18 @@ pub enum StorageType {
 #[derive(Debug, Clone)]
 pub enum InfraServiceType {
     Storage(StorageType),
+    /// `http_client { base_url: "..." headers { "Name": "value" } }` — a
+    /// configured outbound HTTP client (JSON in/out), usable from `code {}`
+    /// use cases only.
+    HttpClient(HttpClientInfraService),
+}
+
+/// `base_url` and header values support `${VAR}` interpolation (resolved
+/// at runtime), so secrets like API keys stay out of `.tr` source.
+#[derive(Debug, Clone)]
+pub struct HttpClientInfraService {
+    pub base_url: String,
+    pub headers: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -224,7 +264,42 @@ pub struct BlobCall {
 #[derive(Debug, Clone)]
 pub struct FilterMapping {
     pub field: String,
-    pub input_field: String,
+    pub source: FilterSource,
+}
+
+/// The right-hand side of a `filters {}` line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FilterSource {
+    /// `input.<field>` — one of the use case's own input fields.
+    Input(String),
+    /// A fixed value: a quoted string, or a bare word such as `true` or
+    /// `42`. Compared as text, like every other predicate value.
+    Literal(String),
+}
+
+impl FilterMapping {
+    /// The input field this filter reads, if it isn't a literal.
+    pub fn input_field(&self) -> Option<&str> {
+        match &self.source {
+            FilterSource::Input(f) => Some(f),
+            FilterSource::Literal(_) => None,
+        }
+    }
+}
+
+/// `code { file: "./logic/x.rs" infra: A infra: B errors { E } deps { c: "1" } }`
+/// — the body of `execute` is read verbatim from `file` (relative to the
+/// `.tr` file's working directory) instead of being generated. Every
+/// `infra:` becomes a field on the use case struct named after the infra
+/// (snake_case), `errors {}` adds extra `Variant(String)` members to the
+/// use case's error enum, and `deps {}` adds crates to the generated
+/// `Cargo.toml`.
+#[derive(Debug, Clone, Default)]
+pub struct CodeSpec {
+    pub file: String,
+    pub infras: Vec<String>,
+    pub errors: Vec<String>,
+    pub deps: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -248,6 +323,13 @@ pub struct UseCaseService {
     /// `call:`'s results — see `FilterMapping`. Empty unless a `filters {}`
     /// block was declared.
     pub filters: Vec<FilterMapping>,
+    /// `owner: <field>` — the primary call's entity field holding the
+    /// owning user's id. Stamped on create/update, filtered on list and
+    /// checked on find_one/update_one/delete (a row owned by someone else
+    /// reads as `NotFound`).
+    pub owner: Option<String>,
+    /// Mutually exclusive with `calls`/`ai`/`blob`: a hand-written body.
+    pub code: Option<CodeSpec>,
 }
 
 #[derive(Debug, Clone)]
@@ -263,6 +345,10 @@ pub enum AllowedType {
     Int,
     Float,
     Decimal,
+    Bool,
+    DateTime,
+    /// `Option<T>` — a nullable field.
+    Option(Box<AllowedType>),
     Regex(String),
     DefinedType(String),
 }
@@ -275,6 +361,9 @@ impl AllowedType {
             AllowedType::Int => "int".to_string(),
             AllowedType::Float => "float".to_string(),
             AllowedType::Decimal => "decimal".to_string(),
+            AllowedType::Bool => "bool".to_string(),
+            AllowedType::DateTime => "date_time".to_string(),
+            AllowedType::Option(inner) => inner.to_file_name(),
             AllowedType::Regex(_) => "regex".to_string(),
             AllowedType::DefinedType(name) => name.to_snake_case(),
         }

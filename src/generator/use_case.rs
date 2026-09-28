@@ -10,6 +10,7 @@ use crate::{
             file::{
                 ai_use_case_file::{AiInfraBinding, AiUseCaseFile},
                 blob_use_case_file::{BlobOperation, BlobUseCaseFile},
+                code_use_case_file::{CodeDependency, CodeUseCaseFile},
                 psql_storage_file::STORAGE_ERROR_VARIANTS,
                 use_case_file::{CallKind, ResolvedCall, UseCaseFile},
             },
@@ -17,7 +18,7 @@ use crate::{
             types::{RustField, RustType},
         },
     },
-    parser::{AiSpec, AllowedType, BlobCall, FilterMapping, UseCaseService},
+    parser::{AiSpec, AllowedType, BlobCall, CodeSpec, FilterMapping, UseCaseService},
 };
 
 pub(super) struct UseCaseShape {
@@ -28,6 +29,9 @@ pub(super) struct UseCaseShape {
     /// Non-empty only when the primary call is `list` and a `filters {}`
     /// block was declared — see `FilterMapping`.
     pub filters: Vec<FilterMapping>,
+    /// `owner: <field>` on the primary call's entity, validated to exist
+    /// and be `i64`.
+    pub owner: Option<String>,
 }
 
 impl CodeGen {
@@ -50,13 +54,20 @@ impl CodeGen {
     /// `find_one`/`delete` just need an `id`, and `list` needs paging (plus
     /// one field per `filters {}` entry, if any — each already validated
     /// against `entity_type`'s own fields by the caller).
+    /// An `owner` field is never part of a guessed input: it's always
+    /// stamped from the caller's JWT, so a client can't choose it.
     fn guess_input_type(
         call_kind: CallKind,
         entity_type: &RustType,
         filters: &[FilterMapping],
+        owner: Option<&str>,
     ) -> RustType {
         match call_kind {
-            CallKind::Create | CallKind::Update => entity_type.clone(),
+            CallKind::Create | CallKind::Update => {
+                let mut guessed = entity_type.clone();
+                guessed.fields.retain(|f| Some(f.name.as_str()) != owner);
+                guessed
+            }
             CallKind::Read | CallKind::Delete => {
                 let id_field_type = entity_type
                     .fields
@@ -86,6 +97,9 @@ impl CodeGen {
                     },
                 ];
                 for filter in filters {
+                    let Some(input_field) = filter.input_field() else {
+                        continue;
+                    };
                     // `filter.field` is guaranteed present on `entity_type`
                     // by the validation in `resolve_use_case_shape`.
                     let field_type = entity_type
@@ -95,7 +109,7 @@ impl CodeGen {
                         .map(|f| f.field_type.clone())
                         .unwrap_or_else(|| RustType::primitive("String"));
                     fields.push(RustField {
-                        name: filter.input_field.clone(),
+                        name: input_field.to_string(),
                         field_type,
                     });
                 }
@@ -114,9 +128,10 @@ impl CodeGen {
         context: &CodeGenContext,
         use_case: &UseCaseService,
     ) -> Result<Option<UseCaseShape>, String> {
-        if use_case.ai.is_some() {
+        if use_case.ai.is_some() || use_case.code.is_some() {
             // Handled entirely separately by `generate_ai_use_case` /
-            // `register_use_case_io`'s own branch — not a CRUD shape.
+            // `generate_code_use_case` / `register_use_case_io`'s own
+            // branches — not a CRUD shape.
             return Ok(None);
         }
 
@@ -219,6 +234,24 @@ impl CodeGen {
             }
         }
 
+        if let Some(owner) = &use_case.owner {
+            match primary_entity.fields.iter().find(|f| &f.name == owner) {
+                None => {
+                    return Err(format!(
+                        "UseCase '{}': 'owner' references unknown field '{}' on entity '{}'",
+                        use_case.name, owner, primary_entity.name
+                    ));
+                }
+                Some(field) if field.field_type.name != "i64" => {
+                    return Err(format!(
+                        "UseCase '{}': 'owner' field '{}' on entity '{}' must be 'Int' (it holds the JWT's user id)",
+                        use_case.name, owner, primary_entity.name
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+
         let (input_type, copy_id) = match &use_case.input {
             Some(input) => {
                 let input_type = self.resolve_named_type(context, input)?;
@@ -232,15 +265,11 @@ impl CodeGen {
                         }
                     }
                 }
-                for filter in &use_case.filters {
-                    if !input_type
-                        .fields
-                        .iter()
-                        .any(|f| f.name == filter.input_field)
-                    {
+                for input_field in use_case.filters.iter().filter_map(|f| f.input_field()) {
+                    if !input_type.fields.iter().any(|f| f.name == input_field) {
                         return Err(format!(
                             "UseCase '{}': 'filters' references 'input.{}', but input '{}' has no such field",
-                            use_case.name, filter.input_field, input_type.name
+                            use_case.name, input_field, input_type.name
                         ));
                     }
                 }
@@ -253,8 +282,12 @@ impl CodeGen {
                         use_case.name
                     ));
                 }
-                let guessed =
-                    Self::guess_input_type(primary_call_kind, &primary_entity, &use_case.filters);
+                let guessed = Self::guess_input_type(
+                    primary_call_kind,
+                    &primary_entity,
+                    &use_case.filters,
+                    use_case.owner.as_deref(),
+                );
                 let copy_id = matches!(primary_call_kind, CallKind::Create | CallKind::Update);
                 (guessed, copy_id)
             }
@@ -275,6 +308,7 @@ impl CodeGen {
             calls: resolved_calls,
             copy_id,
             filters: use_case.filters.clone(),
+            owner: use_case.owner.clone(),
         }))
     }
 
@@ -289,19 +323,102 @@ impl CodeGen {
             .collect()
     }
 
+    /// Name of the built-in raw-request input type (see `RawRequest` in
+    /// `templates/domains/raw_request.rs.tera`).
+    pub(super) const RAW_REQUEST: &'static str = "RawRequest";
+
+    /// `code {}` input: a declared type, or the built-in `RawRequest` when
+    /// no type of that name is declared.
+    fn resolve_code_input(
+        &self,
+        context: &CodeGenContext,
+        use_case: &UseCaseService,
+    ) -> Result<RustType, String> {
+        match &use_case.input {
+            Some(AllowedType::DefinedType(name))
+                if name == Self::RAW_REQUEST && context.find_type(name).is_none() =>
+            {
+                Ok(RustType::generic(
+                    Self::RAW_REQUEST,
+                    vec![],
+                    vec![
+                        RustField {
+                            name: "body".to_string(),
+                            field_type: RustType::primitive("String"),
+                        },
+                        RustField {
+                            name: "headers".to_string(),
+                            field_type: RustType::primitive("HashMap<String, String>"),
+                        },
+                    ],
+                ))
+            }
+            Some(t) => self.resolve_named_type(context, t),
+            None => Err(format!(
+                "UseCase '{}': 'code' requires an explicit 'input'",
+                use_case.name
+            )),
+        }
+    }
+
+    fn resolve_code_output(
+        &self,
+        context: &CodeGenContext,
+        use_case: &UseCaseService,
+    ) -> Result<RustType, String> {
+        match &use_case.output {
+            Some(t) => self.resolve_named_type(context, t),
+            None => Err(format!(
+                "UseCase '{}': 'code' requires an explicit 'output'",
+                use_case.name
+            )),
+        }
+    }
+
     pub(super) fn register_use_case_io(
         &self,
         context: &mut CodeGenContext,
         use_case: &UseCaseService,
     ) -> Result<(), String> {
+        if use_case.code.is_some() {
+            let input_type = self.resolve_code_input(context, use_case)?;
+            let output_type = self.resolve_code_output(context, use_case)?;
+            context.register_use_case_io(
+                use_case.name.clone(),
+                UseCaseIo {
+                    input_type_name: input_type.name.clone(),
+                    input_fields: Self::field_docs(&input_type.fields),
+                    output_type_name: output_type.name.clone(),
+                    output_entity: output_type.name.clone(),
+                    output_fields: Self::field_docs(&output_type.fields),
+                    output_is_list: false,
+                    output_wrapper_field: None,
+                    requires_user: false,
+                    raw_input: input_type.name == Self::RAW_REQUEST
+                        && context.find_type(Self::RAW_REQUEST).is_none(),
+                },
+            );
+            return Ok(());
+        }
+
         if use_case.ai.is_some() {
             let input_type = match &use_case.input {
                 Some(t) => self.resolve_named_type(context, t)?,
-                None => return Err(format!("UseCase '{}': 'ai' requires an explicit 'input'", use_case.name)),
+                None => {
+                    return Err(format!(
+                        "UseCase '{}': 'ai' requires an explicit 'input'",
+                        use_case.name
+                    ));
+                }
             };
             let output_type = match &use_case.output {
                 Some(t) => self.resolve_named_type(context, t)?,
-                None => return Err(format!("UseCase '{}': 'ai' requires an explicit 'output'", use_case.name)),
+                None => {
+                    return Err(format!(
+                        "UseCase '{}': 'ai' requires an explicit 'output'",
+                        use_case.name
+                    ));
+                }
             };
             context.register_use_case_io(
                 use_case.name.clone(),
@@ -313,6 +430,8 @@ impl CodeGen {
                     output_fields: Self::field_docs(&output_type.fields),
                     output_is_list: false,
                     output_wrapper_field: None,
+                    requires_user: false,
+                    raw_input: false,
                 },
             );
             return Ok(());
@@ -334,6 +453,8 @@ impl CodeGen {
                     output_fields: field_docs(operation.output_fields()),
                     output_is_list: false,
                     output_wrapper_field: None,
+                    requires_user: false,
+                    raw_input: false,
                 },
             );
             return Ok(());
@@ -357,6 +478,8 @@ impl CodeGen {
                     output_fields: Self::field_docs(&primary.entity_type.fields),
                     output_is_list: is_list,
                     output_wrapper_field: Some(wrapper_field),
+                    requires_user: shape.owner.is_some(),
+                    raw_input: false,
                 },
             );
         }
@@ -433,11 +556,21 @@ impl CodeGen {
     ) -> Result<(), String> {
         let input_type = match &use_case.input {
             Some(t) => self.resolve_named_type(context, t)?,
-            None => return Err(format!("UseCase '{}': 'ai' requires an explicit 'input'", use_case.name)),
+            None => {
+                return Err(format!(
+                    "UseCase '{}': 'ai' requires an explicit 'input'",
+                    use_case.name
+                ));
+            }
         };
         let output_type = match &use_case.output {
             Some(t) => self.resolve_named_type(context, t)?,
-            None => return Err(format!("UseCase '{}': 'ai' requires an explicit 'output'", use_case.name)),
+            None => {
+                return Err(format!(
+                    "UseCase '{}': 'ai' requires an explicit 'output'",
+                    use_case.name
+                ));
+            }
         };
 
         let infra = match &ai.infra {
@@ -517,6 +650,117 @@ impl CodeGen {
         Ok(())
     }
 
+    /// `code {}`: the body is read from `code.file` (resolved against the
+    /// working directory, like every other path in a `.tr` file) and
+    /// spliced into `execute`, with one struct field per `infra:`.
+    fn generate_code_use_case(
+        &mut self,
+        context: &mut CodeGenContext,
+        use_case: &UseCaseService,
+        code: &CodeSpec,
+        folder: PathBuf,
+    ) -> Result<(), String> {
+        let input_type = self.resolve_code_input(context, use_case)?;
+        let output_type = self.resolve_code_output(context, use_case)?;
+
+        let mut dependencies = Vec::new();
+        for infra_name in &code.infras {
+            if code.infras.iter().filter(|n| *n == infra_name).count() > 1 {
+                return Err(format!(
+                    "UseCase '{}': 'code' lists infra '{}' more than once",
+                    use_case.name, infra_name
+                ));
+            }
+            let dependency = if context.find_http_client_infra(infra_name).is_some() {
+                CodeDependency::Concrete {
+                    infra_name: infra_name.clone(),
+                    type_name: Self::http_client_struct_name(infra_name),
+                }
+            } else if context.is_blob_infra(infra_name) {
+                let entity = context.find_blob_infra_entity(infra_name).ok_or_else(|| {
+                    format!(
+                        "UseCase '{}': unknown infra '{}'",
+                        use_case.name, infra_name
+                    )
+                })?;
+                let entity_type = self.resolve_named_type(context, entity)?;
+                CodeDependency::Concrete {
+                    infra_name: infra_name.clone(),
+                    type_name: format!("S3{}Storage", entity_type.name),
+                }
+            } else {
+                let entity = context.find_infra_entity(infra_name).ok_or_else(|| {
+                    format!(
+                        "UseCase '{}': 'code' references unknown infra '{}'",
+                        use_case.name, infra_name
+                    )
+                })?;
+                let entity_type = self.resolve_named_type(context, entity)?;
+                let storage_error = match context.find_infra_target_address(infra_name) {
+                    Some(_) => format!("Grpc{}ClientError", entity_type.name),
+                    None => format!("Psql{}StorageError", entity_type.name),
+                };
+                CodeDependency::Storage {
+                    infra_name: infra_name.clone(),
+                    storage_trait: format!("{}Storage", entity_type.name),
+                    storage_error,
+                }
+            };
+            dependencies.push(dependency);
+        }
+
+        for reserved in ["NotFound", "StorageError"] {
+            if code.errors.iter().any(|e| e == reserved) {
+                return Err(format!(
+                    "UseCase '{}': '{}' is always part of the error enum — don't declare it in 'errors'",
+                    use_case.name, reserved
+                ));
+            }
+        }
+
+        let body = std::fs::read_to_string(&code.file).map_err(|e| {
+            format!(
+                "UseCase '{}': failed to read code file '{}': {}",
+                use_case.name, code.file, e
+            )
+        })?;
+
+        context.require_git_dependency("common", "ssh://git@github.com/BH-World/common.git");
+        context.require_version_dependency_with_features("serde", "1", vec!["derive"]);
+        for (name, version) in &code.deps {
+            context.require_version_dependency(name, version);
+        }
+
+        if input_type.name == Self::RAW_REQUEST && context.find_type(Self::RAW_REQUEST).is_none() {
+            let domains = folder
+                .parent()
+                .ok_or("applications folder has no parent")?
+                .join("domains");
+            std::fs::write(
+                domains.join("raw_request.rs"),
+                crate::generator::rust_code::render::render(
+                    "domains/raw_request.rs.tera",
+                    &tera::Context::new(),
+                ),
+            )
+            .map_err(|e| format!("Failed to write RawRequest: {}", e))?;
+            context.register_domain_module("raw_request".to_string());
+        }
+
+        CodeUseCaseFile {
+            name: use_case.name.clone(),
+            input: input_type.name,
+            output: output_type.name,
+            source_file: code.file.clone(),
+            body,
+            dependencies,
+            error_variants: code.errors.clone(),
+        }
+        .write(&folder)?;
+        context.register_use_case_module(use_case.name.to_snake_case());
+        Ok(())
+    }
+
     pub(super) fn generate_use_case(
         &mut self,
         context: &mut CodeGenContext,
@@ -529,6 +773,9 @@ impl CodeGen {
         }
         if let Some(blob) = use_case.blob.clone() {
             return self.generate_blob_use_case(context, &use_case, &blob, folder);
+        }
+        if let Some(code) = use_case.code.clone() {
+            return self.generate_code_use_case(context, &use_case, &code, folder);
         }
 
         match self.resolve_use_case_shape(context, &use_case)? {
@@ -550,6 +797,7 @@ impl CodeGen {
                     shape.calls,
                     shape.copy_id,
                     shape.filters,
+                    shape.owner,
                     folder,
                 )?;
 
@@ -561,8 +809,9 @@ impl CodeGen {
                 let module_name = use_case.name.to_snake_case();
                 let file_path = folder.join(format!("{}.rs", module_name));
 
-                File::create(&file_path)
-                    .map_err(|e| format!("error when creating the file {:?}: {:?}", file_path, e))?;
+                File::create(&file_path).map_err(|e| {
+                    format!("error when creating the file {:?}: {:?}", file_path, e)
+                })?;
                 context.register_use_case_module(module_name);
                 Ok(())
             }

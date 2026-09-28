@@ -230,7 +230,27 @@ currently introduce a new field/expression *type* usable elsewhere in the
 language, and there's no plugin registry — every invocation must pass
 `--plugin=` explicitly.
 
-## 13. Dev Mode Artifacts
+## 13. App-Platform Features
+
+Everything a typical user-facing app needs beyond CRUD, all documented in
+[keywords.md](keywords.md):
+
+- **Current user**: routes with `auth` (including the login-only
+  `auth: required`) pass the JWT's user id to use cases.
+- **Ownership**: `owner: <field>` scopes a CRUD use case to that user
+  (stamp on create, filter on list, `NotFound` for others' rows).
+- **Literal filters**: `filters { visibility: "public" }`.
+- **Types**: `Bool`, `DateTime`, `Option<T>`.
+- **Migrations**: every `psql` entity's table is created at startup, with
+  optional idempotent `seed:` data.
+- **CORS**: `cors: "${CORS_ORIGINS}"` on HTTP adapters.
+- **Hand-written logic**: `code { file: "./logic/x.rs" infra: ... }` use
+  cases, with custom error variants and extra crates.
+- **Outbound HTTP**: `http_client` infras (JSON, configured headers).
+- **Webhooks**: the built-in `RawRequest` input gives a `code` use case the
+  raw body and headers, e.g. to verify an HMAC signature.
+
+## 14. Dev Mode Artifacts
 
 What it does:
 - Adds a live `GET /app` HTML docs route to every HTTP adapter (method,
@@ -242,7 +262,7 @@ What it does:
 How to use:
 - Run with `--dev`. Full defaulting rules: [cli.md](cli.md#dev-mode---dev).
 
-## 14. Scenarios and E2E Workflows
+## 15. Scenarios and E2E Workflows
 
 What it does:
 - Demonstrates complete, live-executed workflows (not just compile checks):

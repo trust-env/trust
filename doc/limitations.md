@@ -113,6 +113,30 @@
   `Status::not_found`, everything else → `Status::internal`) — there is no
   `status {}`-equivalent customization point for `rpc`, unlike HTTP routes.
 
+## `owner`, `code` and `RawRequest`
+
+- `owner:` only works on `call`-based use cases, with an `Int` owner field,
+  exposed over HTTP routes with `auth` — gRPC can't authenticate callers,
+  so an `owner` use case can't be an `rpc`.
+- `code {}` bodies are plain text pasted into `execute`: Trust doesn't
+  check them — mistakes surface when the generated crate is compiled, with
+  line numbers pointing into `applications/<use_case>.rs`, not the source
+  file.
+- `code {}` error variants always carry a `String` payload.
+- `RawRequest` is HTTP-only, can't be combined with path parameters, and
+  reads the body as UTF-8 text (no binary uploads).
+- `http_client` speaks JSON only, and every header is static per process
+  (no per-request headers).
+
+## Migrations
+
+- Additive only: a new field becomes a new (nullable) column, but renamed,
+  removed or retyped fields are left untouched in the database.
+- Only scalar and `Option<scalar>` fields can be stored — a field whose
+  type is another struct is a codegen error on a `psql` entity.
+- No foreign keys, indexes or unique constraints are generated.
+- `seed:` files re-run on every startup; they must be idempotent.
+
 ## HTTP Status Mapping
 
 - `NotFound` and `StorageError` always map to `404`/`500` respectively and

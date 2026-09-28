@@ -100,11 +100,13 @@ Written to **that app's own crate root** (`out/<app>/.env` in a workspace —
 there is no single shared workspace-root `.env`):
 
 - One line per `psql` infra: `<INFRA_NAME>_DB_URL=postgres://postgres:postgres@localhost:5432/<entity>` (env var name is the infra's name, upper-snake-cased, entity name lowercased for the DB name). `grpc_client` infras are skipped — their target address is a compile-time literal, not env-driven.
-- One line per distinct `${VAR}` actually referenced in any adapter's or load-balancer's own `on:` (never `targets`, see [conversions.md](conversions.md#7-address-string--env-var-interpolation)):
+- One line per distinct `${VAR}` referenced by an `http_client` infra's `base_url` or header values, defaulting to `changeme`.
+- One line per distinct `${VAR}` actually referenced in any adapter's `on:`/`cors:` or load-balancer's own `on:` (never `targets`, see [conversions.md](conversions.md#7-address-string--env-var-interpolation)):
   - Names containing `PORT` get a shared counter for that app, starting at **3000** and incrementing by 1 for each such variable encountered.
+  - Names containing `CORS` or `ORIGIN` default to `"http://localhost:5173"` (Vite's dev server).
   - Names containing `HOST` default to `"0.0.0.0"`.
   - Anything else defaults to the placeholder `"changeme"`.
-- `JWT_SECRET=changeme`, appended only if the app has at least one HTTP route with an `auth {}` block. The `auth` crate's `UserContext` extractor reads this variable at runtime to validate JWTs.
+- `JWT_SECRET=changeme`, appended only if the app has at least one HTTP route with `auth` (either `auth {}` or `auth: required`). The `auth` crate's `UserContext` extractor reads this variable at runtime to validate JWTs.
 
 `--dev` is meant for local iteration — none of this is meant to represent
 production secrets; you're expected to replace the scaffolded `.env` values

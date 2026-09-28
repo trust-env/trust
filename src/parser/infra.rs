@@ -1,10 +1,9 @@
 use crate::{
     lexer::{Keyword, Token},
     parser::{
-        Ast, GrpcClientInfraService, GrpcClientMethodMapping, InfraService, InfraServiceType,
-        InfraServiceType::Storage,
-        Parser, PsqlInfraService, S3InfraService, StorageType,
-        StorageType::Psql,
+        Ast, GrpcClientInfraService, GrpcClientMethodMapping, HttpClientInfraService, InfraService,
+        InfraServiceType, InfraServiceType::Storage, Parser, PsqlInfraService, S3InfraService,
+        StorageType, StorageType::Psql,
     },
 };
 
@@ -57,11 +56,21 @@ impl Parser {
             }
         };
 
-        match self.next_token() {
-            Some(Token::CloseBrace) => Ok(PsqlInfraService { entity }),
-            _ => {
-                self.revert(2);
-                return Err("Expected '}' after Psql declaration".to_string());
+        let mut seed = None;
+        loop {
+            match self.next_token() {
+                Some(Token::CloseBrace) => return Ok(PsqlInfraService { entity, seed }),
+                Some(Token::Comma) => continue,
+                Some(Token::Identifier(k)) if k == "seed" => {
+                    match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::StringLiteral(path))) => seed = Some(path),
+                        _ => return Err("Expected ': \"<path>\"' after 'seed'".to_string()),
+                    }
+                }
+                _ => {
+                    self.revert(2);
+                    return Err("Expected '}' after Psql declaration".to_string());
+                }
             }
         }
     }
@@ -131,7 +140,8 @@ impl Parser {
                                 _ => {
                                     self.revert(3);
                                     return Err(
-                                        "Expected '<storage_method>: <RpcName>' in 'methods' block".to_string()
+                                        "Expected '<storage_method>: <RpcName>' in 'methods' block"
+                                            .to_string(),
                                     );
                                 }
                             }
@@ -139,7 +149,8 @@ impl Parser {
                         _ => {
                             self.revert(1);
                             return Err(
-                                "Expected '<storage_method>: <RpcName>' or '}' in 'methods' block".to_string()
+                                "Expected '<storage_method>: <RpcName>' or '}' in 'methods' block"
+                                    .to_string(),
                             );
                         }
                     }
@@ -176,13 +187,15 @@ impl Parser {
         }
 
         let bucket = match (self.next_token(), self.next_token()) {
-            (Some(Token::Keyword(Keyword::Bucket)), Some(Token::Colon)) => match self.next_token() {
-                Some(Token::StringLiteral(bucket)) => bucket,
-                _ => {
-                    self.revert(3);
-                    return Err("Expected string literal after 'bucket:'".to_string());
+            (Some(Token::Keyword(Keyword::Bucket)), Some(Token::Colon)) => {
+                match self.next_token() {
+                    Some(Token::StringLiteral(bucket)) => bucket,
+                    _ => {
+                        self.revert(3);
+                        return Err("Expected string literal after 'bucket:'".to_string());
+                    }
                 }
-            },
+            }
             _ => {
                 self.revert(2);
                 return Err("Expected 'bucket' after S3 declaration".to_string());
@@ -236,6 +249,61 @@ impl Parser {
         }
     }
 
+    /// Parses `{ base_url: "..." headers { "Name": "value" ... } }` after
+    /// `http_client`. Header names are quoted (they contain `-`).
+    fn infra_http_client_body(&mut self) -> Result<HttpClientInfraService, String> {
+        if self.next_token() != Some(Token::OpenBrace) {
+            return Err("Expected '{' after 'http_client'".to_string());
+        }
+        let mut base_url = None;
+        let mut headers = Vec::new();
+        loop {
+            match self.next_token() {
+                Some(Token::CloseBrace) => break,
+                Some(Token::Comma) => continue,
+                Some(Token::Identifier(k)) if k == "base_url" => {
+                    match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::StringLiteral(url))) => {
+                            base_url = Some(url)
+                        }
+                        _ => return Err("Expected ': \"<url>\"' after 'base_url'".to_string()),
+                    }
+                }
+                Some(Token::Identifier(k)) if k == "headers" => {
+                    if self.next_token() != Some(Token::OpenBrace) {
+                        return Err("Expected '{' after 'headers'".to_string());
+                    }
+                    loop {
+                        match self.next_token() {
+                            Some(Token::CloseBrace) => break,
+                            Some(Token::Comma) => continue,
+                            Some(Token::StringLiteral(name)) => {
+                                match (self.next_token(), self.next_token()) {
+                                    (Some(Token::Colon), Some(Token::StringLiteral(value))) => {
+                                        headers.push((name, value))
+                                    }
+                                    _ => {
+                                        return Err(format!(
+                                            "Expected ': \"<value>\"' after header '{}'",
+                                            name
+                                        ));
+                                    }
+                                }
+                            }
+                            _ => return Err(
+                                "Expected '\"<Header-Name>\": \"<value>\"' entries in 'headers'"
+                                    .to_string(),
+                            ),
+                        }
+                    }
+                }
+                _ => return Err("Unexpected token in 'http_client' block".to_string()),
+            }
+        }
+        let base_url = base_url.ok_or("'http_client' block must declare 'base_url'")?;
+        Ok(HttpClientInfraService { base_url, headers })
+    }
+
     fn infra_content(&mut self) -> Result<InfraServiceType, String> {
         let mut i = 0;
         let mut res: Option<InfraServiceType> = None;
@@ -252,6 +320,9 @@ impl Parser {
                 Some(Token::CloseBrace) => break,
                 Some(Token::Keyword(Keyword::Storage)) => {
                     res = Some(Storage(self.infra_storage_body()?))
+                }
+                Some(Token::Identifier(k)) if k == "http_client" => {
+                    res = Some(InfraServiceType::HttpClient(self.infra_http_client_body()?))
                 }
                 _ => {
                     self.revert(i + 1);
@@ -309,7 +380,44 @@ mod tests {
             Storage(Psql(psql)) => &psql.entity,
             Storage(StorageType::GrpcClient(cfg)) => &cfg.entity,
             Storage(StorageType::S3(cfg)) => &cfg.entity,
+            InfraServiceType::HttpClient(_) => panic!("http_client infras have no entity"),
         }
+    }
+
+    #[test]
+    fn http_client_block_parses_base_url_and_headers() {
+        let infra = parse_infra(
+            r#"infra PaymentApi {
+                http_client {
+                    base_url: "${PAYMENT_API_URL}"
+                    headers {
+                        "X-API-Key": "${PAYMENT_API_KEY}"
+                        "Accept": "application/json"
+                    }
+                }
+            }"#,
+        );
+        match infra.service_type {
+            InfraServiceType::HttpClient(cfg) => {
+                assert_eq!(cfg.base_url, "${PAYMENT_API_URL}");
+                assert_eq!(
+                    cfg.headers,
+                    vec![
+                        ("X-API-Key".to_string(), "${PAYMENT_API_KEY}".to_string()),
+                        ("Accept".to_string(), "application/json".to_string()),
+                    ]
+                );
+            }
+            other => panic!("expected an http_client infra, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn http_client_without_base_url_is_rejected() {
+        let err = parser_for(r#"infra PaymentApi { http_client { headers { "A": "b" } } }"#)
+            .try_infra_service()
+            .unwrap_err();
+        assert!(err.contains("base_url"), "{err}");
     }
 
     #[test]

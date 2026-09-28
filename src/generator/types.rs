@@ -18,6 +18,12 @@ impl CodeGen {
             AllowedType::Int => Ok(RustType::primitive("i64")),
             AllowedType::Float => Ok(RustType::primitive("f64")),
             AllowedType::Decimal => Ok(RustType::primitive("Decimal")),
+            AllowedType::Bool => Ok(RustType::primitive("bool")),
+            AllowedType::DateTime => Ok(RustType::primitive("DateTime<Utc>")),
+            AllowedType::Option(inner) => {
+                let inner = self.resolve_type_reference(context, inner)?;
+                Ok(RustType::generic("Option", vec![inner], vec![]))
+            }
             AllowedType::Regex(_) => Ok(RustType::primitive("String")),
             AllowedType::DefinedType(name) => {
                 if let Some(t) = context.find_type(name) {

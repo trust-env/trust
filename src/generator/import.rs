@@ -81,6 +81,16 @@ impl CodeGen {
             if imports.needs_uuid {
                 context.require_version_dependency_with_features("uuid", "1", vec!["serde"]);
             }
+            if imports.needs_decimal {
+                context.require_version_dependency_with_features(
+                    "rust_decimal",
+                    "1",
+                    vec!["serde-str"],
+                );
+            }
+            if imports.needs_chrono {
+                context.require_version_dependency_with_features("chrono", "0.4", vec!["serde"]);
+            }
 
             context.require_version_dependency_with_features("serde", "1", vec!["derive"]);
             let mut derive = "#[derive(Debug, Clone, serde::Serialize, serde::Deserialize".to_string();
@@ -88,6 +98,12 @@ impl CodeGen {
                 let mut features = vec!["runtime-tokio", "tls-rustls", "postgres"];
                 if imports.needs_uuid {
                     features.push("uuid");
+                }
+                if imports.needs_decimal {
+                    features.push("rust_decimal");
+                }
+                if imports.needs_chrono {
+                    features.push("chrono");
                 }
                 context.require_version_dependency_with_features("sqlx", "0.9.0", features);
                 derive.push_str(", sqlx::FromRow");

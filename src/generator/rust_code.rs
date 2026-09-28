@@ -10,6 +10,7 @@ pub mod service;
 pub mod types;
 pub mod file;
 pub mod _enum;
+pub mod migration;
 
 pub trait RustCode {
     fn to_rust_code(&self) -> String;

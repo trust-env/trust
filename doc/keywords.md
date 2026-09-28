@@ -114,6 +114,36 @@ known source of billing bugs; `Decimal` doesn't.
 - **HTTP/`psql` only**, same gRPC gap as `Uuid`/`Float` — see
   [`rpc`](#rpc) below.
 
+### `Bool`
+Built-in boolean → Rust `bool`, Postgres `BOOLEAN`. **HTTP/`psql` only**
+(gRPC-exposed types still only support `String`/`Int`).
+
+### `DateTime`
+Built-in UTC timestamp → Rust `chrono::DateTime<Utc>` (the `chrono` crate
+is added with its `serde` feature, plus the `sqlx` `chrono` feature when
+the type is a storage entity), Postgres `TIMESTAMPTZ`. Serializes as an
+RFC 3339 string. **HTTP/`psql` only.**
+
+When a `save_one`/`update_one` call builds an entity from an input that
+doesn't carry one of its `DateTime` fields (the usual `created_at` case),
+that field is set to `chrono::Utc::now()` instead of a default — see
+[conversions.md §5](conversions.md#5-use_case-multi-call-semantics).
+
+### `Option`
+`Option<T>` — a nullable field → Rust `Option<T>`, a nullable column in
+the generated migration. `T` is any other type (not another `Option`).
+`Option<Decimal>`, `Option<DateTime>`, `Option<SomeDeclaredType>` all
+work; imports follow `T`. **HTTP/`psql` only.**
+
+```tr
+type Order {
+    id: Int,
+    paid: Bool,
+    purchase_id: Option<String>,
+    created_at: DateTime
+}
+```
+
 ### `Regex`
 Regex-annotated type form (`Regex<pattern>`).
 
@@ -165,6 +195,33 @@ all 8 CRUD/list methods (`save_one`, `save_many`, `find_one`, `find_many`,
 `list`, `update_one`, `delete`, `delete_many`) — see
 [conversions.md](conversions.md#3-storage-trait-shape-psql) for exact
 signatures.
+
+The entity's table is **created by the generated binary itself** at startup:
+every `psql` entity gets a `migrations/<table>.sql` in its crate
+(`CREATE TABLE IF NOT EXISTS`, then one `ADD COLUMN IF NOT EXISTS` per
+field so fields added later reach existing tables) that `main.rs` runs
+right after connecting. `id: Int` becomes `BIGSERIAL PRIMARY KEY`. See
+[conversions.md §3c](conversions.md#3c-migrations-psql).
+
+#### `seed`
+Optional SQL file run at every startup, right after the table exists —
+reference data such as sizes, categories or an admin permission row:
+
+```tr
+infra SizeInfra {
+    storage {
+        psql {
+            entity: Size
+            seed: "./seed/sizes.sql"
+        }
+    }
+}
+```
+
+The path is read at compile time relative to the working directory and
+copied into the crate as `migrations/<table>.seed.sql`. Because it re-runs
+on every boot it **must be idempotent** (`INSERT ... ON CONFLICT DO
+NOTHING`, explicit ids, ...).
 
 #### Shorthand forms
 
@@ -256,6 +313,31 @@ exact generated shape, and [limitations.md](limitations.md) for what's not
 supported yet (gRPC exposure, non-fixed input/output, `errors {}`
 customization, operations beyond the three below).
 
+### `http_client`
+An outbound JSON HTTP client to another service — e.g. a payment API —
+usable from [`code`](#code) use cases:
+
+```tr
+infra PaymentApi {
+    http_client {
+        base_url: "${PAYMENT_API_URL}"
+        headers {
+            "X-API-Key": "${PAYMENT_API_KEY}"
+        }
+    }
+}
+```
+
+Generates `src/infrastructures/http_client/<infra>.rs` with a
+`{Infra}Client` (here `PaymentApiClient`) exposing
+`get_json`, `post_json`, `put_json` and `delete_json` — each takes a path
+appended to `base_url`, sends the configured headers, and returns
+`Result<T, String>` (non-2xx statuses and undecodable bodies are errors,
+with the response body in the message). `base_url` and header values
+support `${VAR}`, resolved when the binary starts, so secrets never live in
+`.tr` source; `--dev` scaffolds each variable as `changeme`. Pulls in
+`reqwest` (`json`) and `serde_json`.
+
 ### `bucket`
 Inside `s3`, the literal bucket name (a plain string, not env-driven —
 see [`s3`](#s3) above for why this differs from endpoint/credentials).
@@ -314,7 +396,21 @@ full breakdown.
 ### `filters`
 Scopes a `list`-bound primary `call:`'s results by one or more equality
 predicates, each comparing a storage field against one of the use case's
-own input fields.
+own input fields — or against a fixed literal:
+
+```tr
+use_case ListCommunityStickersUseCase {
+    call: StickerInfra.list
+    filters {
+        visibility: "community"
+        published: true
+    }
+}
+```
+
+A literal is a quoted string or a bare word (`true`, `42`); like every
+predicate value it's compared as text (`field::text = value`). Literal
+filters add nothing to the guessed input.
 
 ```tr
 use_case ListRatingsForSpotUseCase {
@@ -381,11 +477,99 @@ Notes:
   enum regardless of what you map, and (see [`status`](#status) below) their
   eventual HTTP status codes are hardcoded and **not** overridable.
 
+### `owner`
+Scopes a `call`-based use case to **the calling user** — the `user_id` of
+the route's JWT (see [`auth`](#auth)). Names an `Int` field of the primary
+(last) call's entity:
+
+```tr
+use_case ListMyCartUseCase {
+    call: CartInfra.list
+    owner: user_id
+}
+```
+
+What the primary call does with it:
+
+| Call | Behavior |
+|---|---|
+| `save_one` | stamps `entity.<owner> = user` before saving |
+| `list` | adds a `<owner> = user` predicate (combines with `filters`) |
+| `find_one` | a row owned by someone else is `NotFound` |
+| `update_one` / `delete` | fetches the row first; not owned → `NotFound` (nothing is written); `update_one` also re-stamps the owner |
+
+- The owner field is **never part of a guessed input**, so clients can't
+  choose it. An explicit input that has it is simply overwritten.
+- Someone else's row reads as `404`, never `403`, so ids can't be probed.
+- Every HTTP route exposing an `owner` use case **must declare `auth`**
+  (either form) — codegen error otherwise. gRPC can't expose them yet.
+- Codegen errors: unknown field, or a field that isn't `Int`.
+
+### `code`
+A use case whose `execute` body is **hand-written Rust**, read from a file,
+for logic CRUD can't express (checkout, totals, calls to other services,
+webhooks). Everything around the body — error enum, trait, struct,
+constructor, `main.rs` wiring — is generated as usual. Mutually exclusive
+with `call`, `ai` and `blob`.
+
+```tr
+use_case CheckoutUseCase {
+    input: CheckoutRequest
+    output: CheckoutResponse
+    code {
+        file: "./logic/checkout.rs"
+        infra: CartInfra
+        infra: OrderInfra
+        infra: PaymentApi
+        errors { EmptyCart PaymentUnavailable }
+        deps { uuid: "1" }
+    }
+}
+```
+
+- `file` (required): path relative to the working directory. Its content
+  is pasted as the body of
+  `async fn execute(&self, user: i64, input: Input) -> Result<Output, {Name}Error>`
+  — `user` is the JWT user id on routes with `auth`, `0` otherwise.
+- `input`/`output` are required (declared types, or the built-in
+  [`RawRequest`](#rawrequest) for the input).
+- `infra:` (any number): each becomes a field named after the infra in
+  snake_case — `self.cart_infra`, `self.payment_api`. `psql`/`grpc_client`
+  infras are generic storage handles (`list`, `save_one`, `find_one`, ...
+  from `common::Storage`); `s3` infras are the concrete `S3{Entity}Storage`;
+  [`http_client`](#http_client) infras are the concrete `{Infra}Client`.
+- `errors {}`: extra `Variant(String)` members of `{Name}Error`, next to the
+  always-present `NotFound` and `StorageError(String)`. Routes map them
+  with [`status`](#status) like any other error target.
+- `deps {}`: extra crates (`name: "version"`) for the generated
+  `Cargo.toml`.
+- `?` works on every infra: storage errors and the `String` errors of
+  `s3`/`http_client` convert into `StorageError`.
+- The body sees `common::{Storage, StorageListQuery, StoragePredicate,
+  StoragePredicateOperator, UseCase}` and every generated type
+  (`use crate::*`). Apps containing a `code` use case keep **all** declared
+  types, since the body may name any of them.
+
+### `RawRequest`
+Built-in input type for `code` use cases that need the request exactly as
+received — typically a webhook verifying an HMAC over the raw body:
+
+```rust
+pub struct RawRequest {
+    pub body: String,
+    pub headers: HashMap<String, String>, // lowercase names
+}
+```
+
+Used as `input: RawRequest` (when no type of that name is declared). The
+route handler passes the untouched body and headers instead of decoding
+JSON. HTTP routes only, and such a route can't have path parameters.
+
 ### `ai`
 Switches use case implementation to AI-authored function body generation.
-Mutually exclusive with `call` and `blob` — a use case declaring more than
-one is a hard error (`cannot declare more than one of 'call', 'ai', 'blob'
-— they're mutually exclusive`).
+Mutually exclusive with `call`, `blob` and `code` — a use case declaring
+more than one is a hard error (`cannot declare more than one of 'call',
+'ai', 'blob', 'code' — they're mutually exclusive`).
 
 ### `prompt`
 Prompt text used by `ai` generation.
@@ -465,6 +649,26 @@ Declares an adapter boundary.
 ### `http`
 Declares HTTP adapter configuration.
 
+### `cors`
+Browser origins allowed to call an HTTP adapter (comma-separated, or `*`
+for any), resolved at runtime with the same `${VAR}` interpolation as
+`on:`:
+
+```tr
+adapter HttpApi {
+    http {
+        on: "${HOST}:${PORT}"
+        cors: "${CORS_ORIGINS}"
+        routes { ... }
+    }
+}
+```
+
+Adds a `tower-http` `CorsLayer` (any method, any header) to the adapter's
+router. Without `cors:` no CORS headers are sent — browsers on another
+origin can't call the API. `--dev` scaffolds `*CORS*`/`*ORIGIN*` variables
+as `http://localhost:5173` (Vite's dev server).
+
 ### `routes`
 Route list for HTTP adapter.
 
@@ -512,7 +716,22 @@ and a JSON body extractor behind the scenes, then reassembles them before
 calling your use case. See [conversions.md](conversions.md#6-http-path-parameter-conversion).
 
 ### `auth`
-Route-level authorization requirement.
+Route-level authorization requirement, in two forms. Both extract the
+caller's JWT (`auth::UserContext`, **401** when missing or invalid) and
+pass its `user_id` to the use case's `execute` — which is what
+[`owner`](#owner) and [`code`](#code) bodies rely on. Routes without
+`auth` call use cases as user `0`.
+
+**Login only** — any valid JWT:
+
+```tr
+GET "/cart" {
+    use_case: ListMyCartUseCase
+    auth: required
+}
+```
+
+**Permission row** — additionally requires a matching grant:
 
 ```tr
 DELETE "/tasks/:id" {

@@ -2,7 +2,8 @@ use crate::{
     lexer::{Keyword, Token},
     parser::{
         AdapterService, AdapterType, AllowedType, Ast, AuthRequirement, GrpcAdapterService,
-        GrpcRpc, HttpAdapterService, HttpMethod, HttpRoute, Parser, StatusMapping,
+        GrpcRpc, HttpAdapterService, HttpMethod, HttpRoute, Parser, PermissionRequirement,
+        StatusMapping,
     },
 };
 
@@ -107,12 +108,26 @@ impl Parser {
     /// are reserved keywords — they're extremely common struct field names
     /// (e.g. on `Permission` itself), so they're matched as plain
     /// identifiers here instead.
+    ///
+    /// Also accepts the login-only shorthand `auth: required`, which needs a
+    /// valid JWT but no permission row.
     fn try_auth_block(&mut self) -> Result<AuthRequirement, String> {
         match (self.next_token(), self.next_token()) {
             (Some(Token::Keyword(Keyword::Auth)), Some(Token::OpenBrace)) => {}
+            (Some(Token::Keyword(Keyword::Auth)), Some(Token::Colon)) => {
+                return match self.next_token() {
+                    Some(Token::Identifier(s)) if s == "required" => {
+                        Ok(AuthRequirement::Authenticated)
+                    }
+                    _ => {
+                        self.revert(3);
+                        Err("Expected 'required' after 'auth:'".to_string())
+                    }
+                };
+            }
             _ => {
                 self.revert(2);
-                return Err("Expected 'auth {' block".to_string());
+                return Err("Expected 'auth {' block or 'auth: required'".to_string());
             }
         }
 
@@ -172,7 +187,13 @@ impl Parser {
         }
 
         match (infra, target, action) {
-            (Some(infra), Some(target), Some(action)) => Ok(AuthRequirement { infra, target, action }),
+            (Some(infra), Some(target), Some(action)) => {
+                Ok(AuthRequirement::Permission(PermissionRequirement {
+                    infra,
+                    target,
+                    action,
+                }))
+            }
             _ => {
                 self.reset(pos);
                 Err("'auth' block must declare 'infra', 'target', and 'action'".to_string())
@@ -314,12 +335,21 @@ impl Parser {
 
         let mut routes = Vec::new();
         let mut on = None;
+        let mut cors = None;
         loop {
             match self.next_token() {
                 Some(Token::CloseBrace) => break,
                 Some(Token::Keyword(Keyword::Routes)) => {
                     self.revert(1);
                     routes = self.try_http_routes_block()?;
+                }
+                Some(Token::Identifier(k)) if k == "cors" => {
+                    match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::StringLiteral(origins))) => {
+                            cors = Some(origins)
+                        }
+                        _ => return Err("Expected ': \"<origins>\"' after 'cors'".to_string()),
+                    }
                 }
                 Some(Token::Keyword(Keyword::On)) => match self.next_token() {
                     Some(Token::Colon) => match self.next_token() {
@@ -340,7 +370,7 @@ impl Parser {
                 }
             }
         }
-        Ok(HttpAdapterService { routes, on })
+        Ok(HttpAdapterService { routes, on, cors })
     }
 
     /// Parses `rpc Name { input: X output: Y use_case: Z }` — the gRPC
@@ -481,6 +511,7 @@ impl Parser {
                     adapter_type: AdapterType::Http(HttpAdapterService {
                         routes: vec![],
                         on: None,
+                        cors: None,
                     }),
                 })),
                 _ => {
@@ -496,7 +527,9 @@ impl Parser {
                     };
 
                     match self.next_token() {
-                        Some(Token::CloseBrace) => Ok(Ast::Adapter(AdapterService { name, adapter_type })),
+                        Some(Token::CloseBrace) => {
+                            Ok(Ast::Adapter(AdapterService { name, adapter_type }))
+                        }
                         _ => {
                             self.revert(1);
                             Err("Expected '}' to close adapter body".to_string())
@@ -706,7 +739,14 @@ mod tests {
         );
         match with_auth.adapter_type {
             AdapterType::Http(http) => {
-                let auth = http.routes[0].auth.as_ref().expect("expected an auth requirement");
+                let auth = match http.routes[0]
+                    .auth
+                    .as_ref()
+                    .expect("expected an auth requirement")
+                {
+                    AuthRequirement::Permission(p) => p,
+                    other => panic!("expected a permission requirement, got {:?}", other),
+                };
                 assert_eq!(auth.infra, "Perms");
                 assert_eq!(auth.target, "user");
                 assert_eq!(auth.action, "read");
@@ -729,6 +769,78 @@ mod tests {
             AdapterType::Http(http) => assert!(http.routes[0].auth.is_none()),
             other => panic!("expected AdapterType::Http, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn http_block_parses_cors_origins() {
+        let adapter = parse_adapter(
+            r#"adapter A {
+                http {
+                    on: "0.0.0.0:8080"
+                    cors: "${CORS_ORIGINS}"
+                }
+            }"#,
+        );
+        match adapter.adapter_type {
+            AdapterType::Http(http) => assert_eq!(http.cors.as_deref(), Some("${CORS_ORIGINS}")),
+            other => panic!("expected AdapterType::Http, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cors_without_a_string_is_an_error() {
+        let result = parser_for(
+            r#"adapter A {
+                http {
+                    cors: CORS_ORIGINS
+                }
+            }"#,
+        )
+        .try_adapter_service();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn auth_required_shorthand_parses_as_authenticated() {
+        let adapter = parse_adapter(
+            r#"adapter A {
+                http {
+                    routes {
+                        GET "/me" {
+                            use_case: X
+                            auth: required
+                        }
+                    }
+                }
+            }"#,
+        );
+        match adapter.adapter_type {
+            AdapterType::Http(http) => {
+                assert!(matches!(
+                    http.routes[0].auth,
+                    Some(AuthRequirement::Authenticated)
+                ))
+            }
+            other => panic!("expected AdapterType::Http, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn auth_colon_with_anything_but_required_is_an_error() {
+        let result = parser_for(
+            r#"adapter A {
+                http {
+                    routes {
+                        GET "/me" {
+                            use_case: X
+                            auth: optional
+                        }
+                    }
+                }
+            }"#,
+        )
+        .try_adapter_service();
+        assert!(result.is_err());
     }
 
     #[test]

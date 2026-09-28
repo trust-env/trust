@@ -1,0 +1,68 @@
+use serde::{Serialize, de::DeserializeOwned};
+
+/// Outbound JSON client for the `{{ infra }}` infra: every request goes to
+/// `base_url` + the given path, with the infra's configured headers.
+/// Failures (network errors, non-2xx statuses, undecodable bodies) are
+/// returned as a readable `String`.
+#[derive(Clone)]
+pub struct {{ name }} {
+    client: reqwest::Client,
+    base_url: String,
+    headers: reqwest::header::HeaderMap,
+}
+
+impl {{ name }} {
+    pub fn new(base_url: String, headers: Vec<(String, String)>) -> Result<Self, String> {
+        let mut header_map = reqwest::header::HeaderMap::new();
+        for (name, value) in headers {
+            let header_name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                .map_err(|e| format!("invalid header name '{}': {}", name, e))?;
+            let header_value = reqwest::header::HeaderValue::from_str(&value)
+                .map_err(|e| format!("invalid value for header '{}': {}", name, e))?;
+            header_map.insert(header_name, header_value);
+        }
+        Ok(Self {
+            client: reqwest::Client::new(),
+            base_url: base_url.trim_end_matches('/').to_string(),
+            headers: header_map,
+        })
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}/{}", self.base_url, path.trim_start_matches('/'))
+    }
+
+    async fn send<T: DeserializeOwned>(&self, request: reqwest::RequestBuilder) -> Result<T, String> {
+        let response = request
+            .headers(self.headers.clone())
+            .send()
+            .await
+            .map_err(|e| format!("{} request failed: {}", "{{ infra }}", e))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|e| format!("{} response unreadable: {}", "{{ infra }}", e))?;
+        if !status.is_success() {
+            return Err(format!("{} responded {}: {}", "{{ infra }}", status, body));
+        }
+        serde_json::from_str(if body.is_empty() { "null" } else { &body })
+            .map_err(|e| format!("{} response is not the expected JSON: {} (body: {})", "{{ infra }}", e, body))
+    }
+
+    pub async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
+        self.send(self.client.get(self.url(path))).await
+    }
+
+    pub async fn post_json<B: Serialize + ?Sized, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T, String> {
+        self.send(self.client.post(self.url(path)).json(body)).await
+    }
+
+    pub async fn put_json<B: Serialize + ?Sized, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T, String> {
+        self.send(self.client.put(self.url(path)).json(body)).await
+    }
+
+    pub async fn delete_json<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
+        self.send(self.client.delete(self.url(path))).await
+    }
+}

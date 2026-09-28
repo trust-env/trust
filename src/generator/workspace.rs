@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::parser::{
-    AdapterService, AdapterType, AllowedType, AppService, Ast, InfraService,
+    AdapterService, AdapterType, AllowedType, AppService, Ast, InfraService, InfraServiceType,
     InfraServiceType::Storage, StorageType, StorageType::Psql, TypeDeclaration, UseCaseService,
 };
 
@@ -47,13 +47,15 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
     let mut infra_names: HashSet<String> = HashSet::new();
 
     for adapter_name in &adapter_names {
-        let Some(adapter) = find_adapter(asts, adapter_name) else { continue };
+        let Some(adapter) = find_adapter(asts, adapter_name) else {
+            continue;
+        };
         match &adapter.adapter_type {
             AdapterType::Http(http) => {
                 for route in &http.routes {
                     use_case_names.insert(route.use_case.clone());
-                    if let Some(auth) = &route.auth {
-                        infra_names.insert(auth.infra.clone());
+                    if let Some(infra) = route.auth.as_ref().and_then(|a| a.permission_infra()) {
+                        infra_names.insert(infra.to_string());
                     }
                 }
             }
@@ -68,7 +70,9 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
     let mut type_names: HashSet<String> = HashSet::new();
 
     for use_case_name in &use_case_names {
-        let Some(use_case) = find_use_case(asts, use_case_name) else { continue };
+        let Some(use_case) = find_use_case(asts, use_case_name) else {
+            continue;
+        };
         for call in &use_case.calls {
             infra_names.insert(call.target.clone());
         }
@@ -80,6 +84,16 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
         if let Some(blob) = &use_case.blob {
             infra_names.insert(blob.target.clone());
         }
+        if let Some(code) = &use_case.code {
+            infra_names.extend(code.infras.iter().cloned());
+            // A hand-written body may name any declared type, which this
+            // closure can't see into — keep every type for this app.
+            for ast in asts {
+                if let Ast::TypeDecl(t) = ast {
+                    type_names.insert(type_decl_name(t).to_string());
+                }
+            }
+        }
         if let Some(input) = &use_case.input {
             collect_defined_type_name(input, &mut type_names);
         }
@@ -89,7 +103,9 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
     }
 
     for infra_name in &infra_names {
-        let Some(infra) = find_infra(asts, infra_name) else { continue };
+        let Some(infra) = find_infra(asts, infra_name) else {
+            continue;
+        };
         match &infra.service_type {
             Storage(Psql(psql)) => collect_defined_type_name(&psql.entity, &mut type_names),
             // Deliberately does NOT add `cfg.service` (the target adapter's
@@ -97,8 +113,13 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
             // to its own app and must never be generated inside this one.
             // It's resolved separately, read-only, against the full
             // unfiltered ast list at codegen time.
-            Storage(StorageType::GrpcClient(cfg)) => collect_defined_type_name(&cfg.entity, &mut type_names),
-            Storage(StorageType::S3(cfg)) => collect_defined_type_name(&cfg.entity, &mut type_names),
+            Storage(StorageType::GrpcClient(cfg)) => {
+                collect_defined_type_name(&cfg.entity, &mut type_names)
+            }
+            Storage(StorageType::S3(cfg)) => {
+                collect_defined_type_name(&cfg.entity, &mut type_names)
+            }
+            InfraServiceType::HttpClient(_) => {}
         }
     }
 
@@ -106,15 +127,19 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
     // declared type can itself reference other declared types.
     let mut worklist: Vec<String> = type_names.iter().cloned().collect();
     while let Some(name) = worklist.pop() {
-        let Some(decl) = find_type(asts, &name) else { continue };
+        let Some(decl) = find_type(asts, &name) else {
+            continue;
+        };
         let referenced_types: Vec<&AllowedType> = match decl {
             TypeDeclaration::Struct(s) => s.fields.iter().map(|f| &f.field_type).collect(),
             TypeDeclaration::TypeAlias(a) => vec![&a.aliased_type],
         };
         for allowed in referenced_types {
-            if let AllowedType::DefinedType(referenced) = allowed {
+            let mut referenced = HashSet::new();
+            collect_defined_type_name(allowed, &mut referenced);
+            for referenced in referenced {
                 if type_names.insert(referenced.clone()) {
-                    worklist.push(referenced.clone());
+                    worklist.push(referenced);
                 }
             }
         }
@@ -134,8 +159,12 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
 }
 
 fn collect_defined_type_name(allowed: &AllowedType, out: &mut HashSet<String>) {
-    if let AllowedType::DefinedType(name) = allowed {
-        out.insert(name.clone());
+    match allowed {
+        AllowedType::DefinedType(name) => {
+            out.insert(name.clone());
+        }
+        AllowedType::Option(inner) => collect_defined_type_name(inner, out),
+        _ => {}
     }
 }
 
@@ -199,6 +228,7 @@ mod tests {
             name: name.to_string(),
             adapter_type: AdapterType::Http(HttpAdapterService {
                 on: Some("0.0.0.0:8080".to_string()),
+                cors: None,
                 routes: vec![HttpRoute {
                     method: HttpMethod::Get,
                     path: "/x".to_string(),
@@ -240,6 +270,8 @@ mod tests {
             ai: None,
             blob: None,
             filters: vec![],
+            owner: None,
+            code: None,
         })
     }
 
@@ -247,6 +279,7 @@ mod tests {
         Ast::Infra(InfraService {
             name: name.to_string(),
             service_type: InfraServiceType::Storage(StorageType::Psql(PsqlInfraService {
+                seed: None,
                 entity: AllowedType::DefinedType(entity.to_string()),
             })),
         })
