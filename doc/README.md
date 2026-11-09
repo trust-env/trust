@@ -4,6 +4,7 @@ This folder contains feature and language documentation for Trust.
 
 ## Contents
 
+- `tutorial.md`: hands-on walkthrough — build, run and call a first service.
 - `language-overview.md`: what Trust is, compilation model, and core concepts.
 - `keywords.md`: all currently recognized DSL keywords, what they do, and how to use them.
 - `features.md`: full feature catalog, including HTTP, gRPC, storage, AI, plugins, and multi-app workflows.

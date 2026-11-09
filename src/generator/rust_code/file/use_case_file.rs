@@ -5,6 +5,7 @@ use heck::ToSnakeCase;
 use crate::{
     generator::rust_code::{
         file::psql_storage_file::STORAGE_ERROR_VARIANTS,
+        fragments::{type_params, where_block, where_clause},
         imports::{DATE_TIME, LocalImports, common_use},
         render::render,
         types::{RustField, RustType},
@@ -13,6 +14,36 @@ use crate::{
 };
 use serde::Serialize;
 use tera::Context;
+
+/// How one entity field is filled in a `From<Input> for Entity` impl.
+#[derive(Serialize)]
+struct FieldInitView {
+    name: String,
+    /// `input` (copied from the input), `now` (server-stamped
+    /// `DateTime`) or `default`.
+    source: &'static str,
+}
+
+/// One `StorageError::Variant(..) => UseCaseError::Target(..)` match arm.
+#[derive(Serialize)]
+struct ErrorArmView {
+    variant: String,
+    target: String,
+    /// The mapping's fixed message as a Rust string literal; `None` keeps
+    /// the storage error's own message.
+    message_literal: Option<String>,
+}
+
+/// One equality predicate of a generated `StorageListQuery`.
+#[derive(Serialize)]
+struct PredicateView {
+    /// The column name as a Rust string literal.
+    field_literal: String,
+    /// `input` (an input field), `literal` (a fixed value) or `user`.
+    source: &'static str,
+    /// The input field name, or the literal value as a Rust string literal.
+    value: String,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CallKind {
@@ -150,19 +181,24 @@ impl UseCaseFile {
         result
     }
 
-    fn generics(&self) -> String {
-        (0..self.unique_calls().len())
-            .map(|i| format!("S{}", i))
-            .collect::<Vec<_>>()
-            .join(", ")
+    fn type_param_names(&self) -> Vec<String> {
+        (0..self.unique_calls().len()).map(|i| format!("S{}", i)).collect()
     }
 
-    fn where_clause(&self) -> String {
+    fn generics(&self) -> String {
+        self.type_param_names().join(", ")
+    }
+
+    fn bounds(&self) -> Vec<(String, Vec<String>)> {
         self.unique_calls()
             .iter()
             .enumerate()
-            .map(|(i, call)| format!("    S{}: {},\n", i, call.storage_trait))
+            .map(|(i, call)| (format!("S{}", i), vec![call.storage_trait.clone()]))
             .collect()
+    }
+
+    fn where_clause(&self) -> String {
+        where_clause(&self.bounds())
     }
 
     /// The `id`/`limit`/`offset` style fields on an explicit request type come
@@ -173,14 +209,15 @@ impl UseCaseFile {
     /// A `DateTime` entity field the input doesn't carry (e.g.
     /// `created_at`) is server-stamped with the current time rather than
     /// defaulted to the epoch.
-    fn field_init(&self, field: &RustField, copy_id: bool) -> String {
-        if (field.name != "id" || copy_id) && self.input.fields.iter().any(|f| f.name == field.name) {
-            format!("{}: input.{},\n", field.name, field.name)
+    fn field_init(&self, field: &RustField, copy_id: bool) -> FieldInitView {
+        let source = if (field.name != "id" || copy_id) && self.input.fields.iter().any(|f| f.name == field.name) {
+            "input"
         } else if field.field_type.name == DATE_TIME {
-            format!("{}: chrono::Utc::now(),\n", field.name)
+            "now"
         } else {
-            format!("{}: Default::default(),\n", field.name)
-        }
+            "default"
+        };
+        FieldInitView { name: field.name.clone(), source }
     }
 
     fn gen_input_struct(&self) -> String {
@@ -208,18 +245,16 @@ impl UseCaseFile {
 
     fn gen_entity_conversion(&self, entity: &RustType, copy_id: bool) -> String {
         let entity_type = entity.to_call_string(Vec::new());
-        // `field_init` already returns "name: value,\n" — strip the trailing
-        // newline the template's own loop adds back per line.
-        let field_lines: Vec<String> = entity
+        let fields: Vec<FieldInitView> = entity
             .fields
             .iter()
-            .map(|field| self.field_init(field, copy_id).trim_end().to_string())
+            .map(|field| self.field_init(field, copy_id))
             .collect();
 
         let mut context = Context::new();
         context.insert("input_name", &self.input_name());
         context.insert("entity_type", &entity_type);
-        context.insert("field_lines", &field_lines);
+        context.insert("fields", &fields);
         render("file/use_case/entity_conversion.rs.tera", &context)
     }
 
@@ -312,7 +347,7 @@ impl UseCaseFile {
         struct StorageImplView {
             storage_error: String,
             has_custom_errors: bool,
-            match_arms: Vec<String>,
+            match_arms: Vec<ErrorArmView>,
             has_fallback: bool,
         }
 
@@ -335,23 +370,16 @@ impl UseCaseFile {
                     .iter()
                     .all(|v| Self::mapped_error(&call.errors, v).is_some());
 
-                let match_arms: Vec<String> = STORAGE_ERROR_VARIANTS
+                let match_arms: Vec<ErrorArmView> = STORAGE_ERROR_VARIANTS
                     .iter()
                     .filter_map(|variant| {
                         let mapping = Self::mapped_error(&call.errors, variant)?;
-                        let (binding, value_expr) = match &mapping.message {
-                            Some(m) => ("_msg".to_string(), format!("{:?}.to_string()", m)),
-                            None => ("msg".to_string(), "msg".to_string()),
-                        };
-                        Some(format!(
-                            "{storage_error}::{variant}({binding}) => {name}::{target}({value_expr})",
-                            storage_error = storage_error,
-                            variant = variant,
-                            binding = binding,
-                            name = name,
-                            target = mapping.target,
-                            value_expr = value_expr,
-                        ))
+                        Some(ErrorArmView {
+                            variant: variant.to_string(),
+                            target: mapping.target.clone(),
+                            // Rust string literal of the fixed message, if any.
+                            message_literal: mapping.message.as_ref().map(|m| format!("{:?}", m)),
+                        })
                     })
                     .collect();
 
@@ -423,37 +451,33 @@ impl UseCaseFile {
     /// (`.to_string()`'d, same conversion `auth {}`'s own permission-row
     /// lookup already uses for its own predicates).
     fn list_query_expr(&self) -> String {
-        if self.filters.is_empty() && self.owner.is_none() {
-            return "StorageListQuery {\n                limit: input.limit,\n                offset: input.offset,\n                predicates: vec![],\n            }"
-                .to_string();
-        }
-
-        let predicate = |field: &str, value: String| {
-            format!(
-                "StoragePredicate {{ field: {:?}.to_string(), operator: StoragePredicateOperator::Eq, value: {} }}",
-                field, value
-            )
-        };
-        let mut predicates: Vec<String> = self
+        let mut predicates: Vec<PredicateView> = self
             .filters
             .iter()
             .map(|f| match &f.source {
-                FilterSource::Input(input_field) => {
-                    predicate(&f.field, format!("input.{}.to_string()", input_field))
-                }
-                FilterSource::Literal(value) => {
-                    predicate(&f.field, format!("{:?}.to_string()", value))
-                }
+                FilterSource::Input(input_field) => PredicateView {
+                    field_literal: format!("{:?}", f.field),
+                    source: "input",
+                    value: input_field.clone(),
+                },
+                FilterSource::Literal(value) => PredicateView {
+                    field_literal: format!("{:?}", f.field),
+                    source: "literal",
+                    value: format!("{:?}", value),
+                },
             })
             .collect();
         if let Some(owner) = &self.owner {
-            predicates.push(predicate(owner, "user.to_string()".to_string()));
+            predicates.push(PredicateView {
+                field_literal: format!("{:?}", owner),
+                source: "user",
+                value: String::new(),
+            });
         }
 
-        format!(
-            "StorageListQuery {{\n                limit: input.limit,\n                offset: input.offset,\n                predicates: vec![\n                    {}\n                ],\n            }}",
-            predicates.join(",\n                    ")
-        )
+        let mut context = Context::new();
+        context.insert("predicates", &predicates);
+        render("file/use_case/list_query.rs.tera", &context)
     }
 
     /// Renders one call's expression: `is_tail` (the primary, always the
@@ -467,35 +491,30 @@ impl UseCaseFile {
         let entity = call.entity_type.to_call_string(Vec::new());
         let field = Self::field_name(call);
 
-        let id_expr = || {
-            if is_tail {
-                "input.id".to_string()
-            } else {
-                "input.id.clone()".to_string()
-            }
-        };
         let owner = if is_tail { self.owner.as_deref() } else { None };
-        let entity_expr = || {
-            let from = if is_tail {
-                format!("{}::from(input)", entity)
-            } else {
-                format!("{}::from(input.clone())", entity)
-            };
-            match owner {
-                Some(field) => format!(
-                    "{{\n                let mut entity = {};\n                entity.{} = user;\n                entity\n            }}",
-                    from, field
-                ),
-                None => from,
-            }
+        let kind = match call.call_kind {
+            CallKind::Create => "create",
+            CallKind::Read => "read",
+            CallKind::Update => "update",
+            CallKind::Delete => "delete",
+            CallKind::List => "list",
         };
+        // update_one/delete on an owned entity go through the storage's
+        // `*_owned` variant, which checks the owner in the same statement.
+        let owned = owner.is_some() && matches!(call.call_kind, CallKind::Update | CallKind::Delete);
 
-        let args = match call.call_kind {
-            CallKind::Create => entity_expr(),
-            CallKind::Read | CallKind::Delete => id_expr(),
-            CallKind::Update => format!("{}, {}", id_expr(), entity_expr()),
-            CallKind::List => self.list_query_expr(),
-        };
+        let mut args_context = Context::new();
+        args_context.insert("kind", kind);
+        args_context.insert("owned", &owned);
+        args_context.insert("owner", &owner);
+        args_context.insert("owner_literal", &owner.map(|o| format!("{:?}", o)));
+        args_context.insert("id_expr", if is_tail { "input.id" } else { "input.id.clone()" });
+        args_context.insert("entity", &entity);
+        args_context.insert("is_tail", &is_tail);
+        if call.call_kind == CallKind::List {
+            args_context.insert("list_query", &self.list_query_expr());
+        }
+        let args = render("file/use_case/call_args.rs.tera", &args_context);
 
         let mut context = Context::new();
         context.insert("field", &field);
@@ -506,21 +525,12 @@ impl UseCaseFile {
         context.insert("is_tail", &is_tail);
         context.insert("owner", &owner);
 
-        // update_one/delete on an owned entity go through the storage's
-        // `*_owned` variant, which checks the owner in the same statement.
-        let mut code = String::new();
-        match (owner, call.call_kind) {
-            (Some(owner_field), CallKind::Update | CallKind::Delete) => {
-                let owned_args = match call.call_kind {
-                    CallKind::Update => format!("{}, {:?}, user, {}", id_expr(), owner_field, entity_expr()),
-                    _ => format!("{}, {:?}, user", id_expr(), owner_field),
-                };
-                context.insert("args", &owned_args);
-                code.push_str(&render("file/use_case/call_owned.rs.tera", &context));
-            }
-            (_, CallKind::Read) => code.push_str(&render("file/use_case/call_read.rs.tera", &context)),
-            _ => code.push_str(&render("file/use_case/call_simple.rs.tera", &context)),
-        }
+        let template = match call.call_kind {
+            _ if owned => "file/use_case/call_owned.rs.tera",
+            CallKind::Read => "file/use_case/call_read.rs.tera",
+            _ => "file/use_case/call_simple.rs.tera",
+        };
+        let code = render(template, &context);
         code
     }
 
@@ -540,12 +550,12 @@ impl UseCaseFile {
 
     fn gen_impl(&self) -> String {
         let mut context = Context::new();
-        context.insert("generics", &format!("<{}>", self.generics()));
+        context.insert("generics", &type_params(&self.type_param_names()));
         context.insert("input", &self.input_name());
         context.insert("output", &self.output_name());
         context.insert("error", &self.error_name());
         context.insert("name", &self.name);
-        context.insert("where_clause", &format!("where\n{}", self.where_clause()));
+        context.insert("where_clause", &where_block(&self.bounds()));
         context.insert("body", &self.gen_execute_body());
         context.insert("trait_name", &self.trait_name());
         context.insert(

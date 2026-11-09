@@ -1,4 +1,4 @@
-    async fn {{ signature }} {
+    async fn {% if verb == "save_one" %}save_one(&self, _data: {{ entity }}) -> Result<{{ entity }}, {{ error_name }}>{% elif verb == "save_many" %}save_many(&self, _data: Vec<{{ entity }}>) -> Result<Vec<{{ entity }}>, {{ error_name }}>{% elif verb == "find_one" %}find_one(&self, _id: EntityId) -> Result<Option<{{ entity }}>, {{ error_name }}>{% elif verb == "find_many" %}find_many(&self, _ids: Vec<EntityId>) -> Result<Vec<{{ entity }}>, {{ error_name }}>{% elif verb == "list" %}list(&self, _query: StorageListQuery) -> Result<Vec<{{ entity }}>, {{ error_name }}>{% elif verb == "update_one" %}update_one(&self, _id: EntityId, _data: {{ entity }}) -> Result<{{ entity }}, {{ error_name }}>{% elif verb == "delete" %}delete(&self, _id: EntityId) -> Result<{{ entity }}, {{ error_name }}>{% elif verb == "delete_many" %}delete_many(&self, _ids: Vec<EntityId>) -> Result<Vec<{{ entity }}>, {{ error_name }}>{% endif %} {
         Err({{ error_name }}::DatabaseError("{{ verb }} is not supported by this grpc_client infra".to_string()))
     }
 

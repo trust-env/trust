@@ -2,7 +2,12 @@ use std::{fs::File, io::Write, path::PathBuf};
 
 use heck::ToSnakeCase;
 
-use crate::generator::rust_code::{imports::crate_use, proto, render::render};
+use crate::generator::rust_code::{
+    fragments::{params as fragment_params, shared_bound, where_clause},
+    imports::crate_use,
+    proto,
+    render::render,
+};
 use serde::Serialize;
 use tera::Context;
 
@@ -79,10 +84,12 @@ impl GrpcAdapterFile {
     }
 
     fn where_clause(&self) -> String {
-        self.unique_bindings()
+        let bounds: Vec<(String, Vec<String>)> = self
+            .unique_bindings()
             .iter()
-            .map(|b| format!("    {}: {}Trait + Send + Sync + 'static,\n", b.type_param, b.use_case_name))
-            .collect()
+            .map(|b| (b.type_param.clone(), shared_bound(&format!("{}Trait", b.use_case_name))))
+            .collect();
+        where_clause(&bounds)
     }
 
     fn push_flat_message(
@@ -164,26 +171,13 @@ impl GrpcAdapterFile {
             .map_err(|e| format!("Failed to write {:?}: {}", self.proto_path, e))
     }
 
-    fn proto_module_items(&self) -> Vec<String> {
-        let mut items = vec![format!("{}_server::{} as {}Service", self.package, self.name, self.name)];
-        for (name, _) in self.message_specs() {
-            items.push(format!("{} as Proto{}", name, name));
-        }
-        items
-    }
-
     fn gen_imports(&self) -> String {
-        let mut code = String::new();
-        code.push_str("use tonic::{Request, Response, Status};\n\n");
-        code.push_str(&format!(
-            "pub mod proto {{\n    tonic::include_proto!(\"{}\");\n}}\n\n",
-            self.package
-        ));
-        code.push_str(&format!(
-            "pub use proto::{}_server::{}Server;\n\n",
-            self.package, self.name
-        ));
-        code.push_str(&format!("use proto::{{{}}};\n", self.proto_module_items().join(", ")));
+        let messages: Vec<String> = self.message_specs().into_iter().map(|(name, _)| name).collect();
+        let mut header_context = Context::new();
+        header_context.insert("package", &self.package);
+        header_context.insert("name", &self.name);
+        header_context.insert("messages", &messages);
+        let mut code = render("file/grpc_adapter/header.rs.tera", &header_context);
 
         let mut crate_items: Vec<String> = self
             .unique_bindings()
@@ -234,12 +228,12 @@ impl GrpcAdapterFile {
         struct_context.insert("auth_fields", &Vec::<serde_json::Value>::new());
         let mut code = render("file/http_adapter/struct.rs.tera", &struct_context);
 
-        let params = self
+        let params: Vec<(String, String)> = self
             .unique_bindings()
             .iter()
-            .map(|b| format!("{}: {}", b.use_case_field, b.type_param))
-            .collect::<Vec<_>>()
-            .join(", ");
+            .map(|b| (b.use_case_field.clone(), b.type_param.clone()))
+            .collect();
+        let params = fragment_params(&params);
         let fields: Vec<String> = self.unique_bindings().iter().map(|b| b.use_case_field.clone()).collect();
 
         let mut ctor_context = Context::new();

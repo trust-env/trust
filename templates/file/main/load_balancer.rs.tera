@@ -1,4 +1,4 @@
-    let {{ lb_var }}_proxy = std::sync::Arc::new(RoundRobinProxy::new(vec![{{ targets }}]));
+    let {{ lb_var }}_proxy = std::sync::Arc::new(RoundRobinProxy::new(vec![{% for t in targets %}{{ t }}.to_string(){% if not loop.last %}, {% endif %}{% endfor %}]));
     let {{ lb_var }}_address = {{ address }};
     let {{ proxy_task_var }} = tokio::spawn(async move {
         start_http_server(load_balancer_router({{ lb_var }}_proxy), {{ lb_var }}_address).await

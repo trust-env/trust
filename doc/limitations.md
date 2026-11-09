@@ -145,6 +145,11 @@
 
 ## HTTP Status Mapping
 
+- `delete`/`update_one` on an id that doesn't exist fail inside the storage
+  (`RETURNING` finds no row) and surface as a `StorageError`, so the route
+  answers `500` rather than `404`. `owner:` use cases are the exception:
+  their owner-checked writes report a missing row as `NotFound`.
+
 - `NotFound` and `StorageError` always map to `404`/`500` respectively and
   **cannot be overridden** by a route's `status {}` block, even if you write
   an explicit `NotFound -> 400` entry — the generated code emits the

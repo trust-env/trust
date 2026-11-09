@@ -1,7 +1,7 @@
 impl From<{{ input_name }}> for {{ entity_type }} {
     fn from(input: {{ input_name }}) -> Self {
         Self {
-{% for line in field_lines %}            {{ line }}
+{% for f in fields %}            {{ f.name }}: {% if f.source == "input" %}input.{{ f.name }}{% elif f.source == "now" %}chrono::Utc::now(){% else %}Default::default(){% endif %},
 {% endfor %}        }
     }
 }

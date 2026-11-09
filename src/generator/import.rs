@@ -93,8 +93,8 @@ impl CodeGen {
             }
 
             context.require_version_dependency_with_features("serde", "1", vec!["derive"]);
-            let mut derive = "#[derive(Debug, Clone, serde::Serialize, serde::Deserialize".to_string();
-            if context.is_storage_entity(&rust_type.name) {
+            let is_storage_entity = context.is_storage_entity(&rust_type.name);
+            if is_storage_entity {
                 let mut features = vec!["runtime-tokio", "tls-rustls", "postgres"];
                 if imports.needs_uuid {
                     features.push("uuid");
@@ -106,9 +106,10 @@ impl CodeGen {
                     features.push("chrono");
                 }
                 context.require_version_dependency_with_features("sqlx", "0.9.0", features);
-                derive.push_str(", sqlx::FromRow");
             }
-            derive.push_str(")]\n");
+            let mut derive_context = tera::Context::new();
+            derive_context.insert("is_storage_entity", &is_storage_entity);
+            let derive = crate::generator::rust_code::render::render("domains/derive.rs.tera", &derive_context);
             let code = imports.to_use_statements() + &derive + &rust_type.to_rust_code();
 
             domain_file

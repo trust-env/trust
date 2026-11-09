@@ -1,0 +1,13 @@
+use common::{HttpPresenter, SQLConnector, start_http_server};
+{{ lib_use }}
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    dotenvy::dotenv().ok();
+
+{{ infras }}
+{{ use_cases }}
+{% for block in blocks %}{{ block }}
+{% endfor %}{% for var in task_vars %}    {{ var }}.await??;
+{% endfor %}
+    Ok(())
+}

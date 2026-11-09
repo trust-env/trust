@@ -48,30 +48,42 @@ impl CodeGen {
         grpc_adapters: &[GrpcAdapterBinding],
         load_balancers: &[LoadBalancerRuntime],
     ) -> Result<(), String> {
-        let mut lines = Vec::new();
+        #[derive(serde::Serialize)]
+        struct EnvEntry {
+            name: String,
+            value: String,
+        }
+        let mut entries: Vec<EnvEntry> = Vec::new();
+        let push = |entries: &mut Vec<EnvEntry>, name: String, value: String| {
+            if !entries.iter().any(|e| e.name == name) {
+                entries.push(EnvEntry { name, value });
+            }
+        };
         let mut next_port: u16 = 3000;
 
         for infra in infras {
             match &infra.kind {
                 InfraKind::Psql { .. } => {
-                    let var = MainFile::db_url_env_var(&infra.infra_name);
-                    lines.push(format!(
-                        "{}=postgres://postgres:postgres@localhost:5432/{}",
-                        var,
-                        infra.entity_name.to_lowercase()
-                    ));
-                    lines.push(format!(
-                        "{}={}",
+                    push(
+                        &mut entries,
+                        MainFile::db_url_env_var(&infra.infra_name),
+                        format!(
+                            "postgres://postgres:postgres@localhost:5432/{}",
+                            infra.entity_name.to_lowercase()
+                        ),
+                    );
+                    push(
+                        &mut entries,
                         MainFile::db_pool_size_env_var(&infra.infra_name),
-                        crate::generator::rust_code::file::main_file::DEFAULT_DB_POOL_SIZE
-                    ));
+                        crate::generator::rust_code::file::main_file::DEFAULT_DB_POOL_SIZE.to_string(),
+                    );
                 }
                 InfraKind::S3 { .. } => {
                     let (endpoint_var, access_key_var, secret_key_var) =
                         MainFile::s3_env_vars(&infra.infra_name);
-                    lines.push(format!("{}=http://localhost:9000", endpoint_var));
-                    lines.push(format!("{}=minioadmin", access_key_var));
-                    lines.push(format!("{}=minioadmin", secret_key_var));
+                    push(&mut entries, endpoint_var, "http://localhost:9000".to_string());
+                    push(&mut entries, access_key_var, "minioadmin".to_string());
+                    push(&mut entries, secret_key_var, "minioadmin".to_string());
                 }
                 // `grpc_client` infras connect to a static address baked
                 // directly into the generated code, not an env-var-driven
@@ -80,9 +92,7 @@ impl CodeGen {
                 InfraKind::HttpClient { base_url, headers } => {
                     let templates = std::iter::once(base_url).chain(headers.iter().map(|(_, v)| v));
                     for var in templates.flat_map(|t| env_template::extract_vars(t)) {
-                        if !lines.iter().any(|l| l.starts_with(&format!("{}=", var))) {
-                            lines.push(format!("{}=changeme", var));
-                        }
+                        push(&mut entries, var, "changeme".to_string());
                     }
                 }
             }
@@ -97,11 +107,11 @@ impl CodeGen {
             .collect();
         for on in ons {
             for var in env_template::extract_vars(on) {
-                if lines.iter().any(|l| l.starts_with(&format!("{}=", var))) {
+                if entries.iter().any(|e| e.name == var) {
                     continue;
                 }
                 let default = Self::default_for_env_var(&var, &mut next_port);
-                lines.push(format!("{}={}", var, default));
+                push(&mut entries, var, default);
             }
         }
 
@@ -111,10 +121,12 @@ impl CodeGen {
         // only bare adapters are checked.
         let has_auth = adapters.iter().any(|a| a.requires_jwt);
         if has_auth {
-            lines.push("JWT_SECRET=changeme".to_string());
+            entries.push(EnvEntry { name: "JWT_SECRET".to_string(), value: "changeme".to_string() });
         }
 
-        let content = lines.join("\n") + "\n";
+        let mut context = tera::Context::new();
+        context.insert("entries", &entries);
+        let content = crate::generator::rust_code::render::render("env/dotenv.tera", &context);
         std::fs::write(project_root.join(".env"), content)
             .map_err(|e| format!("Failed to write .env: {}", e))
     }

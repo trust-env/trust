@@ -1,0 +1,3 @@
+{% if method == "delete" %}        self.{{ field }}.delete(&input.key).await.map_err({{ error }}::StorageError)?;
+        Ok({{ output }} { key: input.key }){% else %}        let url = self.{{ field }}.{{ method }}(&input.key).await.map_err({{ error }}::StorageError)?;
+        Ok({{ output }} { url }){% endif %}

@@ -4,7 +4,7 @@
         const MAX_LIST_LIMIT: i64 = 1000;
 
         let predicate_count = query.predicates.len();
-        let mut sql = String::from("SELECT {{ all_columns }} FROM {{ table }}");
+        let mut sql = String::from("SELECT {{ all_columns | join(sep=", ") }} FROM {{ table }}");
         for (i, predicate) in query.predicates.iter().enumerate() {
             // Whitelist: only real columns ever reach the SQL text, and each
             // one knows its Postgres type so the *parameter* is cast — the

@@ -1,0 +1,9 @@
+{% if requires_user %}        user_context: UserContext,
+{% endif %}        State(presenter): State<Arc<Self>>,
+{% if kind == "raw" %}        headers: axum::http::HeaderMap,
+        body: String,
+{% elif kind == "body" %}        {{ extractor }}(input): {{ extractor }}<{{ input_type }}>,
+{% elif kind == "path" %}        Path(input): Path<{{ input_type }}>,
+{% elif kind == "split" %}        Path(path): Path<{{ path_name }}>,
+        {{ extractor }}(body): {{ extractor }}<{{ body_name }}>,
+{% endif %}

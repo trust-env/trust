@@ -51,37 +51,35 @@ pub fn extract_vars(template: &str) -> Vec<String> {
 /// evaluates to a `String` at runtime by reading the referenced env vars.
 /// A template with no `${...}` placeholders becomes a plain string literal.
 pub fn to_rust_expr(template: &str) -> String {
-    let segments = parse(template);
-
-    if segments.iter().all(|s| matches!(s, TemplateSegment::Literal(_))) {
-        let joined: String = segments
-            .into_iter()
-            .map(|s| match s {
-                TemplateSegment::Literal(l) => l,
-                TemplateSegment::Var(_) => unreachable!(),
-            })
-            .collect();
-        return format!("{:?}.to_string()", joined);
+    #[derive(serde::Serialize)]
+    struct VarView {
+        name: String,
+        /// The variable name as a Rust string literal.
+        literal: String,
     }
 
-    let mut format_str = String::new();
-    let mut args = Vec::new();
+    let segments = parse(template);
+    let has_vars = segments.iter().any(|s| matches!(s, TemplateSegment::Var(_)));
 
+    // Without placeholders the text is used as-is; with them it becomes a
+    // `format!` string, so literal braces must be doubled.
+    let mut text = String::new();
+    let mut vars = Vec::new();
     for segment in segments {
         match segment {
-            TemplateSegment::Literal(l) => {
-                format_str.push_str(&l.replace('{', "{{").replace('}', "}}"))
-            }
+            TemplateSegment::Literal(l) if has_vars => text.push_str(&l.replace('{', "{{").replace('}', "}}")),
+            TemplateSegment::Literal(l) => text.push_str(&l),
             TemplateSegment::Var(v) => {
-                format_str.push_str("{}");
-                args.push(format!(
-                    "std::env::var({:?}).expect(\"{} environment variable not set\")",
-                    v, v
-                ));
+                text.push_str("{}");
+                vars.push(VarView { literal: format!("{:?}", v), name: v });
             }
         }
     }
-    format!("format!({:?}, {})", format_str, args.join(", "))
+
+    let mut context = tera::Context::new();
+    context.insert("format_literal", &format!("{:?}", text));
+    context.insert("vars", &vars);
+    crate::generator::rust_code::render::render("env/rust_expr.rs.tera", &context)
 }
 
 #[cfg(test)]

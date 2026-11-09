@@ -5,7 +5,7 @@ impl {{ trait_name }} for {{ struct_name }} {
         // simply matches nothing (`None`), exactly like a missing one.
         let sql: &'static str = match owner_field {
 {%- for o in owner_columns %}
-            "{{ o }}" => "UPDATE {{ table }} SET {{ set_clause }} WHERE {{ id_field }} = ${{ next }} AND {{ o }} = ${{ next_owner }} RETURNING {{ all_columns }}",
+            "{{ o }}" => "UPDATE {{ table }} SET {% for f in data_fields %}{{ f.name }} = ${{ loop.index }}{% if not loop.last %}, {% endif %}{% endfor %} WHERE {{ id_field }} = ${{ next }} AND {{ o }} = ${{ next_owner }} RETURNING {{ all_columns | join(sep=", ") }}",
 {%- endfor %}
             other => return Err({{ error }}::ConversionError(format!("'{}' is not an owner column of {{ table }}", other))),
         };
@@ -23,7 +23,7 @@ impl {{ trait_name }} for {{ struct_name }} {
     async fn delete_owned(&self, id: EntityId, owner_field: &'static str, owner: i64) -> Result<Option<{{ entity }}>, {{ error }}> {
         let sql: &'static str = match owner_field {
 {%- for o in owner_columns %}
-            "{{ o }}" => "DELETE FROM {{ table }} WHERE {{ id_field }} = $1 AND {{ o }} = $2 RETURNING {{ all_columns }}",
+            "{{ o }}" => "DELETE FROM {{ table }} WHERE {{ id_field }} = $1 AND {{ o }} = $2 RETURNING {{ all_columns | join(sep=", ") }}",
 {%- endfor %}
             other => return Err({{ error }}::ConversionError(format!("'{}' is not an owner column of {{ table }}", other))),
         };

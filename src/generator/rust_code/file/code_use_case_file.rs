@@ -4,6 +4,7 @@ use heck::ToSnakeCase;
 use serde::Serialize;
 use tera::Context;
 
+use crate::generator::rust_code::fragments::{indented_body, params as fragment_params, type_params, where_block};
 use crate::generator::rust_code::render::render;
 
 /// One `infra:` of a `code {}` use case, as the generated struct holds it.
@@ -68,31 +69,17 @@ impl CodeUseCaseFile {
     }
 
     fn generics(&self) -> String {
-        let params = self.generic_params();
-        if params.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "<{}>",
-                params
-                    .iter()
-                    .map(|(p, _)| p.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        }
+        let names: Vec<String> = self.generic_params().into_iter().map(|(p, _)| p).collect();
+        type_params(&names)
     }
 
     fn where_clause(&self) -> String {
-        let params = self.generic_params();
-        if params.is_empty() {
-            return String::new();
-        }
-        let bounds: String = params
-            .iter()
-            .map(|(p, t)| format!("    {}: {},\n", p, t))
+        let bounds: Vec<(String, Vec<String>)> = self
+            .generic_params()
+            .into_iter()
+            .map(|(p, t)| (p, vec![t.to_string()]))
             .collect();
-        format!("where\n{}", bounds)
+        where_block(&bounds)
     }
 
     fn gen_error(&self) -> String {
@@ -136,16 +123,9 @@ impl CodeUseCaseFile {
                 }
             })
             .collect();
-        let params = fields
-            .iter()
-            .map(|f| format!("{}: {}", f.field, f.field_type))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let ctor_fields = fields
-            .iter()
-            .map(|f| f.field.clone())
-            .collect::<Vec<_>>()
-            .join(", ");
+        let params: Vec<(&str, &str)> = fields.iter().map(|f| (f.field.as_str(), f.field_type.as_str())).collect();
+        let params = fragment_params(&params);
+        let ctor_fields: Vec<&str> = fields.iter().map(|f| f.field.as_str()).collect();
 
         let mut context = Context::new();
         context.insert("name", &self.name);
@@ -166,16 +146,17 @@ impl CodeUseCaseFile {
         render("file/ai_use_case/trait.rs.tera", &context)
     }
 
+    /// The hand-written body, preceded by a use of `user` so an
+    /// owner-agnostic body doesn't trigger an unused-variable warning.
     fn indented_body(&self) -> String {
-        let mut lines = vec!["        let _ = user;".to_string()];
-        lines.extend(self.body.trim_end().lines().map(|line| {
-            if line.trim().is_empty() {
-                String::new()
-            } else {
-                format!("        {}", line)
-            }
-        }));
-        lines.join("\n")
+        let mut lines = vec!["let _ = user;"];
+        lines.extend(
+            self.body
+                .trim_end()
+                .lines()
+                .map(|line| if line.trim().is_empty() { "" } else { line }),
+        );
+        indented_body(&lines)
     }
 
     fn gen_impl(&self) -> String {

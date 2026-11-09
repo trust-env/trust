@@ -198,12 +198,11 @@ impl MainFile {
     }
 
     fn gen_use_case(use_case: &UseCaseBinding) -> String {
-        let args = use_case
+        let args: Vec<String> = use_case
             .infra_names
             .iter()
-            .map(|infra_name| format!("{}_storage.clone()", infra_name.to_snake_case()))
-            .collect::<Vec<_>>()
-            .join(", ");
+            .map(|infra_name| format!("{}_storage", infra_name.to_snake_case()))
+            .collect();
 
         let mut context = Context::new();
         context.insert("field", &use_case.use_case_name.to_snake_case());
@@ -214,11 +213,10 @@ impl MainFile {
 
     fn gen_adapter(adapter: &AdapterBinding) -> String {
         let var = adapter.adapter_name.to_snake_case();
-        let mut params: Vec<String> = adapter.use_cases.iter().map(|u| format!("{}.clone()", u.to_snake_case())).collect();
+        let mut params: Vec<String> = adapter.use_cases.iter().map(|u| u.to_snake_case()).collect();
         for infra_name in &adapter.auth_infra_names {
-            params.push(format!("{}_storage.clone()", infra_name.to_snake_case()));
+            params.push(format!("{}_storage", infra_name.to_snake_case()));
         }
-        let params = params.join(", ");
         let address_expr = env_template::to_rust_expr(&adapter.on);
 
         let mut context = Context::new();
@@ -235,7 +233,7 @@ impl MainFile {
     /// boxed-error `Result`.
     fn gen_grpc_adapter(adapter: &GrpcAdapterBinding) -> String {
         let var = adapter.adapter_name.to_snake_case();
-        let params = adapter.use_cases.iter().map(|u| format!("{}.clone()", u.to_snake_case())).collect::<Vec<_>>().join(", ");
+        let params: Vec<String> = adapter.use_cases.iter().map(|u| u.to_snake_case()).collect();
         let address_expr = env_template::to_rust_expr(&adapter.on);
 
         let mut context = Context::new();
@@ -257,12 +255,8 @@ impl MainFile {
     fn gen_load_balancer(lb: &LoadBalancerRuntime) -> (String, Vec<String>) {
         let lb_var = lb.name.to_snake_case();
 
-        let targets = lb
-            .backend_addresses
-            .iter()
-            .map(|a| format!("{:?}.to_string()", a))
-            .collect::<Vec<_>>()
-            .join(", ");
+        // Rust string literals of each backend address.
+        let targets: Vec<String> = lb.backend_addresses.iter().map(|a| format!("{:?}", a)).collect();
         let address_expr = env_template::to_rust_expr(&lb.on);
         let proxy_task_var = format!("{}_task", lb_var);
 
@@ -285,10 +279,6 @@ impl MainFile {
         grpc_adapters: &[GrpcAdapterBinding],
         load_balancers: &[LoadBalancerRuntime],
     ) -> Result<(), String> {
-        let mut code = String::new();
-
-        code.push_str("use common::{HttpPresenter, SQLConnector, start_http_server};\n");
-
         let mut lib_items: Vec<String> = Vec::new();
         for infra in infras {
             lib_items.push(match &infra.kind {
@@ -314,51 +304,32 @@ impl MainFile {
         }
         let lib_items: Vec<&str> = lib_items.iter().map(String::as_str).collect();
         let crate_ident = package_name.replace('-', "_");
-        code.push_str(&use_statement(&crate_ident, &lib_items));
-        code.push('\n');
 
-        code.push_str("#[tokio::main]\n");
-        code.push_str("async fn main() -> Result<(), Box<dyn std::error::Error>> {\n");
-        code.push_str("    dotenvy::dotenv().ok();\n\n");
-
-        for infra in infras {
-            code.push_str(&Self::gen_infra(infra));
-        }
-        code.push('\n');
-
-        for use_case in use_cases {
-            code.push_str(&Self::gen_use_case(use_case));
-        }
-        code.push('\n');
-
+        // Each adapter / gRPC adapter / load balancer is one spawned block;
+        // every task it starts is awaited at the end of `main`.
+        let mut blocks: Vec<String> = Vec::new();
+        let mut task_vars: Vec<String> = Vec::new();
         for adapter in adapters {
-            code.push_str(&Self::gen_adapter(adapter));
-            code.push('\n');
+            blocks.push(Self::gen_adapter(adapter));
+            task_vars.push(format!("{}_task", adapter.adapter_name.to_snake_case()));
         }
-
         for adapter in grpc_adapters {
-            code.push_str(&Self::gen_grpc_adapter(adapter));
-            code.push('\n');
+            blocks.push(Self::gen_grpc_adapter(adapter));
+            task_vars.push(format!("{}_task", adapter.adapter_name.to_snake_case()));
         }
-
-        let mut all_task_vars: Vec<String> = adapters
-            .iter()
-            .map(|a| format!("{}_task", a.adapter_name.to_snake_case()))
-            .chain(grpc_adapters.iter().map(|a| format!("{}_task", a.adapter_name.to_snake_case())))
-            .collect();
         for lb in load_balancers {
-            let (lb_code, task_vars) = Self::gen_load_balancer(lb);
-            code.push_str(&lb_code);
-            code.push('\n');
-            all_task_vars.extend(task_vars);
+            let (lb_code, lb_task_vars) = Self::gen_load_balancer(lb);
+            blocks.push(lb_code);
+            task_vars.extend(lb_task_vars);
         }
 
-        for var in &all_task_vars {
-            code.push_str(&format!("    {var}.await??;\n", var = var));
-        }
-        code.push('\n');
-        code.push_str("    Ok(())\n");
-        code.push_str("}\n");
+        let mut context = Context::new();
+        context.insert("lib_use", &use_statement(&crate_ident, &lib_items));
+        context.insert("infras", &infras.iter().map(Self::gen_infra).collect::<String>());
+        context.insert("use_cases", &use_cases.iter().map(Self::gen_use_case).collect::<String>());
+        context.insert("blocks", &blocks);
+        context.insert("task_vars", &task_vars);
+        let code = render("file/main/main.rs.tera", &context);
 
         self.file
             .write_all(code.as_bytes())

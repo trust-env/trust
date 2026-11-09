@@ -3,6 +3,7 @@ use std::{fs::File, io::Write, path::PathBuf};
 use heck::ToSnakeCase;
 
 use crate::generator::rust_code::{
+    fragments::{indented_body, type_params, where_block},
     imports::{LocalImports, common_use},
     render::render,
     types::RustType,
@@ -140,22 +141,16 @@ impl AiUseCaseFile {
     }
 
     fn indent_body(&self) -> String {
-        self.body
-            .lines()
-            .map(|line| {
-                if line.is_empty() {
-                    String::new()
-                } else {
-                    format!("        {}", line)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        let lines: Vec<&str> = self.body.lines().collect();
+        indented_body(&lines)
     }
 
     fn gen_impl(&self) -> String {
         let (generics, where_clause) = match &self.infra {
-            Some(infra) => ("<S0>".to_string(), format!("where\n    S0: {},\n", infra.storage_trait)),
+            Some(infra) => (
+                type_params(&["S0"]),
+                where_block(&[("S0", vec![infra.storage_trait.clone()])]),
+            ),
             None => (String::new(), String::new()),
         };
 

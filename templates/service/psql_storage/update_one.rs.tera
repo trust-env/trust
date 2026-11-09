@@ -1,5 +1,5 @@
         sqlx::query_as::<_, {{ entity }}>(
-            "UPDATE {{ table }} SET {{ set_clause }} WHERE {{ id_field }} = ${{ next }} RETURNING {{ all_columns }}",
+            "UPDATE {{ table }} SET {% for f in data_fields %}{{ f.name }} = ${{ loop.index }}{% if not loop.last %}, {% endif %}{% endfor %} WHERE {{ id_field }} = ${{ next }} RETURNING {{ all_columns | join(sep=", ") }}",
         ){% for f in data_fields %}
             .bind(data.{{ f.name }}){% endfor %}
             .bind(id)

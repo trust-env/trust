@@ -63,24 +63,23 @@ impl PsqlStorageFile {
     }
 
     pub fn write(&mut self) -> Result<(), String> {
-        let mut code = String::new();
-
-        code.push_str(&common_use(&[
+        let mut uses = common_use(&[
             "SQLConnector",
             "Storage",
             "EntityId",
             "StorageListQuery",
             "StoragePredicateOperator",
-        ]));
-        code.push_str(&crate_use(&[self.entity.name.clone()]));
-        code.push('\n');
-        code.push_str(&Self::error_enum_code(&self.error_name));
-        code.push_str(&self.service.storage_trait_code());
-        code.push('\n');
-        code.push_str("#[derive(Clone)]\n");
-        code.push_str(&self.service.struct_code());
-        code.push_str(&self.service.ctor_code());
-        code.push_str(&self.service.trait_impls_code());
+        ]);
+        uses.push_str(&crate_use(&[self.entity.name.clone()]));
+
+        let mut context = Context::new();
+        context.insert("uses", &uses);
+        context.insert("error_enum", &Self::error_enum_code(&self.error_name));
+        context.insert("storage_trait", &self.service.storage_trait_code());
+        context.insert("struct_code", &self.service.struct_code());
+        context.insert("ctor", &self.service.ctor_code());
+        context.insert("impls", &self.service.trait_impls_code());
+        let code = render("file/psql_storage/file.rs.tera", &context);
         self.file
             .write_all(code.as_bytes())
             .map_err(|e| format!("Failed to write to entity storage file: {}", e))?;
