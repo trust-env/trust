@@ -258,6 +258,8 @@ mod tests {
             adapter_type: AdapterType::Http(HttpAdapterService {
                 on: Some("0.0.0.0:8080".to_string()),
                 cors: None,
+                envelope: true,
+                events: None,
                 routes: vec![HttpRoute {
                     method: HttpMethod::Get,
                     path: "/x".to_string(),
