@@ -73,6 +73,6 @@ mod tests {
             assert!(names.contains(name), "{} not registered", name);
         }
         assert!(names.contains(&"types.rs.tera"));
-        assert!(names.contains(&"service/psql_storage/list.rs.tera"));
+        assert!(names.contains(&"file/psql_storage/storage.rs.tera"));
     }
 }

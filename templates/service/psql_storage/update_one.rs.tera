@@ -1,8 +1,0 @@
-        sqlx::query_as::<_, {{ entity }}>(
-            "UPDATE {{ table }} SET {% for f in data_fields %}{{ f.name }} = ${{ loop.index }}{% if not loop.last %}, {% endif %}{% endfor %} WHERE {{ id_field }} = ${{ next }} RETURNING {{ all_columns | join(sep=", ") }}",
-        ){% for f in data_fields %}
-            .bind({% if f.json == "plain" %}sqlx::types::Json(data.{{ f.name }}){% elif f.json == "nullable" %}data.{{ f.name }}.map(sqlx::types::Json){% else %}data.{{ f.name }}{% endif %}){% endfor %}
-            .bind(id)
-            .fetch_one(self.db.pool())
-            .await
-            .map_err({{ error }}::from)

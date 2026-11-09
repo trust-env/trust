@@ -51,6 +51,9 @@ pub struct HttpRouteBinding {
     /// couldn't be resolved (shouldn't normally happen by the time routes
     /// are generated, but docs are best-effort, not load-bearing).
     pub input_fields: Vec<(String, String)>,
+    /// Serde rules of input fields that need one, re-applied to the
+    /// path/body structs a split input is decoded through.
+    pub input_serde: Vec<(String, crate::generator::FieldSerde)>,
     pub output_entity: String,
     pub output_fields: Vec<(String, String)>,
     pub output_is_list: bool,
@@ -71,6 +74,7 @@ pub struct HttpRouteBinding {
 struct StructFieldView {
     name: String,
     field_type: String,
+    serde: crate::generator::FieldSerde,
 }
 
 enum InputExtraction<'a> {
@@ -353,12 +357,18 @@ impl HttpAdapterFile {
         format!("{}Body", route.use_case_name)
     }
 
-    fn struct_field_views(fields: &[&(String, String)]) -> Vec<StructFieldView> {
+    fn struct_field_views(route: &HttpRouteBinding, fields: &[&(String, String)]) -> Vec<StructFieldView> {
         fields
             .iter()
             .map(|(name, ty)| StructFieldView {
                 name: name.clone(),
                 field_type: ty.clone(),
+                serde: route
+                    .input_serde
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, s)| s.clone())
+                    .unwrap_or_default(),
             })
             .collect()
     }
@@ -374,9 +384,9 @@ impl HttpAdapterFile {
     ) -> String {
         let mut context = Context::new();
         context.insert("path_name", &Self::path_struct_name(route));
-        context.insert("path_fields", &Self::struct_field_views(path_fields));
+        context.insert("path_fields", &Self::struct_field_views(route, path_fields));
         context.insert("body_name", &Self::body_struct_name(route));
-        context.insert("body_fields", &Self::struct_field_views(body_fields));
+        context.insert("body_fields", &Self::struct_field_views(route, body_fields));
         render("file/http_adapter/split_structs.rs.tera", &context)
     }
 

@@ -1,8 +1,8 @@
 use crate::{
     lexer::{Keyword, Token},
     parser::{
-        AiSpec, Ast, BlobCall, CodeSpec, ErrorMapping, FilterMapping, FilterSource, Parser,
-        UseCaseCall, UseCaseService,
+        AiSpec, Ast, BlobCall, CodeSpec, ErrorMapping, FilterMapping, FilterOperator, FilterSource,
+        OrderBy, Parser, UseCaseCall, UseCaseService,
     },
 };
 
@@ -205,58 +205,166 @@ impl Parser {
         Ok(mappings)
     }
 
-    /// Parses one `<field>: input.<input_field>` or `<field>: <literal>`
-    /// line inside `filters {}`. `input` lexes as `Keyword::Input` (it's a
-    /// keyword everywhere else in the language too), not a plain
-    /// identifier — so this matches the keyword token specifically, not
-    /// `Token::Identifier("input")`. A literal is a quoted string or a bare
-    /// word (`true`, `42` — numbers lex as identifiers).
-    fn try_filter_mapping(&mut self) -> Result<FilterMapping, String> {
-        let field = match self.next_token() {
-            Some(Token::Identifier(f)) => f,
-            // e.g. `status: "paid"` — see `try_type_decl_body`.
-            Some(Token::Keyword(k)) if k != Keyword::Input => k.to_string(),
+    /// A word in name position: identifiers and keywords alike (`status`,
+    /// `input`, ... are valid field names).
+    fn try_name(&mut self) -> Option<String> {
+        match self.next_token() {
+            Some(Token::Identifier(name)) => Some(name),
+            Some(Token::Keyword(k)) => Some(k.to_string()),
             _ => {
                 self.revert(1);
-                return Err("Expected field identifier in 'filters' block".to_string());
+                None
+            }
+        }
+    }
+
+    /// The operator of a `filters {}` line, right after the field name.
+    fn try_filter_operator(&mut self) -> Option<FilterOperator> {
+        let pos = self.current;
+        let op = match self.next_token() {
+            Some(Token::Colon) => FilterOperator::Eq,
+            Some(Token::Equal) => {
+                let after = self.current;
+                if self.next_token() != Some(Token::Equal) {
+                    self.reset(after);
+                }
+                FilterOperator::Eq
+            }
+            Some(Token::Bang) if self.next_token() == Some(Token::Equal) => FilterOperator::NotEq,
+            Some(Token::CloseAngle) => {
+                let after = self.current;
+                if self.next_token() == Some(Token::Equal) {
+                    FilterOperator::Gte
+                } else {
+                    self.reset(after);
+                    FilterOperator::Gt
+                }
+            }
+            Some(Token::OpenAngle) => {
+                let after = self.current;
+                if self.next_token() == Some(Token::Equal) {
+                    FilterOperator::Lte
+                } else {
+                    self.reset(after);
+                    FilterOperator::Lt
+                }
+            }
+            Some(Token::Identifier(word)) => match word.as_str() {
+                "in" => FilterOperator::In,
+                "not" if matches!(self.next_token(), Some(Token::Identifier(w)) if w == "in") => {
+                    FilterOperator::NotIn
+                }
+                "like" => FilterOperator::Like,
+                "ilike" => FilterOperator::ILike,
+                "contains" => FilterOperator::Contains,
+                _ => {
+                    self.reset(pos);
+                    return None;
+                }
+            },
+            _ => {
+                self.reset(pos);
+                return None;
             }
         };
-        match self.next_token() {
-            Some(Token::Colon) => {}
+        Some(op)
+    }
+
+    /// Parses one `filters {}` line: `<field> <op> <source>`, where `<op>`
+    /// is `:` / `=` / `==` (equality), `!=`, `>`, `>=`, `<`, `<=`, `in`,
+    /// `not in`, `like`, `ilike` or `contains`, and `<source>` is
+    /// `input.<field>`, a literal (quoted string or bare word such as
+    /// `true` / `42`), a `[a, b]` list, `now()` or `today()`.
+    fn try_filter_mapping(&mut self) -> Result<FilterMapping, String> {
+        let pos = self.current;
+        let fail = |parser: &mut Parser, message: String| {
+            parser.reset(pos);
+            Err(message)
+        };
+        let Some(field) = self.try_name() else {
+            return fail(self, "Expected field identifier in 'filters' block".to_string());
+        };
+        let Some(operator) = self.try_filter_operator() else {
+            return fail(
+                self,
+                format!("Expected an operator (:, =, !=, >, >=, <, <=, in, not in, like, ilike, contains) after '{}' in 'filters' block", field),
+            );
+        };
+        let source = match self.next_token() {
+            Some(Token::Keyword(Keyword::Input)) => match self.next_token() {
+                Some(Token::Dot) => match self.try_name() {
+                    Some(input_field) => FilterSource::Input(input_field),
+                    None => return fail(self, format!("Expected a field name after 'input.' for '{}'", field)),
+                },
+                _ => return fail(self, format!("Expected 'input.<field>' for '{}'", field)),
+            },
+            Some(Token::OpenBracket) => {
+                let mut values = Vec::new();
+                loop {
+                    match self.next_token() {
+                        Some(Token::CloseBracket) => break,
+                        Some(Token::Comma) => continue,
+                        Some(Token::StringLiteral(v)) | Some(Token::Identifier(v)) => values.push(v),
+                        _ => return fail(self, format!("Expected literal values in the list for '{}'", field)),
+                    }
+                }
+                FilterSource::List(values)
+            }
+            Some(Token::Identifier(word)) if (word == "now" || word == "today") => {
+                let after = self.current;
+                if (self.next_token(), self.next_token()) == (Some(Token::OpenParen), Some(Token::CloseParen)) {
+                    if word == "now" { FilterSource::Now } else { FilterSource::Today }
+                } else {
+                    self.reset(after);
+                    FilterSource::Literal(word)
+                }
+            }
+            Some(Token::StringLiteral(v)) | Some(Token::Identifier(v)) => FilterSource::Literal(v),
             _ => {
-                self.revert(2);
-                return Err(format!("Expected ':' after '{}' in 'filters' block", field));
+                return fail(
+                    self,
+                    format!("Expected 'input.<field>', a literal, a [list], now() or today() for '{}' in 'filters' block", field),
+                );
+            }
+        };
+        if operator.is_set() && matches!(source, FilterSource::Literal(_) | FilterSource::Now | FilterSource::Today) {
+            return fail(self, format!("'{}' uses 'in'/'not in': expected a [list] or input.<field>", field));
+        }
+        if !operator.is_set() && matches!(source, FilterSource::List(_)) {
+            return fail(self, format!("'{}': a [list] needs 'in' or 'not in'", field));
+        }
+        Ok(FilterMapping { field, operator, source })
+    }
+
+    /// Parses `order_by: field [asc|desc], field [asc|desc] ...` after the
+    /// `order_by` word.
+    fn try_order_by(&mut self) -> Result<Vec<OrderBy>, String> {
+        if self.next_token() != Some(Token::Colon) {
+            self.revert(1);
+            return Err("Expected ':' after 'order_by'".to_string());
+        }
+        let mut entries = Vec::new();
+        loop {
+            let Some(field) = self.try_name() else {
+                return Err("Expected a field name in 'order_by'".to_string());
+            };
+            let pos = self.current;
+            let descending = match self.next_token() {
+                Some(Token::Identifier(dir)) if dir == "desc" => true,
+                Some(Token::Identifier(dir)) if dir == "asc" => false,
+                _ => {
+                    self.reset(pos);
+                    false
+                }
+            };
+            entries.push(OrderBy { field, descending });
+            let pos = self.current;
+            if self.next_token() != Some(Token::Comma) {
+                self.reset(pos);
+                break;
             }
         }
-        match self.next_token() {
-            Some(Token::StringLiteral(v)) | Some(Token::Identifier(v)) => {
-                return Ok(FilterMapping {
-                    field,
-                    source: FilterSource::Literal(v),
-                });
-            }
-            Some(Token::Keyword(Keyword::Input)) => {}
-            _ => {
-                self.revert(3);
-                return Err(format!(
-                    "Expected 'input.<field>' or a literal after '{}:' in 'filters' block",
-                    field
-                ));
-            }
-        }
-        match (self.next_token(), self.next_token()) {
-            (Some(Token::Dot), Some(Token::Identifier(input_field))) => Ok(FilterMapping {
-                field,
-                source: FilterSource::Input(input_field),
-            }),
-            _ => {
-                self.revert(5);
-                Err(format!(
-                    "Expected ': input.<field>' after '{}' in 'filters' block",
-                    field
-                ))
-            }
-        }
+        Ok(entries)
     }
 
     /// Parses `code { file: "..." infra: X ... errors { A B } deps { name: "version" } }`.
@@ -433,6 +541,8 @@ impl Parser {
         let mut filters = Vec::new();
         let mut owner = None;
         let mut code = None;
+        let mut order_by = Vec::new();
+        let mut transaction = false;
         let pos = self.current;
 
         loop {
@@ -488,9 +598,23 @@ impl Parser {
                     self.revert(1);
                     code = Some(self.try_code_block()?);
                 }
-                _ => {
+                Some(Token::Identifier(k)) if k == "order_by" => {
+                    order_by = self.try_order_by()?;
+                }
+                Some(Token::Identifier(k)) if k == "transaction" => {
+                    match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::Identifier(v))) if v == "true" || v == "false" => {
+                            transaction = v == "true";
+                        }
+                        _ => {
+                            self.reset(pos);
+                            return Err("Expected ': true' or ': false' after 'transaction'".to_string());
+                        }
+                    }
+                }
+                other => {
                     self.reset(pos);
-                    return Err("Failed to parse UseCase body".to_string());
+                    return Err(format!("Failed to parse UseCase body: unexpected {:?}", other));
                 }
             }
         }
@@ -504,6 +628,8 @@ impl Parser {
             filters,
             owner,
             code,
+            order_by,
+            transaction,
         })
     }
 
@@ -537,6 +663,18 @@ impl Parser {
                 if !filters.is_empty() && code.is_some() {
                     return Err(format!(
                         "UseCase '{}': 'filters' cannot be combined with 'code'",
+                        name
+                    ));
+                }
+                if !use_case.order_by.is_empty() && calls.is_empty() {
+                    return Err(format!(
+                        "UseCase '{}': 'order_by' is only valid with 'call'",
+                        name
+                    ));
+                }
+                if use_case.transaction && calls.is_empty() {
+                    return Err(format!(
+                        "UseCase '{}': 'transaction' is only valid with 'call'",
                         name
                     ));
                 }

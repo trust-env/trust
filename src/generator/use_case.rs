@@ -5,7 +5,7 @@ use heck::ToSnakeCase;
 use crate::{
     ai::AiConfig,
     generator::{
-        CodeGen, CodeGenContext, UseCaseIo,
+        CodeGen, CodeGenContext, FieldSerde, UseCaseIo,
         rust_code::{
             file::{
                 ai_use_case_file::{AiInfraBinding, AiUseCaseFile},
@@ -32,6 +32,8 @@ pub(super) struct UseCaseShape {
     /// `owner: <field>` on the primary call's entity, validated to exist
     /// and be `i64`.
     pub owner: Option<String>,
+    /// Validated `order_by:` entries of a `list` primary call.
+    pub order_by: Vec<crate::parser::OrderBy>,
 }
 
 impl CodeGen {
@@ -63,10 +65,27 @@ impl CodeGen {
         owner: Option<&str>,
     ) -> RustType {
         match call_kind {
-            CallKind::Create | CallKind::Update => {
+            CallKind::Create | CallKind::Update | CallKind::Upsert => {
                 let mut guessed = entity_type.clone();
                 guessed.fields.retain(|f| Some(f.name.as_str()) != owner);
                 guessed
+            }
+            CallKind::Patch => {
+                // `id` plus every other field as `Option`: absent fields
+                // are left as they are.
+                let mut fields = Vec::new();
+                for field in &entity_type.fields {
+                    if Some(field.name.as_str()) == owner {
+                        continue;
+                    }
+                    let field_type = if field.name == "id" {
+                        field.field_type.clone()
+                    } else {
+                        RustType::generic("Option", vec![field.field_type.clone()], vec![])
+                    };
+                    fields.push(RustField { name: field.name.clone(), field_type });
+                }
+                RustType::generic("GuessedPatchInput", vec![], fields)
             }
             CallKind::Read | CallKind::Delete => {
                 let id_field_type = entity_type
@@ -86,28 +105,40 @@ impl CodeGen {
                 )
             }
             CallKind::List => {
+                let optional_i64 =
+                    RustType::generic("Option", vec![RustType::primitive("i64")], vec![]);
                 let mut fields = vec![
                     RustField {
                         name: "limit".to_string(),
-                        field_type: RustType::primitive("i64"),
+                        field_type: optional_i64.clone(),
                     },
                     RustField {
                         name: "offset".to_string(),
-                        field_type: RustType::primitive("i64"),
+                        field_type: optional_i64,
                     },
                 ];
                 for filter in filters {
                     let Some(input_field) = filter.input_field() else {
                         continue;
                     };
+                    if fields.iter().any(|f| f.name == input_field) {
+                        continue;
+                    }
                     // `filter.field` is guaranteed present on `entity_type`
                     // by the validation in `resolve_use_case_shape`.
-                    let field_type = entity_type
-                        .fields
-                        .iter()
-                        .find(|f| f.name == filter.field)
-                        .map(|f| f.field_type.clone())
-                        .unwrap_or_else(|| RustType::primitive("String"));
+                    // `in` lists and patterns travel as plain text (a
+                    // comma-separated list for `in`), which also works
+                    // from a query string.
+                    let field_type = if filter.operator.is_set() || filter.operator.is_pattern() {
+                        RustType::primitive("String")
+                    } else {
+                        entity_type
+                            .fields
+                            .iter()
+                            .find(|f| f.name == filter.field)
+                            .map(|f| f.field_type.clone())
+                            .unwrap_or_else(|| RustType::primitive("String"))
+                    };
                     fields.push(RustField {
                         name: input_field.to_string(),
                         field_type,
@@ -164,7 +195,22 @@ impl CodeGen {
             // that only surfaces once someone builds the generated crate
             // against the real `common` checkout. Catch it here instead,
             // with a message that says why. See doc/limitations.md.
-            if matches!(call_kind, CallKind::Read | CallKind::Update | CallKind::Delete)
+            if matches!(call_kind, CallKind::Upsert | CallKind::Patch | CallKind::List)
+                && context.find_infra_target_address(&call.target).is_some()
+                && call_kind != CallKind::List
+            {
+                return Err(format!(
+                    "UseCase '{}': '{}' needs a psql infra, '{}' is a grpc_client",
+                    use_case.name, call.method, call.target
+                ));
+            }
+            if call_kind == CallKind::Upsert && !context.has_psql_unique_key(&call.target) {
+                return Err(format!(
+                    "UseCase '{}': 'upsert_one' needs a unique key: declare `unique: [...]` on infra '{}'",
+                    use_case.name, call.target
+                ));
+            }
+            if matches!(call_kind, CallKind::Read | CallKind::Update | CallKind::Delete | CallKind::Patch)
                 && let Some(id_field) = entity_type.fields.iter().find(|f| f.name == "id")
                 && id_field.field_type.name != "i64"
             {
@@ -225,12 +271,40 @@ impl CodeGen {
                 ));
             }
             for filter in &use_case.filters {
-                if !primary_entity.fields.iter().any(|f| f.name == filter.field) {
+                let Some(field) = primary_entity.fields.iter().find(|f| f.name == filter.field) else {
                     return Err(format!(
                         "UseCase '{}': 'filters' references unknown field '{}' on entity '{}'",
                         use_case.name, filter.field, primary_entity.name
                     ));
+                };
+                if field.field_type.is_json_wrapped() {
+                    return Err(format!(
+                        "UseCase '{}': 'filters' can't compare '{}' (a JSONB list/struct column)",
+                        use_case.name, filter.field
+                    ));
                 }
+            }
+        }
+        if !use_case.order_by.is_empty() {
+            if primary_call_kind != CallKind::List {
+                return Err(format!(
+                    "UseCase '{}': 'order_by' is only valid when the primary call is 'list'",
+                    use_case.name
+                ));
+            }
+            for order in &use_case.order_by {
+                if !primary_entity.fields.iter().any(|f| f.name == order.field) {
+                    return Err(format!(
+                        "UseCase '{}': 'order_by' references unknown field '{}' on entity '{}'",
+                        use_case.name, order.field, primary_entity.name
+                    ));
+                }
+            }
+            if resolved_calls.last().is_some_and(|c| context.find_infra_target_address(&c.infra_name).is_some()) {
+                return Err(format!(
+                    "UseCase '{}': 'order_by' needs a psql infra (grpc_client can't sort)",
+                    use_case.name
+                ));
             }
         }
 
@@ -309,6 +383,7 @@ impl CodeGen {
             copy_id,
             filters: use_case.filters.clone(),
             owner: use_case.owner.clone(),
+            order_by: use_case.order_by.clone(),
         }))
     }
 
@@ -396,6 +471,7 @@ impl CodeGen {
                     requires_user: false,
                     raw_input: input_type.name == Self::RAW_REQUEST
                         && context.find_type(Self::RAW_REQUEST).is_none(),
+                    input_serde: FieldSerde::of_fields(&input_type.fields),
                 },
             );
             return Ok(());
@@ -432,6 +508,7 @@ impl CodeGen {
                     output_wrapper_field: None,
                     requires_user: false,
                     raw_input: false,
+                    input_serde: FieldSerde::of_fields(&input_type.fields),
                 },
             );
             return Ok(());
@@ -455,6 +532,7 @@ impl CodeGen {
                     output_wrapper_field: None,
                     requires_user: false,
                     raw_input: false,
+                    input_serde: Vec::new(),
                 },
             );
             return Ok(());
@@ -480,6 +558,7 @@ impl CodeGen {
                     output_wrapper_field: Some(wrapper_field),
                     requires_user: shape.owner.is_some(),
                     raw_input: false,
+                    input_serde: FieldSerde::of_fields(&shape.input_type.fields),
                 },
             );
         }
@@ -784,6 +863,19 @@ impl CodeGen {
                     context.require_version_dependency_with_features("uuid", "1", vec!["serde"]);
                 }
 
+                if shape
+                    .input_type
+                    .fields
+                    .iter()
+                    .any(|f| f.field_type.is_option() && f.field_type.unwrap_option().is_option())
+                {
+                    context.require_double_option();
+                }
+                if shape.filters.iter().any(|f| {
+                    matches!(f.source, crate::parser::FilterSource::Now | crate::parser::FilterSource::Today)
+                }) {
+                    context.require_version_dependency_with_features("chrono", "0.4", vec!["serde"]);
+                }
                 let mut file = UseCaseFile::new(
                     use_case.name.clone(),
                     shape.input_type,
@@ -791,6 +883,7 @@ impl CodeGen {
                     shape.copy_id,
                     shape.filters,
                     shape.owner,
+                    shape.order_by,
                     folder,
                 )?;
 

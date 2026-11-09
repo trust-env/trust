@@ -88,7 +88,8 @@ fn list_rejects_unknown_columns_instead_of_splicing_them_into_sql() {
 #[test]
 fn list_pages_are_ordered_and_bounded() {
     let storage = rating_storage();
-    assert!(storage.contains(r#"sql.push_str(" ORDER BY id");"#), "{storage}");
+    // `id` always ends the sort (alone when no `order_by`).
+    assert!(storage.contains(r#"let _ = write!(sql, "{}{}", separator, "id");"#), "{storage}");
     assert!(storage.contains("query.limit.clamp(0, MAX_LIST_LIMIT)"), "{storage}");
     assert!(storage.contains("query.offset.max(0)"), "{storage}");
 }

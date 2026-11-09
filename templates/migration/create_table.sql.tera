@@ -4,9 +4,23 @@ CREATE TABLE IF NOT EXISTS {{ table }} (
     {{ column.name }} {{ column.definition }}{% if not loop.last %},{% endif %}
 {%- endfor %}
 );
+{%- for r in renames %}
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = '{{ table }}' AND column_name = '{{ r.old }}')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = '{{ table }}' AND column_name = '{{ r.new }}') THEN
+        ALTER TABLE {{ table }} RENAME COLUMN {{ r.old }} TO {{ r.new }};
+    END IF;
+END $$;
+{%- endfor %}
 {%- for column in columns %}{% if not column.primary_key %}
 ALTER TABLE {{ table }} ADD COLUMN IF NOT EXISTS {{ column.name }} {{ column.sql_type }};
 {%- endif %}{% endfor %}
+{%- for column in dropped %}
+ALTER TABLE {{ table }} DROP COLUMN IF EXISTS {{ column }};
+{%- endfor %}
 {%- for index in indexes %}
 CREATE INDEX IF NOT EXISTS {{ index.name }} ON {{ table }} ({{ index.columns }});
+{%- endfor %}
+{%- for index in uniques %}
+CREATE UNIQUE INDEX IF NOT EXISTS {{ index.name }} ON {{ table }} ({{ index.columns }});
 {%- endfor %}

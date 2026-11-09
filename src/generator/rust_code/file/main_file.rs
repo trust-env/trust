@@ -22,6 +22,8 @@ pub enum InfraKind {
     /// `seed`: the infra declares a `seed:` file, applied after its table.
     Psql {
         seed: bool,
+        /// `migrations/<table>.fk.sql` exists: run once every table does.
+        foreign_keys: bool,
     },
     GrpcClient {
         target_address: String,
@@ -122,7 +124,7 @@ impl MainFile {
         // the other.
         let infra_var = infra.infra_name.to_snake_case();
         match &infra.kind {
-            InfraKind::Psql { seed } => {
+            InfraKind::Psql { seed, .. } => {
                 let db_var = infra.infra_name.to_snake_case();
                 let env_var = Self::db_url_env_var(&infra.infra_name);
 
@@ -323,9 +325,23 @@ impl MainFile {
             task_vars.extend(lb_task_vars);
         }
 
+        // Foreign keys reference other tables: added once all exist.
+        let mut foreign_keys = String::new();
+        for infra in infras {
+            if let InfraKind::Psql { foreign_keys: true, .. } = infra.kind {
+                let mut context = Context::new();
+                context.insert("file", &migration::foreign_keys_file_name(&infra.entity_name));
+                context.insert("db_var", &infra.infra_name.to_snake_case());
+                foreign_keys.push_str(&render("file/main/migration.rs.tera", &context));
+            }
+        }
+
         let mut context = Context::new();
         context.insert("lib_use", &use_statement(&crate_ident, &lib_items));
-        context.insert("infras", &infras.iter().map(Self::gen_infra).collect::<String>());
+        context.insert(
+            "infras",
+            &(infras.iter().map(Self::gen_infra).collect::<String>() + &foreign_keys),
+        );
         context.insert("use_cases", &use_cases.iter().map(Self::gen_use_case).collect::<String>());
         context.insert("blocks", &blocks);
         context.insert("task_vars", &task_vars);

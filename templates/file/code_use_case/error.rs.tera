@@ -9,7 +9,10 @@ pub enum {{ name }} {
 
 {% for storage_error in storage_errors %}impl From<{{ storage_error }}> for {{ name }} {
     fn from(error: {{ storage_error }}) -> Self {
-        {{ name }}::StorageError(format!("{:?}", error))
+        match error {
+            {{ storage_error }}::NotFound => {{ name }}::NotFound,
+            other => {{ name }}::StorageError(format!("{:?}", other)),
+        }
     }
 }
 

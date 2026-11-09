@@ -183,14 +183,28 @@ impl CodeGen {
                 },
                 None => InfraKind::Psql {
                     seed: context.has_psql_seed(infra_name),
+                    foreign_keys: context.has_psql_foreign_keys(infra_name),
                 },
             }
         };
+        let is_psql = matches!(kind, InfraKind::Psql { .. });
         infra_bindings.push(InfraBinding {
             infra_name: infra_name.to_string(),
             entity_name,
             kind,
         });
+        // A foreign key needs the referenced table: connect (and migrate)
+        // that infra too.
+        if is_psql {
+            for referenced in context.find_psql_references(infra_name).to_vec() {
+                Self::register_infra_binding(
+                    context,
+                    infra_bindings,
+                    &referenced,
+                    &format!("infra '{}''s references", infra_name),
+                )?;
+            }
+        }
         Ok(())
     }
 

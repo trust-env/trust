@@ -63,6 +63,42 @@ pub struct UseCaseIo {
     /// The input is the built-in `RawRequest` (raw body + headers) rather
     /// than a JSON/query-decoded struct.
     pub raw_input: bool,
+    /// Serde rules of the input fields that need one (see `FieldSerde`).
+    pub input_serde: Vec<(String, FieldSerde)>,
+}
+
+/// Serde decoding rules a generated struct field needs beyond its type:
+/// a `Regex<...>` validator or the double-`Option` decoding of a patch of
+/// a nullable column. Carried to every struct that redeclares the field
+/// (e.g. the per-route path/body halves of a split HTTP input).
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct FieldSerde {
+    pub regex_fn: Option<String>,
+    pub regex_optional: bool,
+    pub double_option: bool,
+}
+
+impl FieldSerde {
+    pub fn of(t: &RustType) -> Self {
+        FieldSerde {
+            regex_fn: t.regex_pattern().map(crate::generator::domains::regex_fn_name),
+            regex_optional: t.is_option(),
+            double_option: t.is_option() && t.unwrap_option().is_option(),
+        }
+    }
+
+    pub fn is_plain(&self) -> bool {
+        self.regex_fn.is_none() && !self.double_option
+    }
+
+    /// Non-plain rules of `fields`, by field name.
+    pub fn of_fields(fields: &[crate::generator::rust_code::types::RustField]) -> Vec<(String, FieldSerde)> {
+        fields
+            .iter()
+            .map(|f| (f.name.clone(), FieldSerde::of(&f.field_type)))
+            .filter(|(_, s)| !s.is_plain())
+            .collect()
+    }
 }
 
 pub struct CodeGenContext {
@@ -131,6 +167,17 @@ pub struct CodeGenContext {
     /// Whether this crate has at least one `psql` infra (so `sqlx` is a
     /// dependency).
     has_psql: bool,
+    /// `storage/psql/trust_tx.rs` was written for this crate.
+    transaction_module: bool,
+    /// psql infras whose migrations include `<table>.fk.sql`.
+    psql_foreign_keys: Vec<String>,
+    /// The infras each psql infra's foreign keys point to.
+    psql_references: HashMap<String, Vec<String>>,
+    /// psql infras declaring at least one `unique: [...]` key.
+    psql_unique_keys: Vec<String>,
+    /// Some generated input has an `Option<Option<T>>` field (a patch of a
+    /// nullable column), decoded by `crate::trust_double_option`.
+    needs_double_option: bool,
 }
 
 impl CodeGenContext {
@@ -164,7 +211,40 @@ impl CodeGenContext {
             grpc_proto_paths: Vec::new(),
             regex_patterns: Vec::new(),
             has_psql: false,
+            transaction_module: false,
+            psql_foreign_keys: Vec::new(),
+            psql_references: HashMap::new(),
+            psql_unique_keys: Vec::new(),
+            needs_double_option: false,
         }
+    }
+
+    pub fn has_psql_unique_key(&self, infra_name: &str) -> bool {
+        self.psql_unique_keys.iter().any(|n| n == infra_name)
+    }
+
+    pub fn require_double_option(&mut self) {
+        self.needs_double_option = true;
+    }
+
+    pub fn needs_double_option(&self) -> bool {
+        self.needs_double_option
+    }
+
+    pub fn find_psql_references(&self, infra_name: &str) -> &[String] {
+        self.psql_references.get(infra_name).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn has_transaction_module(&self) -> bool {
+        self.transaction_module
+    }
+
+    pub fn mark_transaction_module(&mut self) {
+        self.transaction_module = true;
+    }
+
+    pub fn has_psql_foreign_keys(&self, infra_name: &str) -> bool {
+        self.psql_foreign_keys.iter().any(|n| n == infra_name)
     }
 
     /// Records a `Regex<...>` pattern and returns its validator's name.
@@ -636,6 +716,23 @@ impl CodeGen {
                     Storage(Psql(psql)) => {
                         context.has_psql = true;
                         context.register_infra_entity(infra.name.clone(), psql.entity.clone());
+                        if !psql.unique.is_empty() {
+                            context.psql_unique_keys.push(infra.name.clone());
+                        }
+                        if !psql.references.is_empty() {
+                            context.psql_foreign_keys.push(infra.name.clone());
+                            context.psql_references.insert(
+                                infra.name.clone(),
+                                psql.references.iter().map(|r| r.infra.clone()).collect(),
+                            );
+                        }
+                        // Declared indexes, plus one per foreign key column.
+                        for index in &psql.indexes {
+                            context.register_psql_index(infra.name.clone(), index.clone());
+                        }
+                        for reference in &psql.references {
+                            context.register_psql_index(infra.name.clone(), vec![reference.field.clone()]);
+                        }
                         if psql.seed.is_some() {
                             context.register_psql_seed(infra.name.clone());
                         }
@@ -659,11 +756,42 @@ impl CodeGen {
                     context.register_known_use_case(use_case.name.clone());
                     // A `list` primary call (always the last one) with
                     // `filters {}`/`owner:` queries by those columns.
+                    // Equality columns first, then the first range/sort
+                    // column, so one btree serves the whole query.
                     if let Some(primary) = use_case.calls.last() {
                         if primary.method == "list" {
-                            let mut columns: Vec<String> =
-                                use_case.filters.iter().map(|f| f.field.clone()).collect();
+                            use crate::parser::FilterOperator;
+                            let mut columns: Vec<String> = use_case
+                                .filters
+                                .iter()
+                                .filter(|f| matches!(f.operator, FilterOperator::Eq | FilterOperator::In))
+                                .map(|f| f.field.clone())
+                                .collect();
                             columns.extend(use_case.owner.iter().cloned());
+                            let trailing = use_case
+                                .order_by
+                                .first()
+                                .map(|o| o.field.clone())
+                                .or_else(|| {
+                                    use_case
+                                        .filters
+                                        .iter()
+                                        .find(|f| {
+                                            matches!(
+                                                f.operator,
+                                                FilterOperator::Gt
+                                                    | FilterOperator::Gte
+                                                    | FilterOperator::Lt
+                                                    | FilterOperator::Lte
+                                            )
+                                        })
+                                        .map(|f| f.field.clone())
+                                });
+                            if let Some(column) = trailing {
+                                if !columns.contains(&column) {
+                                    columns.push(column);
+                                }
+                            }
                             context.register_psql_index(primary.target.clone(), columns);
                         }
                     }

@@ -8,12 +8,12 @@ pub enum {{ name }} {
 
 {% for si in storage_impls %}impl From<{{ si.storage_error }}> for {{ name }} {
     fn from(error: {{ si.storage_error }}) -> Self {
-{% if si.has_custom_errors %}        match error {
+        match error {
+            {{ si.storage_error }}::NotFound => {{ name }}::NotFound,
 {% for arm in si.match_arms %}            {{ si.storage_error }}::{{ arm.variant }}({% if arm.message_literal %}_msg{% else %}msg{% endif %}) => {{ name }}::{{ arm.target }}({% if arm.message_literal %}{{ arm.message_literal }}.to_string(){% else %}msg{% endif %}),
-{% endfor %}{% if si.has_fallback %}            other => {{ name }}::StorageError(format!("{:?}", other)),
+{% endfor %}{% if not si.has_custom_errors or si.has_fallback %}            other => {{ name }}::StorageError(format!("{:?}", other)),
 {% endif %}        }
-{% else %}        {{ name }}::StorageError(format!("{:?}", error))
-{% endif %}    }
+    }
 }
 
 {% endfor -%}

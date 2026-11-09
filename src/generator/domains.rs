@@ -195,7 +195,7 @@ pub(super) fn write_domain_type(
 /// distinct `Regex<...>` pattern the crate uses (nothing when none).
 pub(super) fn write_regex_validators(context: &mut CodeGenContext, folder: &Path) -> Result<(), String> {
     let patterns = context.regex_patterns().to_vec();
-    if patterns.is_empty() {
+    if patterns.is_empty() && !context.needs_double_option() {
         return Ok(());
     }
     let regexes: Vec<RegexView> = patterns
@@ -207,12 +207,15 @@ pub(super) fn write_regex_validators(context: &mut CodeGenContext, folder: &Path
         .collect();
     let mut ctx = Context::new();
     ctx.insert("regexes", &regexes);
+    ctx.insert("double_option", &context.needs_double_option());
     std::fs::write(
         folder.join("trust_validation.rs"),
         render("domains/validation.rs.tera", &ctx),
     )
     .map_err(|e| format!("Failed to write regex validators: {}", e))?;
     context.register_domain_module("trust_validation".to_string());
-    context.require_version_dependency("regex", "1");
+    if !patterns.is_empty() {
+        context.require_version_dependency("regex", "1");
+    }
     Ok(())
 }

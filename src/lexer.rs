@@ -127,6 +127,18 @@ impl Lexer {
                 self.position += 1;
                 return Some(Token::CloseAngle);
             }
+            Some('!') => {
+                self.position += 1;
+                return Some(Token::Bang);
+            }
+            Some('[') => {
+                self.position += 1;
+                return Some(Token::OpenBracket);
+            }
+            Some(']') => {
+                self.position += 1;
+                return Some(Token::CloseBracket);
+            }
             _ => {}
         }
         None

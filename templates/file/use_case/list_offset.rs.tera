@@ -1,0 +1,1 @@
+{% if offset == "option" %}input.offset.unwrap_or(0){% elif offset == "value" %}input.offset{% else %}0{% endif %}

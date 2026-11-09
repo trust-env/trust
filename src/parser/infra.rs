@@ -1,7 +1,7 @@
 use crate::{
     lexer::{Keyword, Token},
     parser::{
-        Ast, GrpcClientInfraService, GrpcClientMethodMapping, HttpClientInfraService, InfraService,
+        Ast, ForeignKey, GrpcClientInfraService, GrpcClientMethodMapping, HttpClientInfraService, InfraService,
         InfraServiceType, InfraServiceType::Storage, Parser, PsqlInfraService, S3InfraService,
         StorageType, StorageType::Psql,
     },
@@ -56,23 +56,106 @@ impl Parser {
             }
         };
 
-        let mut seed = None;
+        let mut psql = PsqlInfraService { entity, ..Default::default() };
         loop {
             match self.next_token() {
-                Some(Token::CloseBrace) => return Ok(PsqlInfraService { entity, seed }),
+                Some(Token::CloseBrace) => return Ok(psql),
                 Some(Token::Comma) => continue,
                 Some(Token::Identifier(k)) if k == "seed" => {
                     match (self.next_token(), self.next_token()) {
-                        (Some(Token::Colon), Some(Token::StringLiteral(path))) => seed = Some(path),
+                        (Some(Token::Colon), Some(Token::StringLiteral(path))) => psql.seed = Some(path),
                         _ => return Err("Expected ': \"<path>\"' after 'seed'".to_string()),
                     }
                 }
-                _ => {
-                    self.revert(2);
-                    return Err("Expected '}' after Psql declaration".to_string());
+                Some(Token::Identifier(k)) if k == "unique" || k == "index" || k == "dropped" => {
+                    if self.next_token() != Some(Token::Colon) {
+                        return Err(format!("Expected ':' after '{}'", k));
+                    }
+                    let columns = self.try_name_list().map_err(|e| format!("'{}': {}", k, e))?;
+                    match k.as_str() {
+                        "unique" => psql.unique.push(columns),
+                        "index" => psql.indexes.push(columns),
+                        _ => psql.dropped.extend(columns),
+                    }
+                }
+                Some(Token::Identifier(k)) if k == "references" => {
+                    if self.next_token() != Some(Token::OpenBrace) {
+                        return Err("Expected '{' after 'references'".to_string());
+                    }
+                    loop {
+                        match self.next_token() {
+                            Some(Token::CloseBrace) => break,
+                            Some(Token::Comma) => continue,
+                            Some(Token::Identifier(field)) => {
+                                let infra = match (self.next_token(), self.next_token()) {
+                                    (Some(Token::Colon), Some(Token::Identifier(infra))) => infra,
+                                    _ => return Err(format!("Expected ': <Infra>' after '{}' in 'references'", field)),
+                                };
+                                let pos = self.current;
+                                let on_delete = match self.next_token() {
+                                    Some(Token::Identifier(action))
+                                        if ["cascade", "set_null", "restrict"].contains(&action.as_str()) =>
+                                    {
+                                        Some(action)
+                                    }
+                                    _ => {
+                                        self.reset(pos);
+                                        None
+                                    }
+                                };
+                                psql.references.push(ForeignKey { field, infra, on_delete });
+                            }
+                            _ => return Err("Expected '<field>: <Infra>' entries in 'references'".to_string()),
+                        }
+                    }
+                }
+                Some(Token::Identifier(k)) if k == "renamed" => {
+                    if self.next_token() != Some(Token::OpenBrace) {
+                        return Err("Expected '{' after 'renamed'".to_string());
+                    }
+                    loop {
+                        match self.next_token() {
+                            Some(Token::CloseBrace) => break,
+                            Some(Token::Comma) => continue,
+                            Some(Token::Identifier(old)) => match (self.next_token(), self.next_token()) {
+                                (Some(Token::Colon), Some(Token::Identifier(new))) => psql.renamed.push((old, new)),
+                                _ => return Err(format!("Expected ': <new_name>' after '{}' in 'renamed'", old)),
+                            },
+                            _ => return Err("Expected '<old>: <new>' entries in 'renamed'".to_string()),
+                        }
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "Unexpected {:?} in psql block (expected entity, seed, unique, index, references, renamed, dropped or '}}')",
+                        other
+                    ));
                 }
             }
         }
+    }
+
+    /// `[a, b, c]` (or a single bare name) — column names.
+    fn try_name_list(&mut self) -> Result<Vec<String>, String> {
+        let mut names = Vec::new();
+        match self.next_token() {
+            Some(Token::OpenBracket) => loop {
+                match self.next_token() {
+                    Some(Token::CloseBracket) => break,
+                    Some(Token::Comma) => continue,
+                    Some(Token::Identifier(name)) => names.push(name),
+                    Some(Token::Keyword(k)) => names.push(k.to_string()),
+                    _ => return Err("expected column names in [...]".to_string()),
+                }
+            },
+            Some(Token::Identifier(name)) => names.push(name),
+            Some(Token::Keyword(k)) => names.push(k.to_string()),
+            _ => return Err("expected [columns] or a column name".to_string()),
+        }
+        if names.is_empty() {
+            return Err("expected at least one column".to_string());
+        }
+        Ok(names)
     }
 
     /// Parses `grpc_client { service: X on: "..." entity: Y methods {

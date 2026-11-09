@@ -113,6 +113,18 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
         }
     }
 
+    // Foreign keys need the referenced tables in the same app.
+    let mut pending: Vec<String> = infra_names.iter().cloned().collect();
+    while let Some(infra_name) = pending.pop() {
+        if let Some(InfraService { service_type: Storage(Psql(psql)), .. }) = find_infra(asts, &infra_name) {
+            for reference in &psql.references {
+                if infra_names.insert(reference.infra.clone()) {
+                    pending.push(reference.infra.clone());
+                }
+            }
+        }
+    }
+
     for infra_name in &infra_names {
         let Some(infra) = find_infra(asts, infra_name) else {
             continue;
@@ -289,6 +301,8 @@ mod tests {
             filters: vec![],
             owner: None,
             code: None,
+            order_by: vec![],
+            transaction: false,
         })
     }
 
@@ -296,8 +310,8 @@ mod tests {
         Ast::Infra(InfraService {
             name: name.to_string(),
             service_type: InfraServiceType::Storage(StorageType::Psql(PsqlInfraService {
-                seed: None,
                 entity: AllowedType::DefinedType(entity.to_string()),
+                ..Default::default()
             })),
         })
     }

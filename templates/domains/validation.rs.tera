@@ -1,6 +1,19 @@
 //! `Regex<...>` field validators: each pattern is compiled once, and a
 //! value that doesn't match is rejected while decoding the request
 //! (the client gets a 422 with the reason).
+{%- if double_option %}
+
+/// `Option<Option<T>>` fields (a patch of a nullable column): a missing
+/// field stays `None` (thanks to `#[serde(default)]`), `null` becomes
+/// `Some(None)` (clear the column), a value becomes `Some(Some(v))`.
+pub fn trust_double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    <Option<T> as serde::Deserialize>::deserialize(deserializer).map(Some)
+}
+{%- endif %}
 {% for r in regexes %}
 static {{ r.fn_name | upper }}: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new({{ r.pattern_literal }}).expect("pattern checked by trust"));

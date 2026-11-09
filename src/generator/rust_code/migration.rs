@@ -80,7 +80,11 @@ struct IndexView {
 /// Postgres truncates identifiers past 63 bytes; keep the readable prefix
 /// and make the tail unique with a short hash of the full name instead.
 fn index_name(table: &str, columns: &[String]) -> String {
-    let full = format!("{}_{}_idx", table, columns.join("_"));
+    index_name_with(table, columns, "idx")
+}
+
+fn index_name_with(table: &str, columns: &[String], suffix: &str) -> String {
+    let full = format!("{}_{}_{}", table, columns.join("_"), suffix);
     if full.len() <= 63 {
         return full;
     }
@@ -104,7 +108,104 @@ fn index_name(table: &str, columns: &[String]) -> String {
 /// with `id` appended when the entity has one, since the generated `list`
 /// always orders by `id`: `WHERE a = $1 ORDER BY id LIMIT n` then reads
 /// exactly `n` index entries instead of sorting every match.
+/// Schema changes declared on a `psql` infra beyond its entity's fields.
+#[derive(Default)]
+pub struct TableOptions<'a> {
+    /// `unique: [...]` keys, each a `CREATE UNIQUE INDEX`.
+    pub unique: &'a [Vec<String>],
+    /// `renamed { old: new }` — applied before new columns are added, so
+    /// the data follows the rename instead of a fresh empty column.
+    pub renamed: &'a [(String, String)],
+    /// `dropped: [...]` columns.
+    pub dropped: &'a [String],
+}
+
+#[derive(Serialize)]
+struct RenameView {
+    old: String,
+    new: String,
+}
+
+#[derive(Serialize)]
+struct ForeignKeyView {
+    name: String,
+    column: String,
+    ref_table: String,
+    on_delete: String,
+}
+
+/// One foreign key of a psql entity, resolved by the generator.
+pub struct ForeignKeySpec {
+    pub column: String,
+    pub ref_table: String,
+    /// `cascade` / `set_null` / `restrict`, or `None` for the default.
+    pub on_delete: Option<String>,
+}
+
+/// `migrations/<table>.fk.sql`: one idempotent `ADD CONSTRAINT ... FOREIGN
+/// KEY` per reference. Run after every table of the app exists.
+pub fn render_foreign_keys(entity: &RustType, keys: &[ForeignKeySpec]) -> Result<String, String> {
+    let table = table_name(&entity.name);
+    let mut views = Vec::new();
+    for key in keys {
+        let field = entity
+            .fields
+            .iter()
+            .find(|f| f.name == key.column)
+            .ok_or_else(|| format!("psql entity '{}': 'references' names unknown field '{}'", entity.name, key.column))?;
+        if field.field_type.unwrap_option().name != "i64" {
+            return Err(format!(
+                "psql entity '{}': 'references' field '{}' must be Int or Option<Int> (it holds another row's id)",
+                entity.name, key.column
+            ));
+        }
+        let on_delete = match key.on_delete.as_deref() {
+            Some("cascade") => "CASCADE",
+            Some("restrict") => "RESTRICT",
+            Some("set_null") if !field.field_type.is_option() => {
+                return Err(format!(
+                    "psql entity '{}': '{}' can't use set_null — the column is not nullable (make it Option<Int>)",
+                    entity.name, key.column
+                ));
+            }
+            Some(_) => "SET NULL",
+            None if field.field_type.is_option() => "SET NULL",
+            None => "RESTRICT",
+        };
+        views.push(ForeignKeyView {
+            name: constraint_name(&table, &key.column, "fkey"),
+            column: key.column.clone(),
+            ref_table: key.ref_table.clone(),
+            on_delete: on_delete.to_string(),
+        });
+    }
+    let mut context = Context::new();
+    context.insert("entity", &entity.name);
+    context.insert("table", &table);
+    context.insert("keys", &views);
+    Ok(render("migration/foreign_keys.sql.tera", &context) + "\n")
+}
+
+pub fn foreign_keys_file_name(entity_name: &str) -> String {
+    format!("{}.fk.sql", table_name(entity_name))
+}
+
+fn constraint_name(table: &str, column: &str, suffix: &str) -> String {
+    let full = format!("{}_{}_{}", table, column, suffix);
+    if full.len() <= 63 {
+        return full;
+    }
+    let hash = full
+        .bytes()
+        .fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    format!("{}_{:08x}", &full[..50], hash as u32)
+}
+
 pub fn render_create_table(entity: &RustType, indexes: &[Vec<String>]) -> Result<String, String> {
+    render_table(entity, indexes, &TableOptions::default())
+}
+
+pub fn render_table(entity: &RustType, indexes: &[Vec<String>], options: &TableOptions) -> Result<String, String> {
     let mut columns = Vec::new();
     for field in &entity.fields {
         let (sql, nullable) = sql_type(&entity.name, &field.name, &field.field_type)?;
@@ -157,11 +258,52 @@ pub fn render_create_table(entity: &RustType, indexes: &[Vec<String>]) -> Result
         });
     }
 
+    let has_field = |name: &str| entity.fields.iter().any(|f| f.name == name);
+    let mut unique_views: Vec<IndexView> = Vec::new();
+    for key in options.unique {
+        for col in key {
+            if !has_field(col) {
+                return Err(format!("psql entity '{}': 'unique' names unknown field '{}'", entity.name, col));
+            }
+        }
+        unique_views.push(IndexView {
+            name: index_name_with(&table, key, "key"),
+            columns: key.join(", "),
+        });
+    }
+    let mut renames = Vec::new();
+    for (old, new) in options.renamed {
+        if !has_field(new) {
+            return Err(format!(
+                "psql entity '{}': 'renamed' {} -> {}, but '{}' is not a field of the entity",
+                entity.name, old, new, new
+            ));
+        }
+        if has_field(old) {
+            return Err(format!(
+                "psql entity '{}': 'renamed' {} -> {}, but '{}' is still a field of the entity",
+                entity.name, old, new, old
+            ));
+        }
+        renames.push(RenameView { old: old.clone(), new: new.clone() });
+    }
+    for col in options.dropped {
+        if has_field(col) {
+            return Err(format!(
+                "psql entity '{}': 'dropped' column '{}' is still a field of the entity",
+                entity.name, col
+            ));
+        }
+    }
+
     let mut context = Context::new();
     context.insert("entity", &entity.name);
     context.insert("table", &table);
     context.insert("columns", &columns);
     context.insert("indexes", &index_views);
+    context.insert("uniques", &unique_views);
+    context.insert("renames", &renames);
+    context.insert("dropped", options.dropped);
     Ok(render("migration/create_table.sql.tera", &context) + "\n")
 }
 

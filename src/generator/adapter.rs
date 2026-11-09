@@ -131,6 +131,10 @@ impl CodeGen {
         let raw_input = context
             .find_use_case_io(&route.use_case)
             .is_some_and(|io| io.raw_input);
+        let input_serde = context
+            .find_use_case_io(&route.use_case)
+            .map(|io| io.input_serde.clone())
+            .unwrap_or_default();
         let path_params = route.path_params();
         if raw_input && !path_params.is_empty() {
             return Err(format!(
@@ -186,6 +190,7 @@ impl CodeGen {
             input_type_name,
             output_type_name,
             input_fields,
+            input_serde,
             output_entity,
             output_fields,
             output_is_list,

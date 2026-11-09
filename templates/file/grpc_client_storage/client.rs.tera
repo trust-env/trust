@@ -7,23 +7,38 @@ pub mod proto {
 
 #[derive(Debug)]
 pub enum {{ error_name }} {
+    NotFound,
     ConversionError(String),
     DatabaseError(String),
 }
 
 impl From<tonic::Status> for {{ error_name }} {
     fn from(error: tonic::Status) -> Self {
-        {{ error_name }}::DatabaseError(error.to_string())
+        match error.code() {
+            tonic::Code::NotFound => {{ error_name }}::NotFound,
+            _ => {{ error_name }}::DatabaseError(error.to_string()),
+        }
     }
+}
+
+/// The fields a `patch_one` call changes (see the psql storage's own).
+#[derive(Debug, Clone, Default)]
+pub struct {{ entity }}Patch {
+{%- for f in patch_fields %}
+    pub {{ f.name }}: Option<{{ f.rust_type }}>,
+{%- endfor %}
 }
 
 pub trait {{ entity }}Storage: Storage<{{ entity }}, {{ error_name }}> + Send + Sync {
     fn update_one_owned(&self, id: EntityId, owner_field: &'static str, owner: i64, data: {{ entity }}) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error_name }}>> + Send;
     fn delete_owned(&self, id: EntityId, owner_field: &'static str, owner: i64) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error_name }}>> + Send;
+    fn list_sorted(&self, query: StorageListQuery, order_by: &'static [(&'static str, bool)]) -> impl std::future::Future<Output = Result<Vec<{{ entity }}>, {{ error_name }}>> + Send;
+    fn upsert_one(&self, data: {{ entity }}, owner: Option<&'static str>) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error_name }}>> + Send;
+    fn patch_one(&self, id: EntityId, owner: Option<(&'static str, i64)>, patch: {{ entity }}Patch) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error_name }}>> + Send;
 }
 
-// Owner-checked writes need `update_one`/`delete`, which a grpc_client
-// infra never supports — same stub as those verbs.
+// Only `find_one` crosses the wire today; every other verb is the same
+// "unsupported" stub as the `Storage` methods.
 impl {{ entity }}Storage for {{ struct_name }} {
     async fn update_one_owned(&self, _id: EntityId, _owner_field: &'static str, _owner: i64, _data: {{ entity }}) -> Result<Option<{{ entity }}>, {{ error_name }}> {
         Err({{ error_name }}::DatabaseError("update_one is not supported by this grpc_client infra".to_string()))
@@ -31,6 +46,18 @@ impl {{ entity }}Storage for {{ struct_name }} {
 
     async fn delete_owned(&self, _id: EntityId, _owner_field: &'static str, _owner: i64) -> Result<Option<{{ entity }}>, {{ error_name }}> {
         Err({{ error_name }}::DatabaseError("delete is not supported by this grpc_client infra".to_string()))
+    }
+
+    async fn list_sorted(&self, _query: StorageListQuery, _order_by: &'static [(&'static str, bool)]) -> Result<Vec<{{ entity }}>, {{ error_name }}> {
+        Err({{ error_name }}::DatabaseError("list is not supported by this grpc_client infra".to_string()))
+    }
+
+    async fn upsert_one(&self, _data: {{ entity }}, _owner: Option<&'static str>) -> Result<Option<{{ entity }}>, {{ error_name }}> {
+        Err({{ error_name }}::DatabaseError("upsert_one is not supported by this grpc_client infra".to_string()))
+    }
+
+    async fn patch_one(&self, _id: EntityId, _owner: Option<(&'static str, i64)>, _patch: {{ entity }}Patch) -> Result<Option<{{ entity }}>, {{ error_name }}> {
+        Err({{ error_name }}::DatabaseError("patch_one is not supported by this grpc_client infra".to_string()))
     }
 }
 

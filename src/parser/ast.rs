@@ -134,13 +134,35 @@ pub struct AdapterService {
     pub adapter_type: AdapterType,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PsqlInfraService {
     pub entity: AllowedType,
     /// `seed: "./seed/x.sql"` — SQL run at every startup, right after the
     /// entity's table is created. Must be idempotent (e.g. `ON CONFLICT
     /// DO NOTHING`), since it re-runs on every boot.
     pub seed: Option<String>,
+    /// `unique: [a, b]` (repeatable) — unique indexes. The first one is the
+    /// key `upsert_one` conflicts on.
+    pub unique: Vec<Vec<String>>,
+    /// `index: [a, b]` (repeatable) — extra indexes.
+    pub indexes: Vec<Vec<String>>,
+    /// `references { field: OtherInfra [cascade|set_null|restrict] }` —
+    /// foreign keys to another psql infra's `id`.
+    pub references: Vec<ForeignKey>,
+    /// `renamed { old: new }` — columns renamed since the last deploy.
+    pub renamed: Vec<(String, String)>,
+    /// `dropped: [a, b]` — columns removed since the last deploy.
+    pub dropped: Vec<String>,
+}
+
+/// One `references {}` entry of a psql infra.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForeignKey {
+    pub field: String,
+    pub infra: String,
+    /// `cascade`, `set_null` or `restrict`; `None` picks `set_null` for a
+    /// nullable column and `restrict` otherwise.
+    pub on_delete: Option<String>,
 }
 
 /// One `<storage_method>: <RpcName>` line inside a `grpc_client { methods {
@@ -254,17 +276,66 @@ pub struct BlobCall {
     pub operation: String,
 }
 
-/// One `<field>: input.<input_field>` line inside a use case's `filters {}`
-/// block — an equality predicate scoping a `list`-bound primary call's
-/// results, comparing a storage field against one of the use case's own
-/// input fields (e.g. `spot_id: input.spot_id` for "ratings where
-/// spot_id = the route's :spot_id"). Only meaningful when the primary
-/// `call:` is bound to `list` — validated at codegen, not parse time, same
-/// split as `grpc_client`'s `methods {}` storage-verb names.
+/// One line of a use case's `filters {}` block: `<field> <op> <source>`,
+/// a predicate scoping a `list`-bound primary call's results. `field: x`
+/// is the equality shorthand. Only meaningful when the primary `call:` is
+/// bound to `list` — validated at codegen, not parse time.
 #[derive(Debug, Clone)]
 pub struct FilterMapping {
     pub field: String,
+    pub operator: FilterOperator,
     pub source: FilterSource,
+}
+
+/// The comparison of a `filters {}` line. Maps 1:1 onto `common`'s
+/// `StoragePredicateOperator`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterOperator {
+    /// `field: x`, `field = x`, `field == x`
+    Eq,
+    /// `field != x`
+    NotEq,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+    /// `field in [a, b]` / `field in input.list`
+    In,
+    /// `field not in [...]`
+    NotIn,
+    /// `field like "a%"` (case-sensitive SQL pattern)
+    Like,
+    /// `field ilike "a%"` (case-insensitive SQL pattern)
+    ILike,
+    /// `field contains x` — case-insensitive substring match.
+    Contains,
+}
+
+impl FilterOperator {
+    /// The `common::StoragePredicateOperator` variant name.
+    pub fn storage_variant(&self) -> &'static str {
+        match self {
+            FilterOperator::Eq => "Eq",
+            FilterOperator::NotEq => "NotEq",
+            FilterOperator::Gt => "Gt",
+            FilterOperator::Gte => "Gte",
+            FilterOperator::Lt => "Lt",
+            FilterOperator::Lte => "Lte",
+            FilterOperator::In => "In",
+            FilterOperator::NotIn => "NotIn",
+            FilterOperator::Like => "Like",
+            // `contains` is sent as ILIKE '%value%'.
+            FilterOperator::ILike | FilterOperator::Contains => "ILike",
+        }
+    }
+
+    pub fn is_set(&self) -> bool {
+        matches!(self, FilterOperator::In | FilterOperator::NotIn)
+    }
+
+    pub fn is_pattern(&self) -> bool {
+        matches!(self, FilterOperator::Like | FilterOperator::ILike | FilterOperator::Contains)
+    }
 }
 
 /// The right-hand side of a `filters {}` line.
@@ -275,16 +346,29 @@ pub enum FilterSource {
     /// A fixed value: a quoted string, or a bare word such as `true` or
     /// `42`. Compared as text, like every other predicate value.
     Literal(String),
+    /// `[a, b, c]` — fixed values for `in` / `not in`.
+    List(Vec<String>),
+    /// `now()` — the current UTC time when the request runs.
+    Now,
+    /// `today()` — the current UTC date when the request runs.
+    Today,
 }
 
 impl FilterMapping {
-    /// The input field this filter reads, if it isn't a literal.
+    /// The input field this filter reads, if any.
     pub fn input_field(&self) -> Option<&str> {
         match &self.source {
             FilterSource::Input(f) => Some(f),
-            FilterSource::Literal(_) => None,
+            _ => None,
         }
     }
+}
+
+/// One `field [asc|desc]` entry of a use case's `order_by:`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderBy {
+    pub field: String,
+    pub descending: bool,
 }
 
 /// `code { file: "./logic/x.rs" infra: A infra: B errors { E } deps { c: "1" } }`
@@ -330,6 +414,12 @@ pub struct UseCaseService {
     pub owner: Option<String>,
     /// Mutually exclusive with `calls`/`ai`/`blob`: a hand-written body.
     pub code: Option<CodeSpec>,
+    /// `order_by: due asc, priority desc` — sort order of a `list` primary
+    /// call (`id` always breaks ties).
+    pub order_by: Vec<OrderBy>,
+    /// `transaction: true` — every `call:` runs in one database
+    /// transaction (all `psql`, all on the same database).
+    pub transaction: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -338,8 +428,9 @@ pub struct TypeAlias {
     pub aliased_type: AllowedType,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum AllowedType {
+    #[default]
     String,
     Uuid,
     Int,

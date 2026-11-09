@@ -1,4 +1,0 @@
-{{ uses }}
-{{ error_enum }}{{ storage_trait }}
-#[derive(Clone)]
-{{ struct_code }}{{ ctor }}{{ impls }}
