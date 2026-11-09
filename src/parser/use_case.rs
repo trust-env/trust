@@ -398,6 +398,17 @@ impl Parser {
                         }
                     }
                 }
+                Some(Token::Identifier(k)) if k == "include" => {
+                    match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::StringLiteral(path))) => spec.includes.push(path),
+                        _ => {
+                            self.reset(pos);
+                            return Err(
+                                "Expected ': \"<path>\"' after 'include' in 'code' block".to_string()
+                            );
+                        }
+                    }
+                }
                 Some(Token::Keyword(Keyword::Infra)) => {
                     match (self.next_token(), self.next_token()) {
                         (Some(Token::Colon), Some(Token::Identifier(name))) => {
@@ -672,9 +683,9 @@ impl Parser {
                         name
                     ));
                 }
-                if use_case.transaction && calls.is_empty() {
+                if use_case.transaction && calls.is_empty() && code.is_none() {
                     return Err(format!(
-                        "UseCase '{}': 'transaction' is only valid with 'call'",
+                        "UseCase '{}': 'transaction' is only valid with 'call' or 'code'",
                         name
                     ));
                 }

@@ -164,6 +164,7 @@ impl AiUseCaseFile {
         context.insert("body", &self.indent_body());
         context.insert("trait_name", &self.trait_name());
         context.insert("user_param", "_user");
+        context.insert("transaction", &false);
         render("file/ai_use_case/impl.rs.tera", &context)
     }
 

@@ -145,6 +145,8 @@ pub struct UseCaseFile {
     filters: Vec<FilterMapping>,
     owner: Option<String>,
     order_by: Vec<OrderBy>,
+    /// `transaction: true`: every call runs in one database transaction.
+    transaction: bool,
     file: File,
 }
 
@@ -157,6 +159,7 @@ impl UseCaseFile {
         filters: Vec<FilterMapping>,
         owner: Option<String>,
         order_by: Vec<OrderBy>,
+        transaction: bool,
         folder: PathBuf,
     ) -> Result<Self, String> {
         let file_path = folder.join(format!("{}.rs", name.to_snake_case()));
@@ -171,6 +174,7 @@ impl UseCaseFile {
             filters,
             owner,
             order_by,
+            transaction,
         })
     }
 
@@ -226,7 +230,13 @@ impl UseCaseFile {
         self.unique_calls()
             .iter()
             .enumerate()
-            .map(|(i, call)| (format!("S{}", i), vec![call.storage_trait.clone()]))
+            .map(|(i, call)| {
+                let mut bounds = vec![call.storage_trait.clone()];
+                if self.transaction {
+                    bounds.push("TrustTransactional".to_string());
+                }
+                (format!("S{}", i), bounds)
+            })
             .collect()
     }
 
@@ -705,6 +715,19 @@ impl UseCaseFile {
                 "_user"
             },
         );
+        #[derive(Serialize)]
+        struct TxFieldView {
+            field: String,
+            storage: bool,
+        }
+        let tx_fields: Vec<TxFieldView> = self
+            .unique_calls()
+            .iter()
+            .map(|call| TxFieldView { field: Self::field_name(call), storage: true })
+            .collect();
+        context.insert("transaction", &self.transaction);
+        context.insert("tx_first", &tx_fields.first().map(|f| f.field.clone()).unwrap_or_default());
+        context.insert("tx_fields", &tx_fields);
         // Shares the exact same shape as the ai-use-case impl block.
         render("file/ai_use_case/impl.rs.tera", &context)
     }
@@ -724,6 +747,10 @@ impl UseCaseFile {
             if call.call_kind == CallKind::Patch && !imports.types.contains(&patch) {
                 imports.types.push(patch);
             }
+        }
+
+        if self.transaction {
+            imports.types.push("TrustTransactional".to_string());
         }
 
         let mut common_items = vec!["UseCase"];

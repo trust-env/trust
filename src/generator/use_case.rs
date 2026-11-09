@@ -260,6 +260,18 @@ impl CodeGen {
             });
         }
 
+        if use_case.transaction {
+            if let Some(call) = resolved_calls
+                .iter()
+                .find(|c| context.find_infra_target_address(&c.infra_name).is_some())
+            {
+                return Err(format!(
+                    "UseCase '{}': 'transaction: true' needs psql infras, '{}' is a grpc_client",
+                    use_case.name, call.infra_name
+                ));
+            }
+        }
+
         let primary_entity = resolved_calls.last().unwrap().entity_type.clone();
         let primary_call_kind = resolved_calls.last().unwrap().call_kind;
 
@@ -772,10 +784,12 @@ impl CodeGen {
                     Some(_) => format!("Grpc{}ClientError", entity_type.name),
                     None => format!("Psql{}StorageError", entity_type.name),
                 };
+                let transactional = context.find_infra_target_address(infra_name).is_none();
                 CodeDependency::Storage {
                     infra_name: infra_name.clone(),
                     storage_trait: format!("{}Storage", entity_type.name),
                     storage_error,
+                    transactional,
                 }
             };
             dependencies.push(dependency);
@@ -788,6 +802,28 @@ impl CodeGen {
                     use_case.name, reserved
                 ));
             }
+        }
+
+        if use_case.transaction {
+            if !dependencies.iter().any(|d| matches!(d, CodeDependency::Storage { transactional: true, .. })) {
+                return Err(format!(
+                    "UseCase '{}': 'transaction: true' needs at least one psql infra",
+                    use_case.name
+                ));
+            }
+            if let Some(CodeDependency::Storage { infra_name, .. }) = dependencies
+                .iter()
+                .find(|d| matches!(d, CodeDependency::Storage { transactional: false, .. }))
+            {
+                return Err(format!(
+                    "UseCase '{}': 'transaction: true' can't include grpc_client infra '{}'",
+                    use_case.name, infra_name
+                ));
+            }
+        }
+
+        for include in &code.includes {
+            self.write_shared_module(context, &use_case.name, include, &folder)?;
         }
 
         let body = std::fs::read_to_string(&code.file).map_err(|e| {
@@ -827,9 +863,56 @@ impl CodeGen {
             body,
             dependencies,
             error_variants: code.errors.clone(),
+            transaction: use_case.transaction,
         }
         .write(&folder)?;
         context.register_use_case_module(use_case.name.to_snake_case());
+        Ok(())
+    }
+
+    /// Copies a `code { include: "..." }` file into `src/shared/<stem>.rs`
+    /// (once per crate); its `pub` items end up at the crate root, where
+    /// every `code {}` body sees them.
+    fn write_shared_module(
+        &self,
+        context: &mut CodeGenContext,
+        use_case_name: &str,
+        include: &str,
+        use_case_folder: &PathBuf,
+    ) -> Result<(), String> {
+        let stem = std::path::Path::new(include)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_snake_case())
+            .ok_or_else(|| format!("UseCase '{}': invalid include path '{}'", use_case_name, include))?;
+        match context.find_shared_module(&stem) {
+            Some(existing) if existing == include => return Ok(()),
+            Some(existing) => {
+                return Err(format!(
+                    "UseCase '{}': include '{}' and '{}' would both become module '{}' — rename one",
+                    use_case_name, include, existing, stem
+                ));
+            }
+            None => {}
+        }
+        let source = std::fs::read_to_string(include).map_err(|e| {
+            format!("UseCase '{}': failed to read include '{}': {}", use_case_name, include, e)
+        })?;
+        let shared_dir = use_case_folder
+            .parent()
+            .ok_or("applications folder has no parent")?
+            .join("shared");
+        std::fs::create_dir_all(&shared_dir)
+            .map_err(|e| format!("Failed to create the shared folder: {}", e))?;
+        let mut tera_context = tera::Context::new();
+        tera_context.insert("file", include);
+        tera_context.insert("source", &source);
+        std::fs::write(
+            shared_dir.join(format!("{}.rs", stem)),
+            crate::generator::rust_code::render::render("file/code_use_case/shared.rs.tera", &tera_context),
+        )
+        .map_err(|e| format!("Failed to write shared module '{}': {}", stem, e))?;
+        context.register_shared_module(stem, include.to_string());
         Ok(())
     }
 
@@ -884,6 +967,7 @@ impl CodeGen {
                     shape.filters,
                     shape.owner,
                     shape.order_by,
+                    use_case.transaction,
                     folder,
                 )?;
 

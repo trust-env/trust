@@ -384,6 +384,10 @@ pub struct CodeSpec {
     pub infras: Vec<String>,
     pub errors: Vec<String>,
     pub deps: Vec<(String, String)>,
+    /// `include: "./logic/shared.rs"` (repeatable) — Rust files copied
+    /// once into the crate's `src/shared/` and visible from every `code {}`
+    /// body (their `pub` items are re-exported at the crate root).
+    pub includes: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

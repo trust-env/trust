@@ -178,6 +178,9 @@ pub struct CodeGenContext {
     /// Some generated input has an `Option<Option<T>>` field (a patch of a
     /// nullable column), decoded by `crate::trust_double_option`.
     needs_double_option: bool,
+    /// `code { include }` modules written under `src/shared/`: (module,
+    /// source path).
+    shared_modules: Vec<(String, String)>,
 }
 
 impl CodeGenContext {
@@ -216,6 +219,17 @@ impl CodeGenContext {
             psql_references: HashMap::new(),
             psql_unique_keys: Vec::new(),
             needs_double_option: false,
+            shared_modules: Vec::new(),
+        }
+    }
+
+    pub fn find_shared_module(&self, module: &str) -> Option<&str> {
+        self.shared_modules.iter().find(|(m, _)| m == module).map(|(_, p)| p.as_str())
+    }
+
+    pub fn register_shared_module(&mut self, module: String, source: String) {
+        if self.find_shared_module(&module).is_none() {
+            self.shared_modules.push((module, source));
         }
     }
 
@@ -1084,6 +1098,12 @@ impl CodeGen {
             "applications".to_string(),
             "adapters".to_string(),
         ];
+        if !context.shared_modules.is_empty() {
+            ModFile::new(src_path.join("shared.rs"))?
+                .with_mods(context.shared_modules.iter().map(|(m, _)| m.clone()).collect())
+                .write()?;
+            lib_mods.push("shared".to_string());
+        }
         if !context.plugin_modules.is_empty() {
             ModFile::new(src_path.join("plugins.rs"))?
                 .with_mods(context.plugin_modules.clone())
