@@ -1,7 +1,7 @@
         sqlx::query_as::<_, {{ entity }}>(
             "INSERT INTO {{ table }} ({% for f in data_fields %}{{ f.name }}{% if not loop.last %}, {% endif %}{% endfor %}) VALUES ({% for f in data_fields %}${{ loop.index }}{% if not loop.last %}, {% endif %}{% endfor %}) RETURNING {{ all_columns | join(sep=", ") }}",
         ){% for f in data_fields %}
-            .bind(data.{{ f.name }}){% endfor %}
+            .bind({% if f.json == "plain" %}sqlx::types::Json(data.{{ f.name }}){% elif f.json == "nullable" %}data.{{ f.name }}.map(sqlx::types::Json){% else %}data.{{ f.name }}{% endif %}){% endfor %}
             .fetch_one(self.db.pool())
             .await
             .map_err({{ error }}::from)

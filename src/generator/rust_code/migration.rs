@@ -33,8 +33,16 @@ pub(crate) fn sql_type(entity: &str, field: &str, t: &RustType) -> Result<(Strin
         let (sql, _) = sql_type(entity, field, inner)?;
         return Ok((sql, true));
     }
+    if t.is_json_wrapped() || t.name == crate::generator::types::JSON_VALUE {
+        return Ok(("JSONB".to_string(), false));
+    }
+    if t.is_enum() {
+        return Ok(("TEXT".to_string(), false));
+    }
     let sql = match t.name.as_str() {
         "i64" => "BIGINT",
+        "NaiveDate" => "DATE",
+        "NaiveTime" => "TIME",
         "String" => "TEXT",
         "f64" => "DOUBLE PRECISION",
         "Decimal" => "NUMERIC",
@@ -43,7 +51,7 @@ pub(crate) fn sql_type(entity: &str, field: &str, t: &RustType) -> Result<(Strin
         DATE_TIME => "TIMESTAMPTZ",
         other => {
             return Err(format!(
-                "psql entity '{}': field '{}' has type '{}', which can't be stored in a column (only scalar types and Option<scalar> are supported)",
+                "psql entity '{}': field '{}' has type '{}', which can't be stored in a column (declare it as a struct, List<...> or Json to store it as JSONB)",
                 entity, field, other
             ));
         }

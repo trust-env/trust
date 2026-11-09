@@ -15,6 +15,9 @@ struct DataFieldView {
     name: String,
     /// Postgres column type (`save_many` casts each array to `TYPE[]`).
     sql_type: String,
+    /// `plain` / `nullable` when the value is bound through
+    /// `sqlx::types::Json` (lists, nested structs); empty otherwise.
+    json: &'static str,
 }
 
 /// One column with its Postgres type, as written by the migration.
@@ -132,6 +135,11 @@ impl PsqlStorageService {
             .map(|f| DataFieldView {
                 name: f.name.clone(),
                 sql_type: self.column_type(&f.name).to_string(),
+                json: match (f.field_type.is_json_wrapped(), f.field_type.is_option()) {
+                    (true, true) => "nullable",
+                    (true, false) => "plain",
+                    _ => "",
+                },
             })
             .collect()
     }

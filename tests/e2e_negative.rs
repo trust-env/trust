@@ -19,16 +19,8 @@ fn unknown_token_is_rejected() {
 
 #[test]
 fn use_case_declaring_both_call_and_ai_is_rejected() {
-    // `try_use_case_service` itself produces a precise "cannot declare both
-    // 'call' and 'ai'" message (see the parser-level unit test in
-    // `src/parser/use_case.rs`), but the top-level driver's `.or_else(...)`
-    // chain (`src/parser/driver.rs`'s `try_ast`) only ever surfaces the
-    // *last* candidate's error, discarding every earlier one — including
-    // this specific one — in favor of the generic `try_app_service`
-    // fallback. This pins that real, currently-misleading end-to-end
-    // behavior; a fix would need `try_ast` to distinguish "wrong construct"
-    // from "right construct, invalid body", which is a bigger change than
-    // this test suite is scoped to make.
+    // The top-level parser dispatches on the construct's leading word, so
+    // the use case parser's own precise error reaches the user.
     let err = support::try_generate(
         r#"type Task {
             id: Int
@@ -48,7 +40,7 @@ fn use_case_declaring_both_call_and_ai_is_rejected() {
         }"#,
     )
     .unwrap_err();
-    assert!(err.contains("Failed to parse AppService"), "unexpected error: {}", err);
+    assert!(err.contains("mutually exclusive"), "unexpected error: {}", err);
 }
 
 #[test]

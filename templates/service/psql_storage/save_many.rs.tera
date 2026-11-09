@@ -8,7 +8,7 @@
 {%- endfor %}
         for item in data {
 {%- for f in data_fields %}
-            col_{{ f.name }}.push(item.{{ f.name }});
+            col_{{ f.name }}.push({% if f.json == "plain" %}sqlx::types::Json(item.{{ f.name }}){% elif f.json == "nullable" %}item.{{ f.name }}.map(sqlx::types::Json){% else %}item.{{ f.name }}{% endif %});
 {%- endfor %}
         }
         sqlx::query_as::<_, {{ entity }}>(

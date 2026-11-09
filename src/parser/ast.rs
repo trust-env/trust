@@ -349,6 +349,16 @@ pub enum AllowedType {
     DateTime,
     /// `Option<T>` — a nullable field.
     Option(Box<AllowedType>),
+    /// `List<T>` — a list of values (`Vec<T>`), stored as `JSONB`.
+    List(Box<AllowedType>),
+    /// `Json` — any JSON value (`serde_json::Value`), stored as `JSONB`.
+    Json,
+    /// `Date` — a calendar date without time or zone (`chrono::NaiveDate`).
+    Date,
+    /// `Time` — a wall-clock time without date or zone (`chrono::NaiveTime`).
+    Time,
+    /// `Regex<"pattern">` or `Regex<preset>` — a `String` validated
+    /// against the pattern whenever it is decoded from JSON.
     Regex(String),
     DefinedType(String),
 }
@@ -364,6 +374,10 @@ impl AllowedType {
             AllowedType::Bool => "bool".to_string(),
             AllowedType::DateTime => "date_time".to_string(),
             AllowedType::Option(inner) => inner.to_file_name(),
+            AllowedType::List(inner) => inner.to_file_name(),
+            AllowedType::Json => "json".to_string(),
+            AllowedType::Date => "date".to_string(),
+            AllowedType::Time => "time".to_string(),
             AllowedType::Regex(_) => "regex".to_string(),
             AllowedType::DefinedType(name) => name.to_snake_case(),
         }
@@ -383,17 +397,37 @@ pub struct StructDeclaration {
     pub export: Option<String>,
 }
 
+/// `enum TaskStatus { todo doing done }` — a closed set of values.
+/// Each variant is written exactly as it appears on the wire (JSON and the
+/// database column); the generated Rust variant is its UpperCamelCase form.
+#[derive(Debug, Clone)]
+pub struct EnumDeclaration {
+    pub name: String,
+    pub variants: Vec<String>,
+    pub export: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum TypeDeclaration {
     TypeAlias(TypeAlias),
     Struct(StructDeclaration),
+    Enum(EnumDeclaration),
 }
 
 impl TypeDeclaration {
     pub fn export_name(&self) -> Option<&str> {
         match self {
             TypeDeclaration::Struct(s) => s.export.as_deref(),
+            TypeDeclaration::Enum(e) => e.export.as_deref(),
             TypeDeclaration::TypeAlias(_) => None,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            TypeDeclaration::Struct(s) => &s.name,
+            TypeDeclaration::Enum(e) => &e.name,
+            TypeDeclaration::TypeAlias(a) => &a.name,
         }
     }
 }
@@ -448,6 +482,29 @@ pub struct PluginAst {
     pub raw_body: String,
 }
 
+/// One `"<cron>" => UseCase` line of a `schedule {}` block.
+#[derive(Debug, Clone)]
+pub struct ScheduleJob {
+    /// Five-field cron expression: minute hour day-of-month month day-of-week.
+    pub cron: String,
+    pub use_case: String,
+    /// Overrides the schedule's own `tz` for this job.
+    pub tz: Option<String>,
+}
+
+/// `schedule Name { tz: "..." user: 1 "<cron>" => UseCase ... }`: runs use
+/// cases on a timer inside the app that lists `Name` in its `run {}`
+/// block. Each run calls `execute(user, Default::default())`.
+#[derive(Debug, Clone)]
+pub struct ScheduleDeclaration {
+    pub name: String,
+    /// IANA time zone the cron expressions are read in (UTC by default).
+    pub tz: Option<String>,
+    /// The user id scheduled runs act as (`0` by default).
+    pub user: i64,
+    pub jobs: Vec<ScheduleJob>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Ast {
     Import(ImportDeclaration),
@@ -457,4 +514,5 @@ pub enum Ast {
     TypeDecl(TypeDeclaration),
     App(AppService),
     Plugin(PluginAst),
+    Schedule(ScheduleDeclaration),
 }

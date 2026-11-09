@@ -125,6 +125,12 @@ pub struct CodeGenContext {
     /// `.proto` file paths written by every gRPC adapter — collected here
     /// so a single aggregate `build.rs` can compile all of them.
     grpc_proto_paths: Vec<PathBuf>,
+    /// Distinct `Regex<...>` patterns used by generated structs, rendered
+    /// into `src/domains/trust_validation.rs`.
+    regex_patterns: Vec<String>,
+    /// Whether this crate has at least one `psql` infra (so `sqlx` is a
+    /// dependency).
+    has_psql: bool,
 }
 
 impl CodeGenContext {
@@ -156,7 +162,25 @@ impl CodeGenContext {
             http_client_modules: Vec::new(),
             plugin_modules: Vec::new(),
             grpc_proto_paths: Vec::new(),
+            regex_patterns: Vec::new(),
+            has_psql: false,
         }
+    }
+
+    /// Records a `Regex<...>` pattern and returns its validator's name.
+    pub fn register_regex(&mut self, pattern: &str) -> String {
+        if !self.regex_patterns.iter().any(|p| p == pattern) {
+            self.regex_patterns.push(pattern.to_string());
+        }
+        crate::generator::domains::regex_fn_name(pattern)
+    }
+
+    pub fn regex_patterns(&self) -> &[String] {
+        &self.regex_patterns
+    }
+
+    pub fn has_psql(&self) -> bool {
+        self.has_psql
     }
 
     /// Records a `src/plugins/<module>.rs` file written by `generate_plugin`,
@@ -610,6 +634,7 @@ impl CodeGen {
             match ast {
                 Ast::Infra(infra) => match &infra.service_type {
                     Storage(Psql(psql)) => {
+                        context.has_psql = true;
                         context.register_infra_entity(infra.name.clone(), psql.entity.clone());
                         if psql.seed.is_some() {
                             context.register_psql_seed(infra.name.clone());
@@ -726,12 +751,14 @@ impl CodeGen {
                 }
             }
         }
-        for ast in asts {
-            if let Ast::TypeDecl(t) = ast {
-                let resolved = self.resolve_type_declaration(&mut context, t)?;
-                context.add_type(resolved);
-            }
-        }
+        let decls: Vec<&crate::parser::TypeDeclaration> = asts
+            .iter()
+            .filter_map(|ast| match ast {
+                Ast::TypeDecl(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        self.resolve_type_declarations(&mut context, &decls)?;
         for ast in asts {
             if let Ast::UseCase(use_case) = ast {
                 self.register_use_case_io(&mut context, use_case)?;
@@ -797,7 +824,8 @@ impl CodeGen {
                     ai_config,
                 ),
                 Ast::TypeDecl(t) => self.gen_domain(&mut context, t, domain_path.clone()),
-                Ast::App(_) => Ok(()),
+                // Generated with the app that runs them.
+                Ast::App(_) | Ast::Schedule(_) => Ok(()),
                 Ast::Plugin(plugin_ast) => self.generate_plugin(
                     &mut context,
                     plugin_ast,
@@ -914,6 +942,7 @@ impl CodeGen {
                 .map_err(|e| format!("Failed to write build.rs: {}", e))?;
         }
 
+        crate::generator::domains::write_regex_validators(&mut context, &domain_path)?;
         ModFile::new(src_path.join("domains.rs"))?
             .with_mods(context.domain_modules.clone())
             .write()?;

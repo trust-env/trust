@@ -28,13 +28,21 @@ impl Lexer {
         Ok(tokens)
     }
 
+    /// Skips whitespace and `// ...` line comments.
     fn skip_whitespace(&mut self) {
-        match self.chars.get(self.position) {
-            Some(c) if c.is_whitespace() => {
-                self.position += 1;
-                self.skip_whitespace();
+        loop {
+            match (self.chars.get(self.position), self.chars.get(self.position + 1)) {
+                (Some(c), _) if c.is_whitespace() => self.position += 1,
+                (Some('/'), Some('/')) => {
+                    while let Some(c) = self.chars.get(self.position) {
+                        if *c == '\n' {
+                            break;
+                        }
+                        self.position += 1;
+                    }
+                }
+                _ => break,
             }
-            _ => {}
         }
     }
 
@@ -204,6 +212,13 @@ impl Lexer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_comments_are_skipped() {
+        let tokens = lex("// a comment\ntype // trailing\n// last").unwrap();
+        assert_eq!(tokens[0], Token::Keyword(Keyword::Type));
+        assert!(tokens[1..].iter().all(|t| *t == Token::Eof), "{:?}", tokens);
+    }
 
     fn lex(src: &str) -> Result<Vec<Token>, String> {
         Lexer::new(&src.to_string())

@@ -1,17 +1,28 @@
 use crate::{
-    lexer::{Spanned, Token},
+    lexer::{Keyword, Spanned, Token},
     parser::{Ast, Parser},
 };
 
 impl Parser {
+    /// Dispatches on the construct's leading word, so a malformed body
+    /// reports that construct's own error (e.g. "'call' and 'ai' are
+    /// mutually exclusive") rather than whichever alternative was tried last.
     fn try_ast(&mut self) -> Result<Ast, String> {
-        self.try_adapter_service()
-            .or_else(|_| self.try_import_declaration())
-            .or_else(|_| self.try_type_declaration())
-            .or_else(|_| self.try_infra_service())
-            .or_else(|_| self.try_use_case_service())
-            .or_else(|_| self.try_plugin_construct())
-            .or_else(|_| self.try_app_service())
+        let leading = self.tokens.get(self.current).map(|t| t.value.clone());
+        match leading {
+            Some(Token::Keyword(Keyword::Adapter)) => self.try_adapter_service(),
+            Some(Token::Keyword(Keyword::Import)) => self.try_import_declaration(),
+            Some(Token::Keyword(Keyword::Type)) => self.try_type_declaration(),
+            Some(Token::Keyword(Keyword::Infra)) => self.try_infra_service(),
+            Some(Token::Keyword(Keyword::UseCase)) => self.try_use_case_service(),
+            Some(Token::Keyword(Keyword::App)) => self.try_app_service(),
+            Some(Token::Identifier(word)) if word == "enum" => self.try_enum_declaration(),
+            Some(Token::Identifier(word)) if word == "schedule" => self.try_schedule_declaration(),
+            Some(Token::Identifier(word)) if self.plugin_keywords.contains(&word) => {
+                self.try_plugin_construct()
+            }
+            _ => Err("Expected a top-level declaration (type, enum, infra, use_case, adapter, app, schedule, import)".to_string()),
+        }
     }
 
     fn is_eof_tokens(&self) -> bool {

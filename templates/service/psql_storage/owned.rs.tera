@@ -11,7 +11,7 @@ impl {{ trait_name }} for {{ struct_name }} {
         };
         sqlx::query_as::<_, {{ entity }}>(sql)
 {%- for f in data_fields %}
-            .bind(data.{{ f.name }})
+            .bind({% if f.json == "plain" %}sqlx::types::Json(data.{{ f.name }}){% elif f.json == "nullable" %}data.{{ f.name }}.map(sqlx::types::Json){% else %}data.{{ f.name }}{% endif %})
 {%- endfor %}
             .bind(id)
             .bind(owner)

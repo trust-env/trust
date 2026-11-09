@@ -1,0 +1,24 @@
+//! `Regex<...>` field validators: each pattern is compiled once, and a
+//! value that doesn't match is rejected while decoding the request
+//! (the client gets a 422 with the reason).
+{% for r in regexes %}
+static {{ r.fn_name | upper }}: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new({{ r.pattern_literal }}).expect("pattern checked by trust"));
+
+pub fn {{ r.fn_name }}<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+    if {{ r.fn_name | upper }}.is_match(&value) {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom(format!("'{}' does not match {}", value, {{ r.fn_name | upper }}.as_str())))
+    }
+}
+
+pub fn {{ r.fn_name }}_opt<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    match <Option<String> as serde::Deserialize>::deserialize(deserializer)? {
+        Some(value) if {{ r.fn_name | upper }}.is_match(&value) => Ok(Some(value)),
+        Some(value) => Err(serde::de::Error::custom(format!("'{}' does not match {}", value, {{ r.fn_name | upper }}.as_str()))),
+        None => Ok(None),
+    }
+}
+{% endfor %}

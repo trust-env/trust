@@ -1,6 +1,7 @@
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct {{ name }} {
-{% for field in fields %}    pub {{ field.name }}: {{ field.field_type }},
+{% for field in fields %}{% if field.regex_fn %}{% if field.regex_optional %}    #[serde(default, deserialize_with = "crate::{{ field.regex_fn }}_opt")]
+{% else %}    #[serde(deserialize_with = "crate::{{ field.regex_fn }}")]
+{% endif %}{% endif %}    pub {{ field.name }}: {{ field.field_type }},
 {% endfor -%}
 }
-

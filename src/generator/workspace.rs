@@ -46,6 +46,17 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
     let mut use_case_names: HashSet<String> = HashSet::new();
     let mut infra_names: HashSet<String> = HashSet::new();
 
+    // A `schedule` listed in `run {}` brings in the use cases it runs.
+    let mut schedule_names: HashSet<String> = HashSet::new();
+    for name in &adapter_names {
+        if let Some(schedule) = find_schedule(asts, name) {
+            schedule_names.insert(name.clone());
+            for job in &schedule.jobs {
+                use_case_names.insert(job.use_case.clone());
+            }
+        }
+    }
+
     for adapter_name in &adapter_names {
         let Some(adapter) = find_adapter(asts, adapter_name) else {
             continue;
@@ -133,6 +144,7 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
         let referenced_types: Vec<&AllowedType> = match decl {
             TypeDeclaration::Struct(s) => s.fields.iter().map(|f| &f.field_type).collect(),
             TypeDeclaration::TypeAlias(a) => vec![&a.aliased_type],
+            TypeDeclaration::Enum(_) => vec![],
         };
         for allowed in referenced_types {
             let mut referenced = HashSet::new();
@@ -153,6 +165,7 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
             Ast::UseCase(u) => use_case_names.contains(&u.name),
             Ast::Infra(i) => infra_names.contains(&i.name),
             Ast::TypeDecl(t) => type_names.contains(type_decl_name(t)),
+            Ast::Schedule(s) => schedule_names.contains(&s.name),
         })
         .cloned()
         .collect()
@@ -163,21 +176,25 @@ fn collect_defined_type_name(allowed: &AllowedType, out: &mut HashSet<String>) {
         AllowedType::DefinedType(name) => {
             out.insert(name.clone());
         }
-        AllowedType::Option(inner) => collect_defined_type_name(inner, out),
+        AllowedType::Option(inner) | AllowedType::List(inner) => collect_defined_type_name(inner, out),
         _ => {}
     }
 }
 
 fn type_decl_name(t: &TypeDeclaration) -> &str {
-    match t {
-        TypeDeclaration::Struct(s) => &s.name,
-        TypeDeclaration::TypeAlias(a) => &a.name,
-    }
+    t.name()
 }
 
 fn find_adapter<'a>(asts: &'a [Ast], name: &str) -> Option<&'a AdapterService> {
     asts.iter().find_map(|ast| match ast {
         Ast::Adapter(a) if a.name == name => Some(a),
+        _ => None,
+    })
+}
+
+fn find_schedule<'a>(asts: &'a [Ast], name: &str) -> Option<&'a crate::parser::ScheduleDeclaration> {
+    asts.iter().find_map(|ast| match ast {
+        Ast::Schedule(s) if s.name == name => Some(s),
         _ => None,
     })
 }

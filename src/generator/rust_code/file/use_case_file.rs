@@ -225,6 +225,8 @@ impl UseCaseFile {
         struct FieldView {
             name: String,
             field_type: String,
+            regex_fn: Option<String>,
+            regex_optional: bool,
         }
 
         let fields: Vec<FieldView> = self
@@ -234,6 +236,8 @@ impl UseCaseFile {
             .map(|field| FieldView {
                 name: field.name.clone(),
                 field_type: field.field_type.to_call_string(Vec::new()),
+                regex_fn: field.field_type.regex_pattern().map(crate::generator::domains::regex_fn_name),
+                regex_optional: field.field_type.is_option(),
             })
             .collect();
 

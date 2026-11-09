@@ -1,7 +1,7 @@
 use crate::{
     lexer::{Keyword, Token},
     parser::{
-        AllowedType, Ast, Ast::TypeDecl, Parser, StructDeclaration, StructField, TypeAlias,
+        AllowedType, Ast, Ast::TypeDecl, EnumDeclaration, Parser, StructDeclaration, StructField, TypeAlias,
         TypeDeclaration, TypeDeclaration::Struct,
     },
 };
@@ -39,25 +39,51 @@ impl Parser {
                 }
                 Ok(AllowedType::Option(Box::new(inner)))
             }
-            Some(Token::Keyword(Keyword::Regex)) => match self.next_token() {
-                Some(Token::OpenAngle) => match self.next_token() {
-                    Some(Token::Identifier(regex_pattern)) => match self.next_token() {
-                        Some(Token::CloseAngle) => Ok(AllowedType::Regex(regex_pattern)),
-                        _ => {
-                            self.revert(3);
-                            Err("Expected '>' after regex pattern".to_string())
-                        }
-                    },
-                    _ => {
-                        self.revert(2);
-                        Err("Expected regex pattern after '<'".to_string())
-                    }
-                },
-                _ => {
-                    self.revert(1);
-                    Err("Expected '<' after 'Regex'".to_string())
+            Some(Token::Keyword(Keyword::Regex)) => {
+                let pos = self.current - 1;
+                if self.next_token() != Some(Token::OpenAngle) {
+                    self.reset(pos);
+                    return Err("Expected '<' after 'Regex'".to_string());
                 }
-            },
+                let pattern = match self.next_token() {
+                    // `Regex<"^[a-z]+$">`: a real pattern.
+                    Some(Token::StringLiteral(pattern)) => pattern,
+                    // `Regex<slug>`: a named preset, resolved at codegen.
+                    Some(Token::Identifier(preset)) => preset,
+                    _ => {
+                        self.reset(pos);
+                        return Err("Expected a regex pattern (\"...\") or preset name after '<'".to_string());
+                    }
+                };
+                if self.next_token() != Some(Token::CloseAngle) {
+                    self.reset(pos);
+                    return Err("Expected '>' after regex pattern".to_string());
+                }
+                Ok(AllowedType::Regex(pattern))
+            }
+            // `List<T>`: contextual, so a type named `List` can't be declared.
+            Some(Token::Identifier(name)) if name == "List" => {
+                let pos = self.current - 1;
+                if self.next_token() != Some(Token::OpenAngle) {
+                    self.reset(pos);
+                    return Err("Expected '<' after 'List'".to_string());
+                }
+                let inner = match self.try_type() {
+                    Ok(inner) => inner,
+                    Err(e) => {
+                        self.reset(pos);
+                        return Err(e);
+                    }
+                };
+                if self.next_token() != Some(Token::CloseAngle) {
+                    self.reset(pos);
+                    return Err("Expected '>' to close 'List<...>'".to_string());
+                }
+                Ok(AllowedType::List(Box::new(inner)))
+            }
+            Some(Token::Identifier(name)) if name == "Json" => Ok(AllowedType::Json),
+            Some(Token::Identifier(name)) if name == "Date" => Ok(AllowedType::Date),
+            Some(Token::Identifier(name)) if name == "Time" => Ok(AllowedType::Time),
             Some(Token::Identifier(type_name)) => Ok(AllowedType::DefinedType(type_name)),
             _ => {
                 self.revert(1);
@@ -108,6 +134,55 @@ impl Parser {
             }
         }
         Ok((fields, export))
+    }
+
+    /// `enum Name { a b c }` (commas optional) — `enum` is contextual,
+    /// not a reserved keyword. Variants are identifiers or string literals
+    /// (for wire values that aren't valid identifiers, e.g. `"in-progress"`).
+    pub(super) fn try_enum_declaration(&mut self) -> Result<Ast, String> {
+        let pos = self.current;
+        match (self.next_token(), self.next_token(), self.next_token()) {
+            (Some(Token::Identifier(kw)), Some(Token::Identifier(name)), Some(Token::OpenBrace))
+                if kw == "enum" =>
+            {
+                let mut variants: Vec<String> = Vec::new();
+                let mut export = None;
+                loop {
+                    match self.next_token() {
+                        Some(Token::CloseBrace) => break,
+                        Some(Token::Comma) => continue,
+                        Some(Token::Keyword(Keyword::Export)) => match self.next_token() {
+                            Some(Token::Identifier(export_name)) => export = Some(export_name),
+                            _ => {
+                                self.reset(pos);
+                                return Err("Expected a name after 'export'".to_string());
+                            }
+                        },
+                        Some(Token::Identifier(v)) | Some(Token::StringLiteral(v)) => {
+                            if variants.contains(&v) {
+                                self.reset(pos);
+                                return Err(format!("enum '{}' declares '{}' twice", name, v));
+                            }
+                            variants.push(v)
+                        }
+                        Some(Token::Keyword(k)) => variants.push(k.to_string()),
+                        _ => {
+                            self.reset(pos);
+                            return Err(format!("Failed to parse enum '{}'", name));
+                        }
+                    }
+                }
+                if variants.is_empty() {
+                    self.reset(pos);
+                    return Err(format!("enum '{}' must declare at least one variant", name));
+                }
+                Ok(TypeDecl(TypeDeclaration::Enum(EnumDeclaration { name, variants, export })))
+            }
+            _ => {
+                self.reset(pos);
+                Err("Failed to parse enum declaration".to_string())
+            }
+        }
     }
 
     pub(super) fn try_type_declaration(&mut self) -> Result<Ast, String> {

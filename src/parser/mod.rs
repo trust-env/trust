@@ -5,6 +5,7 @@ mod driver;
 mod import;
 mod infra;
 mod plugin;
+mod schedule;
 mod type_decl;
 mod use_case;
 
