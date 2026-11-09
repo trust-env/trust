@@ -13,7 +13,7 @@ use crate::{
             RustCode,
             file::{
                 grpc_adapter_file::{GrpcAdapterFile, GrpcRpcBinding},
-                http_adapter_file::{HttpAdapterFile, HttpRouteBinding, ResolvedAuth},
+                http_adapter_file::{HttpAdapterFile, HttpOptions, HttpRouteBinding, ResolvedAuth, ResolvedSecret},
             },
             service::Service,
         },
@@ -151,7 +151,20 @@ impl CodeGen {
             }
         }
 
-        let requires_user = route.auth.is_some();
+        // A JWT (either form) gives the caller's id; a shared secret acts as
+        // its configured user.
+        let requires_user = route.auth.as_ref().is_some_and(|a| a.uses_jwt());
+        let secret = match &route.auth {
+            Some(AuthRequirement::Secret(secret)) => Some(ResolvedSecret {
+                value_expr: crate::generator::rust_code::env_template::to_rust_expr(&secret.secret),
+                header: secret.header.as_ref().map(|h| h.to_lowercase()),
+                user: secret.user,
+            }),
+            _ => None,
+        };
+        let output_wrapper_field = context
+            .find_use_case_io(&route.use_case)
+            .and_then(|io| io.output_wrapper_field.clone());
         let auth = match &route.auth {
             Some(AuthRequirement::Permission(req)) => {
                 let entity = context.find_infra_entity(&req.infra).ok_or_else(|| {
@@ -176,7 +189,7 @@ impl CodeGen {
                     action: req.action.clone(),
                 })
             }
-            Some(AuthRequirement::Authenticated) | None => None,
+            Some(AuthRequirement::Authenticated) | Some(AuthRequirement::Secret(_)) | None => None,
         };
 
         Ok(HttpRouteBinding {
@@ -194,10 +207,12 @@ impl CodeGen {
             output_entity,
             output_fields,
             output_is_list,
+            output_wrapper_field,
             path_params,
             requires_user,
             raw_input,
             auth,
+            secret,
         })
     }
 
@@ -260,17 +275,27 @@ impl CodeGen {
             context.require_git_dependency("auth", "ssh://git@github.com/BH-World/auth.git");
         }
 
+        // Request logs (TraceLayer) on every HTTP adapter.
+        context.require_version_dependency_with_features("tower-http", "0.6", vec!["trace"]);
         if http_data.cors.is_some() {
             context.require_version_dependency_with_features("tower-http", "0.6", vec!["cors"]);
         }
+        if let Some(events) = &http_data.events {
+            context.require_version_dependency_with_features("tokio-stream", "0.1", vec!["sync"]);
+            if events.requires_user {
+                context.require_version_dependency("jsonwebtoken", "9");
+                context.require_version_dependency_with_features("serde", "1", vec!["derive"]);
+            }
+        }
 
-        let mut file = HttpAdapterFile::new(
-            name,
-            bindings,
+        let options = HttpOptions {
             dev_mode,
-            http_data.cors.clone(),
-            http_folder_path,
-        )?;
+            cors: http_data.cors.clone(),
+            envelope: http_data.envelope,
+            events: http_data.events.clone(),
+            json_camel: context.json_camel(),
+        };
+        let mut file = HttpAdapterFile::new(name, bindings, options, http_folder_path)?;
         file.write()
     }
 

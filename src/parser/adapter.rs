@@ -1,9 +1,9 @@
 use crate::{
     lexer::{Keyword, Token},
     parser::{
-        AdapterService, AdapterType, AllowedType, Ast, AuthRequirement, GrpcAdapterService,
-        GrpcRpc, HttpAdapterService, HttpMethod, HttpRoute, Parser, PermissionRequirement,
-        StatusMapping,
+        AdapterService, AdapterType, AllowedType, Ast, AuthRequirement, EventsEndpoint,
+        GrpcAdapterService, GrpcRpc, HttpAdapterService, HttpMethod, HttpRoute, Parser,
+        PermissionRequirement, SecretRequirement, StatusMapping,
     },
 };
 
@@ -135,6 +135,9 @@ impl Parser {
         let mut infra = None;
         let mut target = None;
         let mut action = None;
+        let mut secret = None;
+        let mut header = None;
+        let mut user = 0;
 
         loop {
             match self.next_token() {
@@ -179,11 +182,39 @@ impl Parser {
                         return Err("Expected ':' after 'action'".to_string());
                     }
                 },
+                Some(Token::Identifier(s)) if s == "secret" || s == "header" => {
+                    match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::StringLiteral(v))) => {
+                            if s == "secret" { secret = Some(v) } else { header = Some(v) }
+                        }
+                        _ => {
+                            self.reset(pos);
+                            return Err(format!("Expected ': \"...\"' after '{}'", s));
+                        }
+                    }
+                }
+                Some(Token::Identifier(s)) if s == "user" => match (self.next_token(), self.next_token()) {
+                    (Some(Token::Colon), Some(Token::Identifier(id))) if id.parse::<i64>().is_ok() => {
+                        user = id.parse().unwrap_or(0)
+                    }
+                    _ => {
+                        self.reset(pos);
+                        return Err("Expected ': <user id>' after 'user'".to_string());
+                    }
+                },
                 _ => {
                     self.reset(pos);
                     return Err("Failed to parse 'auth' block".to_string());
                 }
             }
+        }
+
+        if let Some(secret) = secret {
+            if infra.is_some() || target.is_some() || action.is_some() {
+                self.reset(pos);
+                return Err("'auth' uses either 'secret' or 'infra'/'target'/'action', not both".to_string());
+            }
+            return Ok(AuthRequirement::Secret(SecretRequirement { secret, header, user }));
         }
 
         match (infra, target, action) {
@@ -336,9 +367,36 @@ impl Parser {
         let mut routes = Vec::new();
         let mut on = None;
         let mut cors = None;
+        let mut envelope = true;
+        let mut events = None;
         loop {
             match self.next_token() {
                 Some(Token::CloseBrace) => break,
+                Some(Token::Identifier(k)) if k == "envelope" => match (self.next_token(), self.next_token()) {
+                    (Some(Token::Colon), Some(Token::Identifier(v))) if v == "true" || v == "false" => {
+                        envelope = v == "true"
+                    }
+                    _ => return Err("Expected ': true' or ': false' after 'envelope'".to_string()),
+                },
+                Some(Token::Identifier(k)) if k == "events" => {
+                    let path = match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::StringLiteral(path))) => path,
+                        _ => return Err("Expected ': \"/path\"' after 'events'".to_string()),
+                    };
+                    let pos = self.current;
+                    let requires_user = match (self.next_token(), self.next_token(), self.next_token()) {
+                        (Some(Token::Keyword(Keyword::Auth)), Some(Token::Colon), Some(Token::Identifier(v)))
+                            if v == "required" =>
+                        {
+                            true
+                        }
+                        _ => {
+                            self.reset(pos);
+                            false
+                        }
+                    };
+                    events = Some(EventsEndpoint { path, requires_user });
+                }
                 Some(Token::Keyword(Keyword::Routes)) => {
                     self.revert(1);
                     routes = self.try_http_routes_block()?;
@@ -370,7 +428,7 @@ impl Parser {
                 }
             }
         }
-        Ok(HttpAdapterService { routes, on, cors })
+        Ok(HttpAdapterService { routes, on, cors, envelope, events })
     }
 
     /// Parses `rpc Name { input: X output: Y use_case: Z }` — the gRPC
@@ -512,6 +570,8 @@ impl Parser {
                         routes: vec![],
                         on: None,
                         cors: None,
+                        envelope: true,
+                        events: None,
                     }),
                 })),
                 _ => {

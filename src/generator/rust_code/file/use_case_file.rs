@@ -147,6 +147,10 @@ pub struct UseCaseFile {
     order_by: Vec<OrderBy>,
     /// `transaction: true`: every call runs in one database transaction.
     transaction: bool,
+    /// Announce successful runs to `events:` streams.
+    publish: bool,
+    /// `config { json_case: "camel" }`.
+    json_camel: bool,
     file: File,
 }
 
@@ -175,7 +179,19 @@ impl UseCaseFile {
             owner,
             order_by,
             transaction,
+            publish: false,
+            json_camel: false,
         })
+    }
+
+    pub fn with_publish(mut self, publish: bool) -> Self {
+        self.publish = publish;
+        self
+    }
+
+    pub fn with_json_camel(mut self, json_camel: bool) -> Self {
+        self.json_camel = json_camel;
+        self
     }
 
     fn primary(&self) -> &ResolvedCall {
@@ -289,6 +305,7 @@ impl UseCaseFile {
         let mut context = Context::new();
         context.insert("name", &self.input_name());
         context.insert("fields", &fields);
+        context.insert("camel", &self.json_camel);
         render("file/use_case/input_struct.rs.tera", &context)
     }
 
@@ -344,6 +361,7 @@ impl UseCaseFile {
         context.insert("field", &field_name);
         context.insert("entity_type", &entity_type);
         context.insert("is_list", &is_list);
+        context.insert("camel", &self.json_camel);
         render("file/use_case/output_struct.rs.tera", &context)
     }
 
@@ -730,6 +748,7 @@ impl UseCaseFile {
             .map(|call| TxFieldView { field: Self::field_name(call), storage: true })
             .collect();
         context.insert("transaction", &self.transaction);
+        context.insert("publish", &self.publish);
         context.insert("tx_first", &tx_fields.first().map(|f| f.field.clone()).unwrap_or_default());
         context.insert("tx_fields", &tx_fields);
         // Shares the exact same shape as the ai-use-case impl block.

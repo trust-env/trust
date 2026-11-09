@@ -1,4 +1,5 @@
 {% if requires_user %}        user_context: UserContext,
+{% endif %}{% if secret %}        auth_headers: axum::http::HeaderMap,
 {% endif %}        State(presenter): State<Arc<Self>>,
 {% if kind == "raw" %}        headers: axum::http::HeaderMap,
         body: String,

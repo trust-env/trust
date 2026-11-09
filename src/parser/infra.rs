@@ -340,6 +340,8 @@ impl Parser {
         }
         let mut base_url = None;
         let mut headers = Vec::new();
+        let mut retry = 0;
+        let mut timeout_secs = 30;
         loop {
             match self.next_token() {
                 Some(Token::CloseBrace) => break,
@@ -380,11 +382,23 @@ impl Parser {
                         }
                     }
                 }
+                Some(Token::Identifier(k)) if k == "retry" || k == "timeout" => {
+                    let value = match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::Identifier(v))) => v.parse::<u64>().ok(),
+                        _ => None,
+                    }
+                    .ok_or(format!("Expected ': <number>' after '{}'", k))?;
+                    if k == "retry" {
+                        retry = value.min(10) as u32;
+                    } else {
+                        timeout_secs = value.max(1);
+                    }
+                }
                 _ => return Err("Unexpected token in 'http_client' block".to_string()),
             }
         }
         let base_url = base_url.ok_or("'http_client' block must declare 'base_url'")?;
-        Ok(HttpClientInfraService { base_url, headers })
+        Ok(HttpClientInfraService { base_url, headers, retry, timeout_secs })
     }
 
     fn infra_content(&mut self) -> Result<InfraServiceType, String> {

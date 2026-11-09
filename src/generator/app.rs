@@ -445,7 +445,8 @@ impl CodeGen {
                         on,
                         use_cases: use_case_names,
                         auth_infra_names,
-                        requires_jwt: http_data.routes.iter().any(|r| r.auth.is_some()),
+                        requires_jwt: http_data.routes.iter().any(|r| r.auth.as_ref().is_some_and(|a| a.uses_jwt()))
+                            || http_data.events.as_ref().is_some_and(|e| e.requires_user),
                         cors: http_data.cors.clone(),
                     });
                 }
@@ -489,6 +490,18 @@ impl CodeGen {
         context.require_git_dependency("common", "ssh://git@github.com/BH-World/common.git");
         context.require_version_dependency_with_features("tokio", "1", vec!["full"]);
         context.require_version_dependency("dotenvy", "0.15");
+        // Structured logs: `RUST_LOG` filters, `LOG_FORMAT=json` for JSON lines.
+        context.require_version_dependency("tracing", "0.1");
+        context.require_version_dependency_with_features(
+            "tracing-subscriber",
+            "0.3",
+            vec!["env-filter", "json"],
+        );
+        // `<binary> token <user_id> [days]` mints long-lived service tokens.
+        if adapter_bindings.iter().any(|a| a.requires_jwt) {
+            context.require_version_dependency("jsonwebtoken", "9");
+            context.require_version_dependency("serde_json", "1");
+        }
         if !schedule_jobs.is_empty() {
             context.require_version_dependency_with_features("chrono", "0.4", vec!["serde"]);
             context.require_version_dependency("chrono-tz", "0.10");

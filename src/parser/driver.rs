@@ -18,10 +18,11 @@ impl Parser {
             Some(Token::Keyword(Keyword::App)) => self.try_app_service(),
             Some(Token::Identifier(word)) if word == "enum" => self.try_enum_declaration(),
             Some(Token::Identifier(word)) if word == "schedule" => self.try_schedule_declaration(),
+            Some(Token::Identifier(word)) if word == "config" => self.try_config_declaration(),
             Some(Token::Identifier(word)) if self.plugin_keywords.contains(&word) => {
                 self.try_plugin_construct()
             }
-            _ => Err("Expected a top-level declaration (type, enum, infra, use_case, adapter, app, schedule, import)".to_string()),
+            _ => Err("Expected a top-level declaration (type, enum, infra, use_case, adapter, app, schedule, config, import)".to_string()),
         }
     }
 

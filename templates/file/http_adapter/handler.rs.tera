@@ -1,3 +1,4 @@
+
 impl<{{ generics }}> {{ name }}<{{ generics }}>
 where
 {{ where_clause }}{
@@ -12,6 +13,6 @@ where
                 HttpError::new(status, format!("{:?}", error))
             })?;
 
-        Ok(Json(response))
+        Ok(Json(response{% if unwrap_field %}.{{ unwrap_field }}{% endif %}))
     }
 }

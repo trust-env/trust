@@ -864,6 +864,7 @@ impl CodeGen {
             dependencies,
             error_variants: code.errors.clone(),
             transaction: use_case.transaction,
+            publish: context.has_events() && use_case.notifies(),
         }
         .write(&folder)?;
         context.register_use_case_module(use_case.name.to_snake_case());
@@ -979,7 +980,9 @@ impl CodeGen {
                     shape.order_by,
                     use_case.transaction,
                     folder,
-                )?;
+                )?
+                .with_publish(context.has_events() && use_case.notifies())
+                .with_json_camel(context.json_camel());
 
                 file.write()?;
                 context.register_use_case_module(use_case.name.to_snake_case());

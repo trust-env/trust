@@ -178,6 +178,7 @@ pub(super) fn write_domain_type(
 
             let mut ctx = Context::new();
             ctx.insert("is_storage_entity", &is_storage_entity);
+            ctx.insert("camel", &context.json_camel());
             ctx.insert("is_public", &true);
             ctx.insert("name", &t.name);
             ctx.insert("fields", &fields);

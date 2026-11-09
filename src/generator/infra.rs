@@ -60,7 +60,13 @@ impl CodeGen {
             .map_err(|e| format!("Failed to create http_client folder: {}", e))?;
         let module = infra_name.to_snake_case();
 
+        let cfg = context
+            .find_http_client_infra(infra_name)
+            .cloned()
+            .ok_or_else(|| format!("Unknown http_client infra '{}'", infra_name))?;
         let mut tera_context = tera::Context::new();
+        tera_context.insert("retry", &cfg.retry);
+        tera_context.insert("timeout_secs", &cfg.timeout_secs);
         tera_context.insert("infra", infra_name);
         tera_context.insert("name", &Self::http_client_struct_name(infra_name));
         let code = crate::generator::rust_code::render::render(

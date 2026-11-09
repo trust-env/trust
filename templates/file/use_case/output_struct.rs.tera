@@ -1,4 +1,5 @@
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize)]{% if camel %}
+#[serde(rename_all = "camelCase")]{% endif %}
 pub struct {{ name }} {
     pub {{ field }}: {% if is_list %}Vec<{{ entity_type }}>{% else %}{{ entity_type }}{% endif %},
 }

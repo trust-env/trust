@@ -377,6 +377,7 @@ impl MainFile {
 
         let mut context = Context::new();
         context.insert("has_schedules", &!schedule_jobs.is_empty());
+        context.insert("token_command", &adapters.iter().any(|a| a.requires_jwt));
         context.insert("lib_use", &use_statement(&crate_ident, &lib_items));
         context.insert(
             "infras",

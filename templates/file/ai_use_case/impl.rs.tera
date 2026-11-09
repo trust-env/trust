@@ -1,6 +1,6 @@
 impl{{ generics }} UseCase<{{ input }}, {{ output }}, {{ error }}> for {{ name }}{{ generics }}
 {{ where_clause }}{
-    async fn execute(&self, {{ user_param }}: i64, input: {{ input }}) -> Result<{{ output }}, {{ error }}> {
+    async fn execute(&self, {% if publish %}user{% else %}{{ user_param }}{% endif %}: i64, input: {{ input }}) -> Result<{{ output }}, {{ error }}> {
 {%- if transaction %}
         // One database transaction for the whole run: committed when it
         // succeeds, rolled back on any error.
@@ -10,11 +10,14 @@ impl{{ generics }} UseCase<{{ input }}, {{ output }}, {{ error }}> for {{ name }
             {{ f.field }}: {% if f.storage %}self.{{ f.field }}.in_transaction(&tx){% else %}self.{{ f.field }}.clone(){% endif %},
 {%- endfor %}
         };
-        match scoped.run({{ user_param }}, input).await {
+        match scoped.run({% if publish %}user{% else %}{{ user_param }}{% endif %}, input).await {
             Ok(output) => {
                 crate::commit_transaction(&tx)
                     .await
                     .map_err(|e| {{ error }}::StorageError(e.to_string()))?;
+{%- if publish %}
+                crate::trust_publish("{{ name }}", user);
+{%- endif %}
                 Ok(output)
             }
             Err(error) => {
@@ -22,6 +25,21 @@ impl{{ generics }} UseCase<{{ input }}, {{ output }}, {{ error }}> for {{ name }
                 Err(error)
             }
         }
+    }
+}
+
+impl{{ generics }} {{ name }}{{ generics }}
+{{ where_clause }}{
+    async fn run(&self, {{ user_param }}: i64, input: {{ input }}) -> Result<{{ output }}, {{ error }}> {
+{{ body }}
+    }
+}
+{%- elif publish %}
+        let result = self.run(user, input).await;
+        if result.is_ok() {
+            crate::trust_publish("{{ name }}", user);
+        }
+        result
     }
 }
 

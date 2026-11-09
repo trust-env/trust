@@ -60,16 +60,36 @@ pub enum AuthRequirement {
     /// checks `infra`'s storage for a permission row matching
     /// `target`/`action`.
     Permission(PermissionRequirement),
+    /// `auth { secret: "${INTERNAL_TOKEN}" header: "X-Token" user: 1 }` — a
+    /// shared secret instead of a JWT: for machines (webhooks, cron, an
+    /// agent), not people.
+    Secret(SecretRequirement),
 }
 
 impl AuthRequirement {
     /// The permission-row infra this requirement queries, if any.
     pub fn permission_infra(&self) -> Option<&str> {
         match self {
-            AuthRequirement::Authenticated => None,
+            AuthRequirement::Authenticated | AuthRequirement::Secret(_) => None,
             AuthRequirement::Permission(p) => Some(&p.infra),
         }
     }
+
+    /// Whether the route validates a JWT (`auth: required` or a
+    /// permission check).
+    pub fn uses_jwt(&self) -> bool {
+        !matches!(self, AuthRequirement::Secret(_))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SecretRequirement {
+    /// The expected value, usually `${VAR}` (resolved at startup).
+    pub secret: String,
+    /// The header carrying it; `None` means `Authorization: Bearer <secret>`.
+    pub header: Option<String>,
+    /// The user id the request acts as (`0` by default).
+    pub user: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +124,29 @@ pub struct HttpAdapterService {
     /// to call this adapter (`*` for any). Supports `${VAR}` interpolation,
     /// like `on:`.
     pub cors: Option<String>,
+    /// `envelope: false` — responses are the entity / list itself instead
+    /// of `{"task": ...}` / `{"tasks": [...]}`.
+    pub envelope: bool,
+    /// `events: "/events"` — a Server-Sent Events stream announcing every
+    /// successful use case run (`auth: required` limits it to the caller's
+    /// own events).
+    pub events: Option<EventsEndpoint>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventsEndpoint {
+    pub path: String,
+    /// Only the caller's own events; the JWT may come from the
+    /// `Authorization` header or an `access_token` query parameter
+    /// (browsers' `EventSource` can't set headers).
+    pub requires_user: bool,
+}
+
+/// `config { json_case: "camel" }` — settings for the whole file.
+#[derive(Debug, Clone, Default)]
+pub struct ConfigDeclaration {
+    /// `camel`: every generated JSON field is camelCase.
+    pub json_case: Option<String>,
 }
 
 /// One `rpc Name { input: X output: Y use_case: Z }` inside a `grpc {
@@ -226,6 +269,11 @@ pub enum InfraServiceType {
 pub struct HttpClientInfraService {
     pub base_url: String,
     pub headers: Vec<(String, String)>,
+    /// `retry: 3` — extra attempts after a network error, a 429 or a 5xx
+    /// (exponential backoff from 200 ms).
+    pub retry: u32,
+    /// `timeout: 10` — seconds before a request gives up (30 by default).
+    pub timeout_secs: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -425,6 +473,24 @@ pub struct UseCaseService {
     /// `transaction: true` — every `call:` runs in one database
     /// transaction (all `psql`, all on the same database).
     pub transaction: bool,
+    /// `notify: true|false` — publish a change event after each successful
+    /// run (for HTTP `events:` streams). Defaults to true when a call
+    /// writes (save/update/patch/upsert/delete), false otherwise.
+    pub notify: Option<bool>,
+}
+
+impl UseCaseService {
+    /// Whether a successful run is announced to `events:` streams.
+    pub fn notifies(&self) -> bool {
+        self.notify.unwrap_or_else(|| {
+            self.calls.iter().any(|c| {
+                matches!(
+                    c.method.as_str(),
+                    "save_one" | "save_many" | "update_one" | "patch_one" | "upsert_one" | "delete" | "delete_many"
+                )
+            })
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -611,4 +677,5 @@ pub enum Ast {
     App(AppService),
     Plugin(PluginAst),
     Schedule(ScheduleDeclaration),
+    Config(ConfigDeclaration),
 }

@@ -49,6 +49,8 @@ pub struct CodeUseCaseFile {
     pub error_variants: Vec<String>,
     /// `transaction: true`: the whole body runs in one transaction.
     pub transaction: bool,
+    /// Announce successful runs to `events:` streams.
+    pub publish: bool,
 }
 
 impl CodeUseCaseFile {
@@ -190,6 +192,7 @@ impl CodeUseCaseFile {
             })
             .collect();
         context.insert("transaction", &self.transaction);
+        context.insert("publish", &self.publish);
         context.insert(
             "tx_first",
             &tx_fields.iter().find(|f| f.storage).map(|f| f.field.clone()).unwrap_or_default(),

@@ -171,7 +171,7 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
 
     asts.iter()
         .filter(|ast| match ast {
-            Ast::Import(_) | Ast::Plugin(_) => true,
+            Ast::Import(_) | Ast::Plugin(_) | Ast::Config(_) => true,
             Ast::App(a) => a.name == app.name,
             Ast::Adapter(a) => adapter_names.contains(&a.name),
             Ast::UseCase(u) => use_case_names.contains(&u.name),
@@ -303,6 +303,7 @@ mod tests {
             code: None,
             order_by: vec![],
             transaction: false,
+            notify: None,
         })
     }
 

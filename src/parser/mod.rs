@@ -1,6 +1,7 @@
 pub mod adapter;
 pub mod app;
 pub mod ast;
+mod config;
 mod driver;
 mod import;
 mod infra;

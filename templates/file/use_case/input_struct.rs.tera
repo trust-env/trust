@@ -1,4 +1,5 @@
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]{% if camel %}
+#[serde(rename_all = "camelCase")]{% endif %}
 pub struct {{ name }} {
 {% for field in fields %}{% if field.double_option %}    #[serde(default, deserialize_with = "crate::trust_double_option")]
 {% elif field.regex_fn %}{% if field.regex_optional %}    #[serde(default, deserialize_with = "crate::{{ field.regex_fn }}_opt")]

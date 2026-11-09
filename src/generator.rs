@@ -181,6 +181,11 @@ pub struct CodeGenContext {
     /// `code { include }` modules written under `src/shared/`: (module,
     /// source path).
     shared_modules: Vec<(String, String)>,
+    /// `config { json_case: "camel" }`.
+    json_camel: bool,
+    /// Some HTTP adapter of this crate declares `events:`, so use cases
+    /// with `notify` publish to `crate::trust_publish`.
+    has_events: bool,
 }
 
 impl CodeGenContext {
@@ -220,7 +225,17 @@ impl CodeGenContext {
             psql_unique_keys: Vec::new(),
             needs_double_option: false,
             shared_modules: Vec::new(),
+            json_camel: false,
+            has_events: false,
         }
+    }
+
+    pub fn json_camel(&self) -> bool {
+        self.json_camel
+    }
+
+    pub fn has_events(&self) -> bool {
+        self.has_events
     }
 
     pub fn find_shared_module(&self, module: &str) -> Option<&str> {
@@ -862,10 +877,16 @@ impl CodeGen {
                         context.register_use_case_errors(use_case.name.clone(), errors);
                     }
                 }
+                Ast::Config(config) => {
+                    context.json_camel = config.json_case.as_deref() == Some("camel");
+                }
                 Ast::Adapter(adapter) => {
                     // `auth { infra ... }` looks permission rows up by
                     // (user_id, target, action) on every guarded request.
                     if let crate::parser::AdapterType::Http(http) = &adapter.adapter_type {
+                        if http.events.is_some() {
+                            context.has_events = true;
+                        }
                         for route in &http.routes {
                             if let Some(infra) = route.auth.as_ref().and_then(|a| a.permission_infra()) {
                                 context.register_psql_index(
@@ -967,7 +988,7 @@ impl CodeGen {
                 ),
                 Ast::TypeDecl(t) => self.gen_domain(&mut context, t, domain_path.clone()),
                 // Generated with the app that runs them.
-                Ast::App(_) | Ast::Schedule(_) => Ok(()),
+                Ast::App(_) | Ast::Schedule(_) | Ast::Config(_) => Ok(()),
                 Ast::Plugin(plugin_ast) => self.generate_plugin(
                     &mut context,
                     plugin_ast,
@@ -1098,6 +1119,14 @@ impl CodeGen {
             "applications".to_string(),
             "adapters".to_string(),
         ];
+        if context.has_events {
+            std::fs::write(
+                src_path.join("trust_events.rs"),
+                crate::generator::rust_code::render::render("file/events/runtime.rs.tera", &tera::Context::new()),
+            )
+            .map_err(|e| format!("Failed to write the events module: {}", e))?;
+            lib_mods.push("trust_events".to_string());
+        }
         // A `schedule {}` run by this app's binary needs the cron runtime.
         if asts.iter().any(|ast| matches!(ast, Ast::Schedule(_))) {
             std::fs::write(
