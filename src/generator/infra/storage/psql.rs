@@ -60,7 +60,6 @@ impl CodeGen {
         // Shared across every psql infra, so it may already exist by the
         // time a second (or third) one is generated.
         create_dir_all(psql_folder_path).map_err(|e| format!("Failed to create psql folder: {}", e))?;
-        println!("Generating psql storage for entity: {:?}", psql.entity);
         match psql.entity {
             AllowedType::DefinedType(n) => match context.find_type(&n) {
                 Some(rust_type) => {

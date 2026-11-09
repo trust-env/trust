@@ -519,7 +519,30 @@ impl CodeGen {
         ast
     }
 
+    /// The output directory is wiped before every run, so refuse anything
+    /// that doesn't look like earlier Trust output: the working directory
+    /// itself (or one of its parents), or a non-empty directory without a
+    /// root `Cargo.toml`.
     fn check_output_dir(&self, path: &PathBuf) -> Result<(), String> {
+        if let (Ok(cwd), Ok(target)) = (std::env::current_dir(), path.canonicalize()) {
+            if cwd.starts_with(&target) {
+                return Err(format!(
+                    "Refusing to use '{}' as the output directory: it contains the working directory and would be deleted",
+                    path.display()
+                ));
+            }
+        }
+        if path.is_dir() {
+            let non_empty = std::fs::read_dir(path)
+                .map(|mut entries| entries.next().is_some())
+                .unwrap_or(false);
+            if non_empty && !path.join("Cargo.toml").is_file() {
+                return Err(format!(
+                    "Refusing to overwrite '{}': it is not empty and doesn't look like Trust output (no Cargo.toml)",
+                    path.display()
+                ));
+            }
+        }
         if !path.exists() {
             std::fs::create_dir_all(path)
                 .map_err(|e| format!("Failed to create output directory: {}", e))?;
