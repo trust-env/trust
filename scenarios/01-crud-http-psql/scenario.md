@@ -32,8 +32,7 @@ The script:
 
 1. Builds the `trust` CLI (`cargo build --bin trust`).
 2. Runs it against `app.tr` in a scratch temp directory (with `mod/`
-   symlinked in so the `import SQLConnector from "./mod/common/common.tr"`
-   line resolves without needing network access).
+   symlinked in, for the dependency patching in step 4).
 3. Asserts the expected generated files exist (domain type, psql storage,
    the 3 use cases, the HTTP adapter + its route handlers).
 4. Patches the generated `Cargo.toml`'s private git dependencies

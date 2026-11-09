@@ -1,5 +1,3 @@
-import SQLConnector from "./mod/common/common.tr"
-
 type Doc {
     id: Int,
     text: String

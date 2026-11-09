@@ -21,9 +21,9 @@ scenario_build_cli() {
     (cd "$SCENARIO_LIB_REPO_ROOT" && cargo build --quiet --bin trust)
 }
 
-# Creates a scratch working directory with mod/ symlinked in (so a scenario's
-# `import ... from "./mod/common/common.tr"` line resolves), and prints its
-# path. Every scenario's generated output lands at <workdir>/out.
+# Creates a scratch working directory with mod/ symlinked in (the local
+# checkouts generated crates' private git dependencies are patched to), and
+# prints its path. Every scenario's generated output lands at <workdir>/out.
 scenario_workdir() {
     local workdir
     workdir="$(mktemp -d)"
