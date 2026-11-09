@@ -409,8 +409,11 @@ use_case ListCommunityStickersUseCase {
 ```
 
 A literal is a quoted string or a bare word (`true`, `42`); like every
-predicate value it's compared as text (`field::text = value`). Literal
-filters add nothing to the guessed input.
+predicate value it's sent as text and cast to the column's type
+(`field = $1::BOOLEAN`), so the column itself stays indexable. Literal
+filters add nothing to the guessed input. The filtered columns get a
+`CREATE INDEX` in the entity's migration (see
+[conversions.md §5c](conversions.md#5c-filters-and-storagelistquery-predicates)).
 
 ```tr
 use_case ListRatingsForSpotUseCase {
@@ -496,7 +499,7 @@ What the primary call does with it:
 | `save_one` | stamps `entity.<owner> = user` before saving |
 | `list` | adds a `<owner> = user` predicate (combines with `filters`) |
 | `find_one` | a row owned by someone else is `NotFound` |
-| `update_one` / `delete` | fetches the row first; not owned → `NotFound` (nothing is written); `update_one` also re-stamps the owner |
+| `update_one` / `delete` | one statement filtered on `id` **and** the owner (`... WHERE id = $n AND <owner> = $m`); not owned → `NotFound` (nothing is written); `update_one` also re-stamps the owner |
 
 - The owner field is **never part of a guessed input**, so clients can't
   choose it. An explicit input that has it is simply overwritten.

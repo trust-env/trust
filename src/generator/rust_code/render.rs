@@ -18,6 +18,18 @@ static TEMPLATES: LazyLock<RwLock<Tera>> = LazyLock::new(|| {
         ("types.rs.tera", include_str!("../../../templates/types.rs.tera")),
         ("_trait/trait.rs.tera", include_str!("../../../templates/_trait/trait.rs.tera")),
         ("_trait/trait_impl.rs.tera", include_str!("../../../templates/_trait/trait_impl.rs.tera")),
+        (
+            "_trait/owned_storage_trait.rs.tera",
+            include_str!("../../../templates/_trait/owned_storage_trait.rs.tera"),
+        ),
+        (
+            "service/psql_storage/save_many.rs.tera",
+            include_str!("../../../templates/service/psql_storage/save_many.rs.tera"),
+        ),
+        (
+            "service/psql_storage/owned.rs.tera",
+            include_str!("../../../templates/service/psql_storage/owned.rs.tera"),
+        ),
         ("service/method.rs.tera", include_str!("../../../templates/service/method.rs.tera")),
         ("service/service.rs.tera", include_str!("../../../templates/service/service.rs.tera")),
         ("file/mod_file.rs.tera", include_str!("../../../templates/file/mod_file.rs.tera")),
@@ -171,8 +183,8 @@ static TEMPLATES: LazyLock<RwLock<Tera>> = LazyLock::new(|| {
             include_str!("../../../templates/file/http_adapter/raw_request.rs.tera"),
         ),
         (
-            "file/use_case/owner_guard.rs.tera",
-            include_str!("../../../templates/file/use_case/owner_guard.rs.tera"),
+            "file/use_case/call_owned.rs.tera",
+            include_str!("../../../templates/file/use_case/call_owned.rs.tera"),
         ),
         (
             "file/http_adapter/struct.rs.tera",
@@ -348,7 +360,7 @@ mod tests {
         assert!(names.contains(&"file/use_case/struct.rs.tera"));
         assert!(names.contains(&"file/use_case/call_simple.rs.tera"));
         assert!(names.contains(&"file/use_case/call_read.rs.tera"));
-        assert!(names.contains(&"file/use_case/owner_guard.rs.tera"));
+        assert!(names.contains(&"file/use_case/call_owned.rs.tera"));
         assert!(names.contains(&"migration/create_table.sql.tera"));
         assert!(names.contains(&"file/main/migration.rs.tera"));
         assert!(names.contains(&"file/http_adapter/cors.rs.tera"));

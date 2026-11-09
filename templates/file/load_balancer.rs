@@ -4,9 +4,9 @@ use std::sync::{
 };
 
 use axum::{
-    body::{to_bytes, Body},
+    body::Body,
     extract::{Request, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::any,
     Router,
@@ -16,8 +16,12 @@ use axum::{
 /// whichever hop received the request, and `content-length`/
 /// `transfer-encoding` are recomputed by reqwest/axum from the actual body
 /// being sent at each hop.
-fn is_hop_specific_header(name: &str) -> bool {
-    matches!(name, "host" | "content-length" | "transfer-encoding")
+const HOP_SPECIFIC_HEADERS: [&str; 3] = ["host", "content-length", "transfer-encoding"];
+
+fn strip_hop_specific_headers(headers: &mut HeaderMap) {
+    for name in HOP_SPECIFIC_HEADERS {
+        headers.remove(name);
+    }
 }
 
 pub struct RoundRobinProxy {
@@ -41,62 +45,38 @@ impl RoundRobinProxy {
     }
 }
 
+/// Bodies are streamed through in both directions — never buffered whole
+/// in memory — so the proxy's footprint doesn't grow with payload size and
+/// the backend starts receiving before the client has finished sending.
 async fn proxy_handler(State(proxy): State<Arc<RoundRobinProxy>>, req: Request) -> Response {
-    let target = proxy.next_target().to_string();
-    let path_and_query = req
-        .uri()
+    let (parts, body) = req.into_parts();
+    let path_and_query = parts
+        .uri
         .path_and_query()
         .map(|pq| pq.as_str())
-        .unwrap_or("/")
-        .to_string();
-    let url = format!("http://{}{}", target, path_and_query);
-    let method = req.method().clone();
-    let headers = req.headers().clone();
+        .unwrap_or("/");
+    let url = format!("http://{}{}", proxy.next_target(), path_and_query);
+    let mut headers = parts.headers;
+    strip_hop_specific_headers(&mut headers);
 
-    let body_bytes = match to_bytes(req.into_body(), usize::MAX).await {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("Failed to read request body: {}", error),
-            )
-                .into_response();
-        }
-    };
+    let sent = proxy
+        .client
+        .request(parts.method, url)
+        .headers(headers)
+        .body(reqwest::Body::wrap_stream(body.into_data_stream()))
+        .send()
+        .await;
 
-    let mut builder = proxy.client.request(method, &url);
-    for (name, value) in headers.iter() {
-        if is_hop_specific_header(name.as_str()) {
-            continue;
-        }
-        builder = builder.header(name, value);
-    }
-
-    match builder.body(body_bytes).send().await {
-        Ok(backend_response) => {
+    match sent {
+        Ok(mut backend_response) => {
             let status = backend_response.status();
-            let headers = backend_response.headers().clone();
-            let bytes = match backend_response.bytes().await {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    return (
-                        StatusCode::BAD_GATEWAY,
-                        format!("Failed to read backend response: {}", error),
-                    )
-                        .into_response();
-                }
-            };
+            let mut headers = std::mem::take(backend_response.headers_mut());
+            strip_hop_specific_headers(&mut headers);
 
-            let mut response = Response::builder().status(status);
-            for (name, value) in headers.iter() {
-                if is_hop_specific_header(name.as_str()) {
-                    continue;
-                }
-                response = response.header(name, value);
-            }
+            let mut response = Response::new(Body::from_stream(backend_response.bytes_stream()));
+            *response.status_mut() = status;
+            *response.headers_mut() = headers;
             response
-                .body(Body::from(bytes))
-                .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
         }
         Err(error) => (
             StatusCode::BAD_GATEWAY,

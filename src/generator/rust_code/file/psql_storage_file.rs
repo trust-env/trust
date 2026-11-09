@@ -1,10 +1,8 @@
 use std::io::Write;
 use std::{fs::File, path::PathBuf};
 
-use crate::generator::rust_code::_enum::Enum;
 use crate::generator::rust_code::_trait::Trait;
 use crate::generator::rust_code::{
-    RustCode,
     imports::{common_use, crate_use},
     render::render,
     service::psql_storage::PsqlStorageService,
@@ -17,16 +15,9 @@ use tera::Context;
 /// validation and codegen can agree on what's a valid mapping source.
 pub const STORAGE_ERROR_VARIANTS: &[&str] = &["ConversionError", "DatabaseError"];
 
-enum InFileType {
-    Struct(RustType),
-    Enum(Enum),
-    Trait(Trait),
-}
-
 pub struct PsqlStorageFile {
     entity: RustType,
     error_name: String,
-    types: Vec<InFileType>,
     service: PsqlStorageService,
     file: File,
 }
@@ -63,8 +54,7 @@ impl PsqlStorageFile {
         let error_name = Self::error_name(&e);
 
         Ok(PsqlStorageFile {
-            types: vec![InFileType::Trait(Self::storage_trait(e.clone(), &error_name))],
-            service: PsqlStorageService::new(e.clone(), Self::storage_trait(e.clone(), &error_name)),
+            service: PsqlStorageService::new(e.clone(), Self::storage_trait(e.clone(), &error_name))?,
             file: File::create(Self::file_name(&folder, &e))
                 .map_err(|err| format!("Failed to create entity storage file: {}", err))?,
             entity: e,
@@ -80,19 +70,13 @@ impl PsqlStorageFile {
             "Storage",
             "EntityId",
             "StorageListQuery",
+            "StoragePredicateOperator",
         ]));
         code.push_str(&crate_use(&[self.entity.name.clone()]));
         code.push('\n');
         code.push_str(&Self::error_enum_code(&self.error_name));
-        if !self.types.is_empty() {
-            for t in &self.types {
-                match t {
-                    InFileType::Trait(t) => code.push_str(&t.to_rust_code()),
-                    _ => {}
-                }
-                code.push_str("\n");
-            }
-        }
+        code.push_str(&self.service.storage_trait_code());
+        code.push('\n');
         code.push_str("#[derive(Clone)]\n");
         code.push_str(&self.service.struct_code());
         code.push_str(&self.service.ctor_code());

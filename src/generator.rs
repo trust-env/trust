@@ -93,6 +93,9 @@ pub struct CodeGenContext {
     use_case_errors: HashMap<String, Vec<ErrorMapping>>,
     /// Infra names whose `psql {}` block declares a `seed:` file.
     psql_seeded_infras: Vec<String>,
+    /// Column sets each `psql` infra's generated code filters on, by infra
+    /// name — rendered as `CREATE INDEX` statements in its migration.
+    psql_indexes: HashMap<String, Vec<Vec<String>>>,
     use_case_io: HashMap<String, UseCaseIo>,
     dependencies: HashMap<String, Dependency>,
     build_dependencies: HashMap<String, Dependency>,
@@ -138,6 +141,7 @@ impl CodeGenContext {
             use_case_infra: HashMap::new(),
             use_case_errors: HashMap::new(),
             psql_seeded_infras: Vec::new(),
+            psql_indexes: HashMap::new(),
             use_case_io: HashMap::new(),
             dependencies: HashMap::new(),
             build_dependencies: HashMap::new(),
@@ -200,6 +204,22 @@ impl CodeGenContext {
 
     pub fn has_psql_seed(&self, infra_name: &str) -> bool {
         self.psql_seeded_infras.iter().any(|n| n == infra_name)
+    }
+
+    /// Records that some generated query filters `infra_name`'s table on
+    /// exactly `columns` (equality predicates), so its migration indexes them.
+    pub fn register_psql_index(&mut self, infra_name: String, columns: Vec<String>) {
+        if columns.is_empty() {
+            return;
+        }
+        let indexes = self.psql_indexes.entry(infra_name).or_default();
+        if !indexes.contains(&columns) {
+            indexes.push(columns);
+        }
+    }
+
+    pub fn find_psql_indexes(&self, infra_name: &str) -> &[Vec<String>] {
+        self.psql_indexes.get(infra_name).map(Vec::as_slice).unwrap_or(&[])
     }
 
     pub fn register_infra_entity(&mut self, infra_name: String, entity: AllowedType) {
@@ -589,6 +609,16 @@ impl CodeGen {
                 },
                 Ast::UseCase(use_case) => {
                     context.register_known_use_case(use_case.name.clone());
+                    // A `list` primary call (always the last one) with
+                    // `filters {}`/`owner:` queries by those columns.
+                    if let Some(primary) = use_case.calls.last() {
+                        if primary.method == "list" {
+                            let mut columns: Vec<String> =
+                                use_case.filters.iter().map(|f| f.field.clone()).collect();
+                            columns.extend(use_case.owner.iter().cloned());
+                            context.register_psql_index(primary.target.clone(), columns);
+                        }
+                    }
                     if let (Some(input), Some(output)) = (&use_case.input, &use_case.output) {
                         context.register_use_case_signature(
                             use_case.name.clone(),
@@ -640,6 +670,20 @@ impl CodeGen {
                             })
                             .collect();
                         context.register_use_case_errors(use_case.name.clone(), errors);
+                    }
+                }
+                Ast::Adapter(adapter) => {
+                    // `auth { infra ... }` looks permission rows up by
+                    // (user_id, target, action) on every guarded request.
+                    if let crate::parser::AdapterType::Http(http) = &adapter.adapter_type {
+                        for route in &http.routes {
+                            if let Some(infra) = route.auth.as_ref().and_then(|a| a.permission_infra()) {
+                                context.register_psql_index(
+                                    infra.to_string(),
+                                    vec!["user_id".to_string(), "target".to_string(), "action".to_string()],
+                                );
+                            }
+                        }
                     }
                 }
                 _ => {}

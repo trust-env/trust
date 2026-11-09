@@ -12,6 +12,7 @@ impl CodeGen {
     pub(super) fn gen_storage(
         &mut self,
         context: &mut CodeGenContext,
+        infra_name: &str,
         storage: StorageType,
         folder: PathBuf,
         full_asts: &[Ast],
@@ -29,7 +30,7 @@ impl CodeGen {
                 let crate_root = proto_dir
                     .parent()
                     .ok_or("generated crate has no root folder")?;
-                self.gen_psql_storage(context, psql, storage_folder_path, crate_root)
+                self.gen_psql_storage(context, infra_name, psql, storage_folder_path, crate_root)
             }
             StorageType::GrpcClient(cfg) => self.gen_grpc_client_storage(
                 context,

@@ -20,7 +20,9 @@ chains in the Rust generator).
 
 ## Workspace level
 
-- `out/Cargo.toml`: `[workspace] resolver = "2"`, one member per `app`
+- `out/Cargo.toml`: `[workspace] resolver = "2"`, one member per `app`,
+  plus a `[profile.release]` tuned for runtime speed (`lto = "fat"`,
+  `codegen-units = 1`, `opt-level = 3`)
   block, directory-named `snake_case(app_name)` (e.g. `app PublicHttpBackend`
   → `out/public_http_backend/`). Single-app files still produce a
   workspace of one member.
@@ -90,17 +92,23 @@ For each `infra { storage { psql { entity: X } } }`:
 - `{Entity}StorageError` enum: `ConversionError(String)`, `DatabaseError(String)`,
   plus `impl From<sqlx::Error> for {Entity}StorageError` (→ `DatabaseError`).
 - `{Entity}Storage: common::Storage<{Entity}, {Entity}StorageError> + Send + Sync` —
-  a marker trait, not a concrete type, so use cases and adapters can be
+  a trait (only adding the two `*_owned` methods below), not a concrete type, so use cases and adapters can be
   generic over "any storage for this entity" rather than this one struct.
 - `Psql{Entity}Storage { db: SQLConnector }` (`#[derive(Clone)]`), `::new(db)`,
   and `impl Storage<{Entity}, {Entity}StorageError> for Psql{Entity}Storage`
   implementing all **8** `common::Storage<T,E>` methods via raw
   `sqlx::query_as::<_, {Entity}>(...)` against a table named after the
-  pluralized snake_case entity: `save_one`, `save_many` (loops `save_one`),
-  `find_one`, `find_many` (`WHERE id = ANY($1)`), `list` (dynamic `WHERE`
-  built from `StorageListQuery.predicates`, always paginated with
-  `LIMIT`/`OFFSET`), `update_one`, `delete`, `delete_many`. Then
-  `impl {Entity}Storage for Psql{Entity}Storage {}`.
+  pluralized snake_case entity: `save_one`, `save_many` (one
+  `INSERT ... SELECT * FROM UNNEST($1::T[], ...)`), `find_one`, `find_many`
+  (`WHERE id = ANY($1)`), `list` (dynamic `WHERE` built from
+  `StorageListQuery.predicates` — column names whitelisted, the text
+  *parameter* cast to the column type so indexes stay usable — then
+  `ORDER BY id`, clamped `LIMIT`/`OFFSET`), `update_one`, `delete`,
+  `delete_many`.
+- `{Entity}Storage` also declares `update_one_owned`/`delete_owned`
+  (owner-checked single-statement writes used by `owner:` use cases);
+  `impl {Entity}Storage for Psql{Entity}Storage` implements them, the
+  `grpc_client` variant stubs them as unsupported.
 - `sqlx::query_as` is chosen deliberately over compile-time-checked
   `sqlx::query!` — runtime validation, no live DB needed to `cargo build`
   the generated project or run `generator_*`/most `e2e_*` tests
@@ -203,7 +211,8 @@ byte-for-byte from `templates/file/load_balancer.rs` (a plain `.rs` file,
 **not** `.tera` — no per-app variables to substitute). Defines
 `RoundRobinProxy` (atomic-counter round robin over a fixed
 `Vec<String>` of real network addresses) and `load_balancer_router(proxy)`,
-which reverse-proxies every request via `reqwest`, stripping hop-specific
+which reverse-proxies every request via `reqwest`, streaming bodies both
+ways (never buffered whole), stripping hop-specific
 headers (`host`, `content-length`, `transfer-encoding`) in both
 directions. It is adapter-agnostic — it never constructs or knows about
 the backend's presenter type, only its addresses. Do not confuse this with
@@ -266,7 +275,9 @@ dependencies — they only ever receive already-built instances via `::new()`.
 
 - `psql` infra connection: `std::env::var("{INFRA}_INFRA_DB_URL")` (shouty
   snake case of the `infra` block's identifier), `.expect(...)`, passed to
-  `SQLConnector::connect(&url).await?`.
+  `SQLConnector::connect_with_pool_size(&url, size).await?`, where `size`
+  comes from the optional `{INFRA}_DB_POOL_SIZE` env var (default 16 —
+  `common`'s plain `connect` caps the pool at 5).
 - `grpc_client` infra connection: `Grpc{Entity}Client::connect(target_address)`
   where `target_address` is the literal string from the `.tr` file — no env var.
 - `load_balancer`: constructs `RoundRobinProxy::new(vec![...declared targets...])`
@@ -286,7 +297,7 @@ driven by what the crate actually uses — not a fixed superset:
 - Always: `serde` (+`derive`), `common` (git dep), `dotenvy`, `tokio` (`full`).
 - `psql` infra present → `sqlx` (`runtime-tokio`, `tls-rustls`, `postgres`).
 - `http` adapter present → `axum`.
-- `load_balancer` present → `reqwest` (the proxy's HTTP client).
+- `load_balancer` present → `reqwest` with `stream` (the proxy's HTTP client).
 - `grpc` adapter or `grpc_client` infra present → `tonic`, `prost`, and
   `[build-dependencies] protoc-bin-vendored`, `tonic-build`, plus a
   `build.rs` that vendors `protoc` (`std::env::set_var("PROTOC", ...)`)

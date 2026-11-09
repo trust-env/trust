@@ -506,15 +506,19 @@ impl UseCaseFile {
         context.insert("is_tail", &is_tail);
         context.insert("owner", &owner);
 
-        // update_one/delete on an owned entity first check the row belongs
-        // to the caller — someone else's row reads as NotFound, never as
-        // a permission error, so ids can't be probed.
+        // update_one/delete on an owned entity go through the storage's
+        // `*_owned` variant, which checks the owner in the same statement.
         let mut code = String::new();
-        if let (Some(_), CallKind::Update | CallKind::Delete) = (owner, call.call_kind) {
-            code.push_str(&render("file/use_case/owner_guard.rs.tera", &context));
-        }
-        match call.call_kind {
-            CallKind::Read => code.push_str(&render("file/use_case/call_read.rs.tera", &context)),
+        match (owner, call.call_kind) {
+            (Some(owner_field), CallKind::Update | CallKind::Delete) => {
+                let owned_args = match call.call_kind {
+                    CallKind::Update => format!("{}, {:?}, user, {}", id_expr(), owner_field, entity_expr()),
+                    _ => format!("{}, {:?}, user", id_expr(), owner_field),
+                };
+                context.insert("args", &owned_args);
+                code.push_str(&render("file/use_case/call_owned.rs.tera", &context));
+            }
+            (_, CallKind::Read) => code.push_str(&render("file/use_case/call_read.rs.tera", &context)),
             _ => code.push_str(&render("file/use_case/call_simple.rs.tera", &context)),
         }
         code

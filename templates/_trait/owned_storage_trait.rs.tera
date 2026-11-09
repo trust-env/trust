@@ -1,0 +1,8 @@
+pub trait {{ trait_name }}: Storage<{{ entity }}, {{ error }}> + Send + Sync {
+    /// `update_one` restricted to the row whose `owner_field` equals
+    /// `owner`; `Ok(None)` when no such row exists for that owner.
+    fn update_one_owned(&self, id: EntityId, owner_field: &'static str, owner: i64, data: {{ entity }}) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error }}>> + Send;
+    /// `delete` restricted to the row whose `owner_field` equals `owner`;
+    /// `Ok(None)` when no such row exists for that owner.
+    fn delete_owned(&self, id: EntityId, owner_field: &'static str, owner: i64) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error }}>> + Send;
+}

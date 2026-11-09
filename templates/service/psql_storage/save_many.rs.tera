@@ -1,0 +1,22 @@
+        if data.is_empty() {
+            return Ok(Vec::new());
+        }
+        // One round-trip (and one implicit transaction) for the whole batch:
+        // columns are sent as arrays and zipped back into rows by UNNEST.
+{%- for f in data_fields %}
+        let mut col_{{ f.name }} = Vec::with_capacity(data.len());
+{%- endfor %}
+        for item in data {
+{%- for f in data_fields %}
+            col_{{ f.name }}.push(item.{{ f.name }});
+{%- endfor %}
+        }
+        sqlx::query_as::<_, {{ entity }}>(
+            "INSERT INTO {{ table }} ({{ columns }}) SELECT * FROM UNNEST({{ unnest_args }}) RETURNING {{ all_columns }}",
+        )
+{%- for f in data_fields %}
+            .bind(col_{{ f.name }})
+{%- endfor %}
+            .fetch_all(self.db.pool())
+            .await
+            .map_err({{ error }}::from)

@@ -157,26 +157,60 @@ fn find_one_hides_rows_owned_by_someone_else() {
 }
 
 #[test]
-fn update_and_delete_check_ownership_before_writing() {
-    for (file, error) in [
-        ("update_cart_item_use_case", "UpdateCartItemUseCaseError"),
-        ("remove_cart_item_use_case", "RemoveCartItemUseCaseError"),
-    ] {
-        let code = use_case(file);
-        let guard = code
-            .find(".filter(|existing| existing.user_id == user)")
-            .unwrap_or_else(|| panic!("no guard:\n{code}"));
-        let write = code
-            .rfind(".update_one(")
-            .or_else(|| code.rfind(".delete("))
-            .unwrap();
-        assert!(guard < write, "guard must run before the write:\n{code}");
-        assert!(
-            code.contains(&format!(".ok_or({error}::NotFound)?;")),
-            "{code}"
-        );
+fn update_and_delete_check_ownership_in_the_write_itself() {
+    let update = use_case("update_cart_item_use_case");
+    assert!(
+        update.contains(".update_one_owned(input.id, \"user_id\", user, "),
+        "{update}"
+    );
+    assert!(update.contains("entity.user_id = user;"), "{update}");
+    assert!(
+        update.contains(".ok_or(UpdateCartItemUseCaseError::NotFound)"),
+        "{update}"
+    );
+
+    let delete = use_case("remove_cart_item_use_case");
+    assert!(
+        delete.contains(".delete_owned(input.id, \"user_id\", user)"),
+        "{delete}"
+    );
+    assert!(
+        delete.contains(".ok_or(RemoveCartItemUseCaseError::NotFound)"),
+        "{delete}"
+    );
+
+    // No separate read before the write: one round-trip.
+    for code in [&update, &delete] {
+        assert!(!code.contains(".find_one("), "{code}");
     }
-    assert!(use_case("update_cart_item_use_case").contains("entity.user_id = user;"));
+}
+
+#[test]
+fn owned_writes_are_single_statements_filtered_on_the_owner_column() {
+    let storage = generate(CART_TR).read("main/src/infrastructures/storage/psql/cart_item.rs");
+    assert!(
+        storage.contains("\"user_id\" => \"UPDATE cart_items SET user_id = $1, sticker_id = $2, quantity = $3 WHERE id = $4 AND user_id = $5 RETURNING id, user_id, sticker_id, quantity\""),
+        "{storage}"
+    );
+    assert!(
+        storage.contains("\"user_id\" => \"DELETE FROM cart_items WHERE id = $1 AND user_id = $2 RETURNING id, user_id, sticker_id, quantity\""),
+        "{storage}"
+    );
+}
+
+#[test]
+fn owner_and_filter_columns_are_indexed_in_the_migration() {
+    let project = generate(CART_TR);
+    let carts = project.read("main/migrations/cart_items.sql");
+    assert!(
+        carts.contains("CREATE INDEX IF NOT EXISTS cart_items_user_id_id_idx ON cart_items (user_id, id);"),
+        "{carts}"
+    );
+    let stickers = project.read("main/migrations/stickers.sql");
+    assert!(
+        stickers.contains("CREATE INDEX IF NOT EXISTS stickers_visibility_id_idx ON stickers (visibility, id);"),
+        "{stickers}"
+    );
 }
 
 #[test]

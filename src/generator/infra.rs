@@ -38,7 +38,7 @@ impl CodeGen {
         let service = Service::new(infra.name);
 
         match infra.service_type {
-            Storage(s) => self.gen_storage(context, s, folder, full_asts, proto_dir),
+            Storage(s) => self.gen_storage(context, &service.name, s, folder, full_asts, proto_dir),
             HttpClient(_) => self.gen_http_client(context, &service.name, &folder),
         }
     }
