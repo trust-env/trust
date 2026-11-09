@@ -1098,6 +1098,18 @@ impl CodeGen {
             "applications".to_string(),
             "adapters".to_string(),
         ];
+        // A `schedule {}` run by this app's binary needs the cron runtime.
+        if asts.iter().any(|ast| matches!(ast, Ast::Schedule(_))) {
+            std::fs::write(
+                src_path.join("trust_schedule.rs"),
+                crate::generator::rust_code::render::render(
+                    "file/schedule/runtime.rs.tera",
+                    &tera::Context::new(),
+                ),
+            )
+            .map_err(|e| format!("Failed to write the scheduler: {}", e))?;
+            lib_mods.push("trust_schedule".to_string());
+        }
         if !context.shared_modules.is_empty() {
             ModFile::new(src_path.join("shared.rs"))?
                 .with_mods(context.shared_modules.iter().map(|(m, _)| m.clone()).collect())

@@ -1,4 +1,7 @@
 use common::{HttpPresenter, SQLConnector, start_http_server};
+{%- if has_schedules %}
+use common::UseCase;
+{%- endif %}
 {{ lib_use }}
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

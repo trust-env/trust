@@ -5,10 +5,11 @@
 //! Every git dependency found in the generated manifests whose crate has a
 //! local copy under `<dir>/<name>` is copied into `<out>/vendor/<name>`
 //! (recursively: a vendored crate's own git dependencies are vendored too),
-//! and the root manifest gets one `[patch."<git url>"]` entry per crate.
-//! Cargo applies `[patch]` to transitive dependencies as well, so `auth`'s
-//! own `common = { git = ... }` resolves to the vendored copy too. The
-//! result is a self-contained `out/` that a Docker build can copy as is.
+//! and every manifest — generated and vendored — has those `git = "..."`
+//! entries rewritten to `path = "..."`. (A `[patch]` is not enough: Cargo
+//! still contacts the original git source when it resolves a fresh
+//! lockfile.) The result is a self-contained `out/` that a Docker build can
+//! copy as is.
 
 use std::{
     collections::BTreeMap,
@@ -47,6 +48,45 @@ pub fn git_dependencies(manifest: &str) -> Vec<GitDependency> {
             })
         })
         .collect()
+}
+
+/// `to` relative to the directory `from` (both under the same root), with
+/// `/` separators.
+fn relative_path(from: &Path, to: &Path) -> String {
+    let from: Vec<_> = from.components().collect();
+    let to: Vec<_> = to.components().collect();
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut parts: Vec<String> = vec!["..".to_string(); from.len() - common];
+    parts.extend(to[common..].iter().map(|c| c.as_os_str().to_string_lossy().to_string()));
+    parts.join("/")
+}
+
+/// Replaces `git = "..."` (and `branch`/`tag`/`rev`) with `path = "..."` in
+/// the inline tables of vendored dependencies, keeping their other keys.
+fn rewrite_git_dependencies(
+    manifest: &str,
+    vendored: &BTreeMap<String, String>,
+    path_of: impl Fn(&str) -> String,
+) -> String {
+    let source_keys = regex::Regex::new(r#"\b(git|branch|tag|rev)\s*=\s*"[^"]*"\s*,?\s*"#).expect("valid regex");
+    let mut out = String::new();
+    for line in manifest.split_inclusive('\n') {
+        let rewritten = git_dependencies(line)
+            .into_iter()
+            .next()
+            .filter(|dep| vendored.get(&dep.name) == Some(&dep.url))
+            .and_then(|dep| {
+                let open = line.find('{')?;
+                let close = line.rfind('}')?;
+                let rest = source_keys.replace_all(&line[open + 1..close], "");
+                let rest = rest.trim().trim_end_matches(',').trim();
+                let path = format!("path = {:?}", path_of(&dep.name));
+                let body = if rest.is_empty() { path } else { format!("{}, {}", path, rest) };
+                Some(format!("{}{{ {} }}{}", &line[..open], body, &line[close + 1..]))
+            });
+        out.push_str(rewritten.as_deref().unwrap_or(line));
+    }
+    out
 }
 
 fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
@@ -136,26 +176,32 @@ pub fn vendor_dependencies(out: &Path, vendor_dir: &Path) -> Result<Vec<String>,
         return Ok(Vec::new());
     }
 
+    let vendor_root = out.join("vendor");
+    let mut manifests = generated_manifests(out);
+    manifests.extend(vendored.keys().map(|name| vendor_root.join(name).join("Cargo.toml")));
+    for manifest in manifests {
+        let Ok(content) = fs::read_to_string(&manifest) else {
+            continue;
+        };
+        let dir = manifest.parent().unwrap_or(out);
+        let rewritten = rewrite_git_dependencies(&content, &vendored, |name| {
+            relative_path(dir, &vendor_root.join(name))
+        });
+        if rewritten != content {
+            fs::write(&manifest, rewritten)
+                .map_err(|e| format!("Failed to write {}: {}", manifest.display(), e))?;
+        }
+    }
+
     let root_manifest = out.join("Cargo.toml");
-    let mut content = fs::read_to_string(&root_manifest)
+    let content = fs::read_to_string(&root_manifest)
         .map_err(|e| format!("Failed to read {}: {}", root_manifest.display(), e))?;
     // Vendored crates live inside the workspace directory; keep them out
     // of the workspace itself (they are plain path dependencies).
     if content.contains("[workspace]") && !content.contains("exclude = [\"vendor\"]") {
-        content = content.replacen("[workspace]\n", "[workspace]\nexclude = [\"vendor\"]\n", 1);
+        fs::write(&root_manifest, content.replacen("[workspace]\n", "[workspace]\nexclude = [\"vendor\"]\n", 1))
+            .map_err(|e| format!("Failed to write {}: {}", root_manifest.display(), e))?;
     }
-    let mut by_url: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for (name, url) in &vendored {
-        by_url.entry(url.as_str()).or_default().push(name.as_str());
-    }
-    for (url, names) in by_url {
-        content.push_str(&format!("\n[patch.\"{}\"]\n", url));
-        for name in names {
-            content.push_str(&format!("{} = {{ path = \"vendor/{}\" }}\n", name, name));
-        }
-    }
-    fs::write(&root_manifest, content)
-        .map_err(|e| format!("Failed to write {}: {}", root_manifest.display(), e))?;
 
     Ok(vendored.into_keys().collect())
 }
@@ -193,7 +239,7 @@ tokio = "1"
     }
 
     #[test]
-    fn vendors_transitive_git_dependencies_and_patches_the_root_manifest() {
+    fn vendors_transitive_git_dependencies_as_path_dependencies() {
         let tmp = tempfile::tempdir().unwrap();
         let out = tmp.path().join("out");
         let local = tmp.path().join("mod");
@@ -203,7 +249,7 @@ tokio = "1"
         );
         write(
             &out.join("api/Cargo.toml"),
-            "[dependencies]\nauth = { git = \"ssh://x/auth.git\" }\n",
+            "[dependencies]\nauth = { git = \"ssh://x/auth.git\", features = [\"a\", \"b\"] }\nserde = \"1\"\n",
         );
         write(
             &local.join("auth/Cargo.toml"),
@@ -220,8 +266,11 @@ tokio = "1"
         assert!(!out.join("vendor/auth/target").exists());
         let root = fs::read_to_string(out.join("Cargo.toml")).unwrap();
         assert!(root.contains("exclude = [\"vendor\"]"), "{}", root);
-        assert!(root.contains("[patch.\"ssh://x/auth.git\"]\nauth = { path = \"vendor/auth\" }"));
-        assert!(root.contains("[patch.\"ssh://x/common.git\"]\ncommon = { path = \"vendor/common\" }"));
+        let api = fs::read_to_string(out.join("api/Cargo.toml")).unwrap();
+        assert!(api.contains("auth = { path = \"../vendor/auth\", features = [\"a\", \"b\"] }"), "{}", api);
+        assert!(api.contains("serde = \"1\""), "{}", api);
+        let auth = fs::read_to_string(out.join("vendor/auth/Cargo.toml")).unwrap();
+        assert!(auth.contains("common = { path = \"../common\" }"), "{}", auth);
     }
 
     #[test]

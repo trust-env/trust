@@ -954,10 +954,20 @@ impl CodeGen {
                 {
                     context.require_double_option();
                 }
-                if shape.filters.iter().any(|f| {
-                    matches!(f.source, crate::parser::FilterSource::Now | crate::parser::FilterSource::Today)
-                }) {
-                    context.require_version_dependency_with_features("chrono", "0.4", vec!["serde"]);
+                for filter in &shape.filters {
+                    match &filter.source {
+                        crate::parser::FilterSource::Now | crate::parser::FilterSource::Today(None) => {
+                            context.require_version_dependency_with_features("chrono", "0.4", vec!["serde"]);
+                        }
+                        crate::parser::FilterSource::Today(Some(tz)) => {
+                            tz.parse::<chrono_tz::Tz>().map_err(|_| {
+                                format!("UseCase '{}': unknown time zone '{}' in today(...)", use_case.name, tz)
+                            })?;
+                            context.require_version_dependency_with_features("chrono", "0.4", vec!["serde"]);
+                            context.require_version_dependency("chrono-tz", "0.10");
+                        }
+                        _ => {}
+                    }
                 }
                 let mut file = UseCaseFile::new(
                     use_case.name.clone(),

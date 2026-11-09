@@ -312,11 +312,19 @@ impl Parser {
             }
             Some(Token::Identifier(word)) if (word == "now" || word == "today") => {
                 let after = self.current;
-                if (self.next_token(), self.next_token()) == (Some(Token::OpenParen), Some(Token::CloseParen)) {
-                    if word == "now" { FilterSource::Now } else { FilterSource::Today }
-                } else {
-                    self.reset(after);
-                    FilterSource::Literal(word)
+                match (self.next_token(), self.next_token()) {
+                    (Some(Token::OpenParen), Some(Token::CloseParen)) => {
+                        if word == "now" { FilterSource::Now } else { FilterSource::Today(None) }
+                    }
+                    (Some(Token::OpenParen), Some(Token::StringLiteral(tz)))
+                        if word == "today" && self.next_token() == Some(Token::CloseParen) =>
+                    {
+                        FilterSource::Today(Some(tz))
+                    }
+                    _ => {
+                        self.reset(after);
+                        FilterSource::Literal(word)
+                    }
                 }
             }
             Some(Token::StringLiteral(v)) | Some(Token::Identifier(v)) => FilterSource::Literal(v),
@@ -327,7 +335,7 @@ impl Parser {
                 );
             }
         };
-        if operator.is_set() && matches!(source, FilterSource::Literal(_) | FilterSource::Now | FilterSource::Today) {
+        if operator.is_set() && matches!(source, FilterSource::Literal(_) | FilterSource::Now | FilterSource::Today(_)) {
             return fail(self, format!("'{}' uses 'in'/'not in': expected a [list] or input.<field>", field));
         }
         if !operator.is_set() && matches!(source, FilterSource::List(_)) {

@@ -1,0 +1,101 @@
+//! Runs `schedule {}` jobs: each job sleeps until its next cron time (in
+//! its time zone), runs, then waits for the next one — a slow run never
+//! overlaps the next. Cron expressions were checked and turned into the
+//! bit masks below by trust at compile time.
+
+use chrono::{Datelike, NaiveDate, NaiveDateTime, TimeZone, Timelike};
+
+/// A compiled cron expression (see the trust docs for the syntax).
+#[derive(Debug, Clone, Copy)]
+pub struct TrustCron {
+    pub minutes: u64,
+    pub hours: u32,
+    pub days: u32,
+    pub months: u16,
+    pub weekdays: u8,
+    pub any_day: bool,
+    pub any_weekday: bool,
+}
+
+impl TrustCron {
+    fn matches_day(&self, date: NaiveDate) -> bool {
+        let day = self.days & (1 << date.day()) != 0;
+        let weekday = self.weekdays & (1 << date.weekday().num_days_from_sunday()) != 0;
+        match (self.any_day, self.any_weekday) {
+            (true, true) => true,
+            (true, false) => weekday,
+            (false, true) => day,
+            // Both restricted: either one fires (classic cron).
+            (false, false) => day || weekday,
+        }
+    }
+
+    /// The first matching minute strictly after `after`, read in `tz`.
+    pub fn next_after(
+        &self,
+        after: chrono::DateTime<chrono::Utc>,
+        tz: chrono_tz::Tz,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        let start = after.with_timezone(&tz).naive_local();
+        let mut t = start.with_second(0)?.with_nanosecond(0)? + chrono::Duration::minutes(1);
+        let limit = start + chrono::Duration::days(366 * 5);
+        while t < limit {
+            if self.months & (1 << t.month()) == 0 {
+                let (year, month) = if t.month() == 12 { (t.year() + 1, 1) } else { (t.year(), t.month() + 1) };
+                t = NaiveDate::from_ymd_opt(year, month, 1)?.and_hms_opt(0, 0, 0)?;
+                continue;
+            }
+            if !self.matches_day(t.date()) {
+                t = midnight_after(t)?;
+                continue;
+            }
+            if self.hours & (1 << t.hour()) == 0 {
+                t = t.with_minute(0)? + chrono::Duration::hours(1);
+                continue;
+            }
+            if self.minutes & (1 << t.minute()) == 0 {
+                t += chrono::Duration::minutes(1);
+                continue;
+            }
+            match tz.from_local_datetime(&t) {
+                chrono::LocalResult::Single(dt) => return Some(dt.with_timezone(&chrono::Utc)),
+                // A time repeated by a DST change: the first one.
+                chrono::LocalResult::Ambiguous(first, _) => return Some(first.with_timezone(&chrono::Utc)),
+                // A time skipped by a DST change.
+                chrono::LocalResult::None => t += chrono::Duration::minutes(1),
+            }
+        }
+        None
+    }
+}
+
+fn midnight_after(t: NaiveDateTime) -> Option<NaiveDateTime> {
+    t.date().succ_opt()?.and_hms_opt(0, 0, 0)
+}
+
+/// Runs `job` every time `cron` fires in `tz`, forever. Errors are logged;
+/// the job keeps its schedule.
+pub async fn run_scheduled_job<F, Fut>(
+    name: &'static str,
+    cron: TrustCron,
+    tz: chrono_tz::Tz,
+    job: F,
+) -> Result<(), String>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    loop {
+        let now = chrono::Utc::now();
+        let next = cron
+            .next_after(now, tz)
+            .ok_or_else(|| format!("scheduled job {} never fires", name))?;
+        tracing::info!(job = name, next = %next, "scheduled");
+        tokio::time::sleep((next - now).to_std().unwrap_or_default()).await;
+        let started = std::time::Instant::now();
+        match job().await {
+            Ok(()) => tracing::info!(job = name, elapsed_ms = started.elapsed().as_millis() as u64, "job done"),
+            Err(error) => tracing::error!(job = name, %error, "job failed"),
+        }
+    }
+}

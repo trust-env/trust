@@ -350,8 +350,9 @@ pub enum FilterSource {
     List(Vec<String>),
     /// `now()` — the current UTC time when the request runs.
     Now,
-    /// `today()` — the current UTC date when the request runs.
-    Today,
+    /// `today()` / `today("Europe/Paris")` — the current date when the
+    /// request runs, in UTC or in the given IANA time zone.
+    Today(Option<String>),
 }
 
 impl FilterMapping {

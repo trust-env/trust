@@ -7,11 +7,14 @@ use crate::{
             env_template,
             file::main_file::{
                 AdapterBinding, GrpcAdapterBinding, InfraBinding, InfraKind, LoadBalancerRuntime,
-                MainFile, UseCaseBinding,
+                MainFile, ScheduleJobRuntime, UseCaseBinding,
             },
         },
     },
-    parser::{AdapterType, AllowedType, AppService, Ast, GrpcAdapterService, HttpAdapterService},
+    parser::{
+        AdapterType, AllowedType, AppService, Ast, GrpcAdapterService, HttpAdapterService,
+        ScheduleDeclaration,
+    },
 };
 
 impl CodeGen {
@@ -324,6 +327,71 @@ impl CodeGen {
         Ok(use_case_names)
     }
 
+    fn find_schedule<'a>(asts: &'a [Ast], name: &str) -> Option<&'a ScheduleDeclaration> {
+        asts.iter().find_map(|ast| match ast {
+            Ast::Schedule(s) if s.name == name => Some(s),
+            _ => None,
+        })
+    }
+
+    /// Checks a `schedule {}` (cron syntax, time zones, use cases) and
+    /// registers the use cases it runs, like an adapter's routes.
+    fn collect_schedule_bindings(
+        context: &CodeGenContext,
+        schedule: &ScheduleDeclaration,
+        infra_bindings: &mut Vec<InfraBinding>,
+        use_case_bindings: &mut Vec<UseCaseBinding>,
+        jobs: &mut Vec<ScheduleJobRuntime>,
+    ) -> Result<(), String> {
+        for job in &schedule.jobs {
+            let cron = crate::cron::parse(&job.cron)
+                .map_err(|e| format!("schedule '{}': {}", schedule.name, e))?;
+            let tz = job.tz.clone().or_else(|| schedule.tz.clone()).unwrap_or_else(|| "UTC".to_string());
+            tz.parse::<chrono_tz::Tz>().map_err(|_| {
+                format!("schedule '{}': unknown time zone '{}' (use an IANA name such as \"Europe/Paris\")", schedule.name, tz)
+            })?;
+            if !context.is_known_use_case(&job.use_case) {
+                return Err(format!("schedule '{}' runs unknown use_case '{}'", schedule.name, job.use_case));
+            }
+            if context.find_use_case_io(&job.use_case).is_some_and(|io| io.raw_input) {
+                return Err(format!(
+                    "schedule '{}': use_case '{}' takes a RawRequest, which a schedule can't provide",
+                    schedule.name, job.use_case
+                ));
+            }
+            if !use_case_bindings.iter().any(|u| u.use_case_name == job.use_case) {
+                let infra_names = context.find_use_case_infra(&job.use_case);
+                if infra_names.is_empty() && !context.is_ai_use_case_without_infra(&job.use_case) {
+                    return Err(format!(
+                        "UseCase '{}' has no known infra target (missing 'call')",
+                        job.use_case
+                    ));
+                }
+                for infra_name in infra_names {
+                    Self::register_infra_binding(
+                        context,
+                        infra_bindings,
+                        infra_name,
+                        &format!("use_case '{}'", job.use_case),
+                    )?;
+                }
+                use_case_bindings.push(UseCaseBinding {
+                    use_case_name: job.use_case.clone(),
+                    infra_names: infra_names.to_vec(),
+                });
+            }
+            jobs.push(ScheduleJobRuntime {
+                name: format!("{}.{}", schedule.name, job.use_case),
+                cron_text: job.cron.clone(),
+                cron,
+                tz,
+                use_case: job.use_case.clone(),
+                user: schedule.user,
+            });
+        }
+        Ok(())
+    }
+
     pub(super) fn generate_app(
         &mut self,
         context: &mut CodeGenContext,
@@ -340,9 +408,20 @@ impl CodeGen {
         let mut grpc_adapter_bindings: Vec<GrpcAdapterBinding> = Vec::new();
         let mut load_balancer_bindings: Vec<LoadBalancerRuntime> = Vec::new();
 
+        let mut schedule_jobs: Vec<ScheduleJobRuntime> = Vec::new();
         for adapter_name in &app.adapters {
+            if let Some(schedule) = Self::find_schedule(asts, adapter_name) {
+                Self::collect_schedule_bindings(
+                    context,
+                    schedule,
+                    &mut infra_bindings,
+                    &mut use_case_bindings,
+                    &mut schedule_jobs,
+                )?;
+                continue;
+            }
             let adapter = Self::find_adapter(asts, adapter_name)
-                .ok_or_else(|| format!("app:run references unknown adapter '{}'", adapter_name))?;
+                .ok_or_else(|| format!("app:run references unknown adapter or schedule '{}'", adapter_name))?;
 
             match &adapter.adapter_type {
                 AdapterType::Http(http_data) => {
@@ -410,6 +489,11 @@ impl CodeGen {
         context.require_git_dependency("common", "ssh://git@github.com/BH-World/common.git");
         context.require_version_dependency_with_features("tokio", "1", vec!["full"]);
         context.require_version_dependency("dotenvy", "0.15");
+        if !schedule_jobs.is_empty() {
+            context.require_version_dependency_with_features("chrono", "0.4", vec!["serde"]);
+            context.require_version_dependency("chrono-tz", "0.10");
+            context.require_version_dependency("tracing", "0.1");
+        }
         if !load_balancer_bindings.is_empty() {
             // The proxy file itself (`templates/file/load_balancer.rs`)
             // uses `axum` directly to expose its own router, independent
@@ -426,6 +510,7 @@ impl CodeGen {
             &adapter_bindings,
             &grpc_adapter_bindings,
             &load_balancer_bindings,
+            &schedule_jobs,
         )?;
 
         if dev_mode {

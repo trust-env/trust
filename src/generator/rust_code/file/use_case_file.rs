@@ -541,11 +541,15 @@ impl UseCaseFile {
                         optional: false,
                         contains: false,
                     },
-                    FilterSource::Now | FilterSource::Today => PredicateView {
+                    FilterSource::Now | FilterSource::Today(_) => PredicateView {
                         field_literal,
                         operator,
                         source: if f.source == FilterSource::Now { "now" } else { "today" },
-                        value: String::new(),
+                        // The time zone as a Rust string literal (`today("...")`).
+                        value: match &f.source {
+                            FilterSource::Today(Some(tz)) => format!("{:?}", tz),
+                            _ => String::new(),
+                        },
                         conversion: "display",
                         optional: false,
                         contains: false,

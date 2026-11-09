@@ -83,6 +83,19 @@ pub struct LoadBalancerRuntime {
     pub on: String,
 }
 
+/// One `"<cron>" => UseCase` of a `schedule {}` listed in the app.
+pub struct ScheduleJobRuntime {
+    /// `Schedule.UseCase`, used in logs.
+    pub name: String,
+    pub cron_text: String,
+    pub cron: crate::cron::CronMask,
+    /// IANA time zone, already validated.
+    pub tz: String,
+    pub use_case: String,
+    /// The user id runs act as.
+    pub user: i64,
+}
+
 pub struct MainFile {
     file: File,
 }
@@ -280,6 +293,7 @@ impl MainFile {
         adapters: &[AdapterBinding],
         grpc_adapters: &[GrpcAdapterBinding],
         load_balancers: &[LoadBalancerRuntime],
+        schedule_jobs: &[ScheduleJobRuntime],
     ) -> Result<(), String> {
         let mut lib_items: Vec<String> = Vec::new();
         for infra in infras {
@@ -304,6 +318,10 @@ impl MainFile {
             lib_items.push("RoundRobinProxy".to_string());
             lib_items.push("load_balancer_router".to_string());
         }
+        if !schedule_jobs.is_empty() {
+            lib_items.push("TrustCron".to_string());
+            lib_items.push("run_scheduled_job".to_string());
+        }
         let lib_items: Vec<&str> = lib_items.iter().map(String::as_str).collect();
         let crate_ident = package_name.replace('-', "_");
 
@@ -324,6 +342,27 @@ impl MainFile {
             blocks.push(lb_code);
             task_vars.extend(lb_task_vars);
         }
+        for (i, job) in schedule_jobs.iter().enumerate() {
+            let var = format!("schedule_job_{}_task", i);
+            let mut context = Context::new();
+            context.insert("var", &var);
+            context.insert("name_literal", &format!("{:?}", job.name));
+            context.insert("cron_text", &job.cron_text);
+            context.insert("cron", &serde_json::json!({
+                "minutes": format!("{:#x}", job.cron.minutes),
+                "hours": format!("{:#x}", job.cron.hours),
+                "days": format!("{:#x}", job.cron.days),
+                "months": format!("{:#x}", job.cron.months),
+                "weekdays": format!("{:#x}", job.cron.weekdays),
+                "any_day": job.cron.any_day,
+                "any_weekday": job.cron.any_weekday,
+            }));
+            context.insert("tz_literal", &format!("{:?}", job.tz));
+            context.insert("use_case", &job.use_case.to_snake_case());
+            context.insert("user", &job.user);
+            blocks.push(render("file/main/schedule_job.rs.tera", &context));
+            task_vars.push(var);
+        }
 
         // Foreign keys reference other tables: added once all exist.
         let mut foreign_keys = String::new();
@@ -337,6 +376,7 @@ impl MainFile {
         }
 
         let mut context = Context::new();
+        context.insert("has_schedules", &!schedule_jobs.is_empty());
         context.insert("lib_use", &use_statement(&crate_ident, &lib_items));
         context.insert(
             "infras",

@@ -1,0 +1,24 @@
+    // schedule: "{{ cron_text }}" in {{ tz_literal }}
+    let {{ var }} = {
+        let use_case = {{ use_case }}.clone();
+        let cron = TrustCron {
+            minutes: {{ cron.minutes }},
+            hours: {{ cron.hours }},
+            days: {{ cron.days }},
+            months: {{ cron.months }},
+            weekdays: {{ cron.weekdays }},
+            any_day: {{ cron.any_day }},
+            any_weekday: {{ cron.any_weekday }},
+        };
+        let tz: chrono_tz::Tz = {{ tz_literal }}.parse().expect("time zone checked by trust");
+        tokio::spawn(run_scheduled_job({{ name_literal }}, cron, tz, move || {
+            let use_case = use_case.clone();
+            async move {
+                use_case
+                    .execute({{ user }}, Default::default())
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| format!("{:?}", error))
+            }
+        }))
+    };

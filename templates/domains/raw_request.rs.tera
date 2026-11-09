@@ -1,7 +1,7 @@
 /// The raw HTTP request a route hands to a use case whose input is
 /// `RawRequest` — e.g. a webhook that must verify a signature over the
 /// exact body bytes. Header names are lowercase.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RawRequest {
     pub body: String,
     pub headers: std::collections::HashMap<String, String>,

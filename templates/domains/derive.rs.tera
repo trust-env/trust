@@ -1,1 +1,1 @@
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize{% if is_storage_entity %}, sqlx::FromRow{% endif %})]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize{% if is_storage_entity %}, sqlx::FromRow{% endif %})]

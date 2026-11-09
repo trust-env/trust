@@ -155,7 +155,7 @@ impl CodeUseCaseFile {
     /// The hand-written body, preceded by a use of `user` so an
     /// owner-agnostic body doesn't trigger an unused-variable warning.
     fn indented_body(&self) -> String {
-        let mut lines = vec!["let _ = user;"];
+        let mut lines = vec!["let _ = (user, &input);"];
         lines.extend(
             self.body
                 .trim_end()
