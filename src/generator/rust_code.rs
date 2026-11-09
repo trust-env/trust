@@ -2,6 +2,7 @@ pub mod _trait;
 pub mod cargo_toml;
 pub mod dev_docs;
 pub mod env_template;
+pub mod fragments;
 pub mod imports;
 pub mod include;
 pub mod proto;

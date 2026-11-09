@@ -1,0 +1,9 @@
+use tonic::{Request, Response, Status};
+
+pub mod proto {
+    tonic::include_proto!("{{ package }}");
+}
+
+pub use proto::{{ package }}_server::{{ name }}Server;
+
+use proto::{{ "{" }}{{ package }}_server::{{ name }} as {{ name }}Service{% for m in messages %}, {{ m }} as Proto{{ m }}{% endfor %}{{ "}" }};

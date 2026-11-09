@@ -2,7 +2,7 @@ use std::{fs::File, io::Write, path::PathBuf};
 
 use heck::ToSnakeCase;
 
-use crate::generator::rust_code::{imports::common_use, render::render};
+use crate::generator::rust_code::{imports::{common_use, use_statement}, render::render};
 use tera::Context;
 
 /// The three operations an `s3 {}` infra supports today — validated here
@@ -58,21 +58,12 @@ impl BlobOperation {
     }
 
     fn body(&self, field: &str, error: &str, output: &str) -> String {
-        match self {
-            BlobOperation::PresignedPutUrl | BlobOperation::PresignedGetUrl => format!(
-                "        let url = self.{field}.{method}(&input.key).await.map_err({error}::StorageError)?;\n        Ok({output} {{ url }})",
-                field = field,
-                method = self.storage_method(),
-                error = error,
-                output = output,
-            ),
-            BlobOperation::Delete => format!(
-                "        self.{field}.delete(&input.key).await.map_err({error}::StorageError)?;\n        Ok({output} {{ key: input.key }})",
-                field = field,
-                error = error,
-                output = output,
-            ),
-        }
+        let mut context = tera::Context::new();
+        context.insert("field", field);
+        context.insert("method", self.storage_method());
+        context.insert("error", error);
+        context.insert("output", output);
+        crate::generator::rust_code::render::render("file/blob_use_case/body.rs.tera", &context)
     }
 }
 
@@ -131,7 +122,8 @@ impl BlobUseCaseFile {
 
     fn gen_imports(&self) -> String {
         let mut code = common_use(&["UseCase"]);
-        code.push_str(&format!("use crate::{};\n\n", self.storage_type));
+        code.push_str(&use_statement("crate", &[&self.storage_type]));
+        code.push('\n');
         code
     }
 

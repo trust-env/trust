@@ -9,7 +9,7 @@ pub struct {{ name }}{{ generics }}
 impl{{ generics }} {{ name }}{{ generics }}
 {{ where_clause }}{
     pub fn new({{ params }}) -> Self {
-        Self { {{ ctor_fields }} }
+        Self { {{ ctor_fields | join(sep=", ") }} }
     }
 }
 

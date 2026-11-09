@@ -1,5 +1,5 @@
         sqlx::query_as::<_, {{ entity }}>(
-            "SELECT {{ all_columns }} FROM {{ table }} WHERE {{ id_field }} = ANY($1)",
+            "SELECT {{ all_columns | join(sep=", ") }} FROM {{ table }} WHERE {{ id_field }} = ANY($1)",
         )
             .bind(&ids)
             .fetch_all(self.db.pool())

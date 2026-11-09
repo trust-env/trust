@@ -1,0 +1,7 @@
+StorageListQuery {
+                limit: input.limit,
+                offset: input.offset,
+                predicates: vec![{% if predicates %}
+{% for p in predicates %}                    StoragePredicate { field: {{ p.field_literal }}.to_string(), operator: StoragePredicateOperator::Eq, value: {% if p.source == "input" %}input.{{ p.value }}{% elif p.source == "literal" %}{{ p.value }}{% else %}user{% endif %}.to_string() }{% if not loop.last %},{% endif %}
+{% endfor %}                {% endif %}],
+            }

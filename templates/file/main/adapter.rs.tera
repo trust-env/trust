@@ -1,4 +1,4 @@
-    let {{ var }} = std::sync::Arc::new({{ name }}::new({{ params }}));
+    let {{ var }} = std::sync::Arc::new({{ name }}::new({% for a in params %}{{ a }}.clone(){% if not loop.last %}, {% endif %}{% endfor %}));
     let {{ var }}_address = {{ address }};
     let {{ var }}_task = tokio::spawn(async move {
         start_http_server({{ var }}.router(), {{ var }}_address).await

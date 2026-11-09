@@ -13,6 +13,8 @@ use tera::Context;
 #[derive(Serialize)]
 struct DataFieldView {
     name: String,
+    /// Postgres column type (`save_many` casts each array to `TYPE[]`).
+    sql_type: String,
 }
 
 /// One column with its Postgres type, as written by the migration.
@@ -97,13 +99,8 @@ impl PsqlStorageService {
         self.entity.fields.iter().filter(|f| f.name != "id").collect()
     }
 
-    fn all_columns(&self) -> String {
-        self.entity
-            .fields
-            .iter()
-            .map(|f| f.name.clone())
-            .collect::<Vec<_>>()
-            .join(", ")
+    fn all_columns(&self) -> Vec<String> {
+        self.entity.fields.iter().map(|f| f.name.clone()).collect()
     }
 
     fn method(
@@ -132,24 +129,19 @@ impl PsqlStorageService {
     fn data_field_views(&self) -> Vec<DataFieldView> {
         self.data_fields()
             .into_iter()
-            .map(|f| DataFieldView { name: f.name.clone() })
+            .map(|f| DataFieldView {
+                name: f.name.clone(),
+                sql_type: self.column_type(&f.name).to_string(),
+            })
             .collect()
     }
 
     fn save_one_method(&self) -> Method {
         let entity = self.entity.to_call_string(vec![]);
-        let data = self.data_fields();
-        let columns = data.iter().map(|f| f.name.clone()).collect::<Vec<_>>().join(", ");
-        let placeholders = (1..=data.len())
-            .map(|i| format!("${}", i))
-            .collect::<Vec<_>>()
-            .join(", ");
 
         let mut context = Context::new();
         context.insert("entity", &entity);
         context.insert("table", &self.table_name());
-        context.insert("columns", &columns);
-        context.insert("placeholders", &placeholders);
         context.insert("all_columns", &self.all_columns());
         context.insert("data_fields", &self.data_field_views());
         context.insert("error", &self.error_name);
@@ -167,20 +159,10 @@ impl PsqlStorageService {
     /// instead of one `save_one` round-trip per row.
     fn save_many_method(&self) -> Method {
         let entity = self.entity.to_call_string(vec![]);
-        let data = self.data_fields();
-        let columns = data.iter().map(|f| f.name.clone()).collect::<Vec<_>>().join(", ");
-        let unnest_args = data
-            .iter()
-            .enumerate()
-            .map(|(i, f)| format!("${}::{}[]", i + 1, self.column_type(&f.name)))
-            .collect::<Vec<_>>()
-            .join(", ");
 
         let mut context = Context::new();
         context.insert("entity", &entity);
         context.insert("table", &self.table_name());
-        context.insert("columns", &columns);
-        context.insert("unnest_args", &unnest_args);
         context.insert("all_columns", &self.all_columns());
         context.insert("data_fields", &self.data_field_views());
         context.insert("error", &self.error_name);
@@ -264,17 +246,10 @@ impl PsqlStorageService {
     fn update_one_method(&self) -> Method {
         let entity = self.entity.to_call_string(vec![]);
         let data = self.data_fields();
-        let set_clause = data
-            .iter()
-            .enumerate()
-            .map(|(i, f)| format!("{} = ${}", f.name, i + 1))
-            .collect::<Vec<_>>()
-            .join(", ");
 
         let mut context = Context::new();
         context.insert("entity", &entity);
         context.insert("table", &self.table_name());
-        context.insert("set_clause", &set_clause);
         context.insert("id_field", &self.id_field());
         context.insert("next", &(data.len() + 1));
         context.insert("all_columns", &self.all_columns());
@@ -377,19 +352,12 @@ impl PsqlStorageService {
 
     fn owned_impl_code(&self) -> String {
         let data = self.data_fields();
-        let set_clause = data
-            .iter()
-            .enumerate()
-            .map(|(i, f)| format!("{} = ${}", f.name, i + 1))
-            .collect::<Vec<_>>()
-            .join(", ");
 
         let mut context = Context::new();
         context.insert("trait_name", &self.storage_trait_name);
         context.insert("struct_name", &format!("Psql{}Storage", self.entity.name));
         context.insert("entity", &self.entity.to_call_string(vec![]));
         context.insert("table", &self.table_name());
-        context.insert("set_clause", &set_clause);
         context.insert("id_field", &self.id_field());
         context.insert("next", &(data.len() + 1));
         context.insert("next_owner", &(data.len() + 2));
@@ -412,10 +380,9 @@ impl PsqlStorageService {
     }
 
     pub fn ctor_code(&self) -> String {
-        format!(
-            "impl Psql{entity}Storage {{\n    pub fn new(db: SQLConnector) -> Self {{\n        Self {{ db }}\n    }}\n}}\n\n",
-            entity = self.entity.name,
-        )
+        let mut context = Context::new();
+        context.insert("entity", &self.entity.name);
+        render("service/psql_storage/ctor.rs.tera", &context)
     }
 
     pub fn trait_impls_code(&self) -> String {

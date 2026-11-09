@@ -149,6 +149,20 @@ artifact, add a template under `templates/` (mirroring the writer's path
 under `src/generator/rust_code/`) and register it in `render.rs`'s
 `TEMPLATES` list and its own test.
 
+Where the line sits in practice:
+
+- **Data, fine in Rust**: identifiers and type names (`format!("{}Trait", name)`,
+  `S0`, `Result<Task, PsqlTaskStorageError>`), and Rust string literals of a
+  value (`format!("{:?}", value)`).
+- **Text, always a template**: anything carrying Rust/SQL/HTML syntax — `use`
+  lines, `where` clauses, parameter lists, `mod` declarations, expressions,
+  SQL clauses, whole blocks.
+- Small pieces shared by many generators have helpers in
+  `src/generator/rust_code/fragments.rs` (`where_clause`, `where_block`,
+  `type_params`, `params`, `mod_decls`, `indented_body`) and
+  `imports.rs` (`use_statement`, `use_group`), each backed by
+  `templates/fragments/*.tera`. Reuse them instead of re-joining strings.
+
 One easy-to-miss Tera gotcha: `{%- -%}` trims *all* adjacent whitespace after
 a tag, including a following line's leading indentation — not just the
 newline. If a loop's next line needs to stay indented, keep the closing tag

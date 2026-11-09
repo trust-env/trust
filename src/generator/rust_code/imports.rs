@@ -1,11 +1,21 @@
+use crate::generator::rust_code::render::render;
 use crate::generator::rust_code::types::{RustField, RustType};
+use tera::Context;
 
+/// `use path::item;` / `use path::{a, b};` (nothing for no items).
 pub fn use_statement(path: &str, items: &[&str]) -> String {
-    match items {
-        [] => String::new(),
-        [single] => format!("use {}::{};\n", path, single),
-        _ => format!("use {}::{{{}}};\n", path, items.join(", ")),
-    }
+    let mut context = Context::new();
+    context.insert("path", path);
+    context.insert("items", items);
+    render("fragments/use.rs.tera", &context)
+}
+
+/// A nested use-tree item, `prefix::{a, b}`, to pass to `use_statement`.
+pub fn use_group(prefix: &str, items: &[&str]) -> String {
+    let mut context = Context::new();
+    context.insert("prefix", prefix);
+    context.insert("items", items);
+    render("fragments/use_group.rs.tera", &context)
 }
 
 pub fn common_use(items: &[&str]) -> String {
@@ -78,18 +88,25 @@ impl LocalImports {
         }
     }
 
+    /// The `uuid`/`rust_decimal`/`chrono` imports alone (no `crate::`).
+    pub fn external_use_statements(&self) -> String {
+        let mut code = String::new();
+        if self.needs_uuid {
+            code.push_str(&use_statement("uuid", &["Uuid"]));
+        }
+        if self.needs_decimal {
+            code.push_str(&use_statement("rust_decimal", &["Decimal"]));
+        }
+        if self.needs_chrono {
+            code.push_str(&use_statement("chrono", &["DateTime", "Utc"]));
+        }
+        code
+    }
+
     pub fn to_use_statements(&self) -> String {
         let mut code = String::new();
 
-        if self.needs_uuid {
-            code.push_str("use uuid::Uuid;\n");
-        }
-        if self.needs_decimal {
-            code.push_str("use rust_decimal::Decimal;\n");
-        }
-        if self.needs_chrono {
-            code.push_str("use chrono::{DateTime, Utc};\n");
-        }
+        code.push_str(&self.external_use_statements());
         code.push_str(&crate_use(&self.types));
         if !code.is_empty() {
             code.push('\n');

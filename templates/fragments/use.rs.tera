@@ -1,0 +1,3 @@
+{% if items | length == 1 %}use {{ path }}::{{ items[0] }};
+{% elif items %}use {{ path }}::{{ "{" }}{{ items | join(sep=", ") }}{{ "}" }};
+{% endif %}

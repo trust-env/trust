@@ -1,0 +1,13 @@
+{%- if kind == "list" %}{{ list_query }}
+{%- else %}
+{%- if owned %}{{ id_expr }}, {{ owner_literal }}, user{% if kind == "update" %}, {% endif %}
+{%- elif kind == "update" %}{{ id_expr }}, {% elif kind == "read" or kind == "delete" %}{{ id_expr }}{% endif %}
+{%- if kind == "create" or kind == "update" %}
+{%- if owner %}{
+                let mut entity = {{ entity }}::from({% if is_tail %}input{% else %}input.clone(){% endif %});
+                entity.{{ owner }} = user;
+                entity
+            }
+{%- else %}{{ entity }}::from({% if is_tail %}input{% else %}input.clone(){% endif %}){% endif %}
+{%- endif %}
+{%- endif %}

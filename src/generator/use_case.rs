@@ -496,55 +496,48 @@ impl CodeGen {
         output: &RustType,
         infra: Option<&AiInfraBinding>,
     ) -> String {
-        let field_list = |t: &RustType| -> String {
-            t.fields
+        #[derive(serde::Serialize)]
+        struct FieldView {
+            name: String,
+            ty: String,
+        }
+        #[derive(serde::Serialize)]
+        struct TypeView {
+            name: String,
+            fields: Vec<FieldView>,
+        }
+        #[derive(serde::Serialize)]
+        struct InfraView {
+            field: String,
+            entity: TypeView,
+            storage_trait: String,
+            storage_error: String,
+        }
+        let type_view = |t: &RustType| TypeView {
+            name: t.name.clone(),
+            fields: t
+                .fields
                 .iter()
-                .map(|f| format!("  {}: {}", f.name, f.field_type.to_call_string(vec![])))
-                .collect::<Vec<_>>()
-                .join("\n")
+                .map(|f| FieldView { name: f.name.clone(), ty: f.field_type.to_call_string(vec![]) })
+                .collect(),
         };
 
-        let mut ctx = String::new();
-        ctx.push_str(&format!(
-            "You are implementing: async fn execute(&self, input: {}) -> Result<{}, {}Error>\n\n",
-            input.name, output.name, use_case.name
-        ));
-        ctx.push_str(&format!("Input struct `{}` fields:\n{}\n\n", input.name, field_list(input)));
-        ctx.push_str(&format!(
-            "Output struct `{}` fields (construct it with `{} {{ field: value, ... }}`):\n{}\n\n",
-            output.name, output.name, field_list(output)
-        ));
-        ctx.push_str(&format!(
-            "Error enum `{name}Error` — the only variants you may return: {name}Error::NotFound, {name}Error::StorageError(String)\n\n",
-            name = use_case.name
-        ));
-
-        match infra {
-            Some(infra) => {
-                ctx.push_str(&format!(
-                    "You have `self.{field}`, a storage handle for entity `{entity}` (fields:\n{entity_fields}\n) implementing the `{trait}` trait, with these async methods (each returns `Result<_, {storage_error}>` — map errors with `.map_err({name}Error::from)`):\n\
-  save_one(entity: {entity}) -> {entity}\n\
-  save_many(entities: Vec<{entity}>) -> Vec<{entity}>\n\
-  find_one(id: i64) -> Option<{entity}>\n\
-  find_many(ids: Vec<i64>) -> Vec<{entity}>\n\
-  list(query: common::StorageListQuery) -> Vec<{entity}>\n\
-  update_one(id: i64, entity: {entity}) -> {entity}\n\
-  delete(id: i64) -> {entity}\n\
-  delete_many(ids: Vec<i64>) -> Vec<{entity}>\n\n",
-                    field = infra.infra_name.to_snake_case(),
-                    entity = infra.entity_type.name,
-                    entity_fields = field_list(&infra.entity_type),
-                    trait = infra.storage_trait,
-                    storage_error = infra.storage_error,
-                    name = use_case.name,
-                ));
-            }
-            None => {
-                ctx.push_str("No storage is available here — implement this purely from `input`.\n\n");
-            }
-        }
-        ctx
+        let mut context = tera::Context::new();
+        context.insert("name", &use_case.name);
+        context.insert("input", &type_view(input));
+        context.insert("output", &type_view(output));
+        context.insert(
+            "infra",
+            &infra.map(|infra| InfraView {
+                field: infra.infra_name.to_snake_case(),
+                entity: type_view(&infra.entity_type),
+                storage_trait: infra.storage_trait.clone(),
+                storage_error: infra.storage_error.clone(),
+            }),
+        );
+        crate::generator::rust_code::render::render("ai/context.txt.tera", &context)
     }
+
 
     fn generate_ai_use_case(
         &mut self,
@@ -818,3 +811,4 @@ impl CodeGen {
         }
     }
 }
+

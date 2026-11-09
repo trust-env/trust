@@ -1,0 +1,3 @@
+{% if bounds %}where
+{% for b in bounds %}    {{ b.param }}: {{ b.traits | join(sep=" + ") }},
+{% endfor %}{% endif %}

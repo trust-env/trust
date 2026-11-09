@@ -871,19 +871,22 @@ impl CodeGen {
             .write()?;
 
         if !context.grpc_proto_paths.is_empty() {
-            let mut build_rs = String::new();
-            build_rs.push_str("fn main() -> Result<(), Box<dyn std::error::Error>> {\n");
-            build_rs.push_str("    let protoc_path = protoc_bin_vendored::protoc_bin_path()?;\n");
-            build_rs.push_str("    unsafe {\n        std::env::set_var(\"PROTOC\", protoc_path);\n    }\n");
-            for proto_path in &context.grpc_proto_paths {
-                let relative = proto_path
-                    .strip_prefix(&path)
-                    .unwrap_or(proto_path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                build_rs.push_str(&format!("    tonic_build::compile_protos({:?})?;\n", relative));
-            }
-            build_rs.push_str("    Ok(())\n}\n");
+            // Rust string literals of each proto path, relative to the crate.
+            let protos: Vec<String> = context
+                .grpc_proto_paths
+                .iter()
+                .map(|proto_path| {
+                    let relative = proto_path
+                        .strip_prefix(&path)
+                        .unwrap_or(proto_path)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    format!("{:?}", relative)
+                })
+                .collect();
+            let mut build_context = tera::Context::new();
+            build_context.insert("protos", &protos);
+            let build_rs = crate::generator::rust_code::render::render("build_rs.rs.tera", &build_context);
             std::fs::write(path.join("build.rs"), build_rs)
                 .map_err(|e| format!("Failed to write build.rs: {}", e))?;
         }

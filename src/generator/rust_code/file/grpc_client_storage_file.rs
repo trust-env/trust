@@ -166,46 +166,9 @@ impl GrpcClientStorageFile {
     }
 
     fn gen_unsupported_method(&self, verb: &str) -> String {
-        let signature = match verb {
-            "save_one" => format!("save_one(&self, _data: {e}) -> Result<{e}, {err}>", e = self.entity.name, err = self.error_name),
-            "save_many" => format!(
-                "save_many(&self, _data: Vec<{e}>) -> Result<Vec<{e}>, {err}>",
-                e = self.entity.name,
-                err = self.error_name
-            ),
-            "find_one" => format!(
-                "find_one(&self, _id: EntityId) -> Result<Option<{e}>, {err}>",
-                e = self.entity.name,
-                err = self.error_name
-            ),
-            "find_many" => format!(
-                "find_many(&self, _ids: Vec<EntityId>) -> Result<Vec<{e}>, {err}>",
-                e = self.entity.name,
-                err = self.error_name
-            ),
-            "list" => format!(
-                "list(&self, _query: StorageListQuery) -> Result<Vec<{e}>, {err}>",
-                e = self.entity.name,
-                err = self.error_name
-            ),
-            "update_one" => format!(
-                "update_one(&self, _id: EntityId, _data: {e}) -> Result<{e}, {err}>",
-                e = self.entity.name,
-                err = self.error_name
-            ),
-            "delete" => {
-                format!("delete(&self, _id: EntityId) -> Result<{e}, {err}>", e = self.entity.name, err = self.error_name)
-            }
-            "delete_many" => format!(
-                "delete_many(&self, _ids: Vec<EntityId>) -> Result<Vec<{e}>, {err}>",
-                e = self.entity.name,
-                err = self.error_name
-            ),
-            other => unreachable!("not one of STORAGE_VERBS: {}", other),
-        };
-
+        assert!(STORAGE_VERBS.contains(&verb), "not one of STORAGE_VERBS: {}", verb);
         let mut context = Context::new();
-        context.insert("signature", &signature);
+        context.insert("entity", &self.entity.name);
         context.insert("error_name", &self.error_name);
         context.insert("verb", verb);
         render("file/grpc_client_storage/unsupported_method.rs.tera", &context)
