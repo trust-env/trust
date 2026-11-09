@@ -134,7 +134,13 @@
   removed or retyped fields are left untouched in the database.
 - Only scalar and `Option<scalar>` fields can be stored — a field whose
   type is another struct is a codegen error on a `psql` entity.
-- No foreign keys, indexes or unique constraints are generated.
+- No foreign keys or unique constraints are generated. Indexes are only
+  generated for the columns generated queries filter on (`filters {}`,
+  `owner:` lists, `auth {}` permission lookups); a `code {}` use case's own
+  predicates aren't indexed.
+- Indexes are created with a plain `CREATE INDEX IF NOT EXISTS` at startup,
+  which blocks writes to that table while the index builds — on a large
+  existing table, create it `CONCURRENTLY` by hand before deploying.
 - `seed:` files re-run on every startup; they must be idempotent.
 
 ## HTTP Status Mapping

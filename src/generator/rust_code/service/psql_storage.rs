@@ -15,26 +15,65 @@ struct DataFieldView {
     name: String,
 }
 
+/// One column with its Postgres type, as written by the migration.
+#[derive(Serialize, Clone)]
+struct ColumnView {
+    name: String,
+    sql_type: String,
+}
+
 pub struct PsqlStorageService {
     pub entity: RustType,
     error_name: String,
-    storage_trait: TraitImpl,
+    storage_trait_name: String,
+    columns: Vec<ColumnView>,
 }
 
 impl PsqlStorageService {
-    pub fn new(entity: RustType, storage_trait: Trait) -> Self {
+    pub fn new(entity: RustType, storage_trait: Trait) -> Result<Self, String> {
         let error_name = format!("Psql{}StorageError", entity.name);
+        let mut columns = Vec::new();
+        for field in &entity.fields {
+            let (sql_type, _) = crate::generator::rust_code::migration::sql_type(
+                &entity.name,
+                &field.name,
+                &field.field_type,
+            )?;
+            columns.push(ColumnView {
+                name: field.name.clone(),
+                sql_type,
+            });
+        }
 
-        PsqlStorageService {
+        Ok(PsqlStorageService {
             entity,
             error_name,
-            storage_trait: TraitImpl {
-                include: None,
-                trait_name: storage_trait.name,
-                templates: vec![],
-                methods: vec![],
-            },
-        }
+            storage_trait_name: storage_trait.name,
+            columns,
+        })
+    }
+
+    fn has_id(&self) -> bool {
+        self.entity.fields.iter().any(|f| f.name == "id")
+    }
+
+    fn column_type(&self, name: &str) -> &str {
+        self.columns
+            .iter()
+            .find(|c| c.name == name)
+            .map(|c| c.sql_type.as_str())
+            .unwrap_or("TEXT")
+    }
+
+    /// Integer, non-key columns — the only ones `owner:` may name (the
+    /// use_case codegen validates `owner` is an `Int` field).
+    fn owner_columns(&self) -> Vec<String> {
+        self.entity
+            .fields
+            .iter()
+            .filter(|f| f.name != "id" && f.field_type.name == "i64")
+            .map(|f| f.name.clone())
+            .collect()
     }
 
     pub fn error_name(&self) -> &str {
@@ -124,9 +163,28 @@ impl PsqlStorageService {
         )
     }
 
+    /// A single `INSERT ... SELECT * FROM UNNEST($1::T1[], $2::T2[], ...)`
+    /// instead of one `save_one` round-trip per row.
     fn save_many_method(&self) -> Method {
         let entity = self.entity.to_call_string(vec![]);
-        let content = include_str!("../../../../templates/service/psql_storage/save_many.rs").to_string();
+        let data = self.data_fields();
+        let columns = data.iter().map(|f| f.name.clone()).collect::<Vec<_>>().join(", ");
+        let unnest_args = data
+            .iter()
+            .enumerate()
+            .map(|(i, f)| format!("${}::{}[]", i + 1, self.column_type(&f.name)))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let mut context = Context::new();
+        context.insert("entity", &entity);
+        context.insert("table", &self.table_name());
+        context.insert("columns", &columns);
+        context.insert("unnest_args", &unnest_args);
+        context.insert("all_columns", &self.all_columns());
+        context.insert("data_fields", &self.data_field_views());
+        context.insert("error", &self.error_name);
+        let content = render("service/psql_storage/save_many.rs.tera", &context);
 
         self.method(
             "save_many",
@@ -176,9 +234,13 @@ impl PsqlStorageService {
 
     /// `query.predicates` is a runtime-length list, so the WHERE clause and
     /// its binds are built dynamically (unlike the other methods, whose
-    /// placeholder count is known at generation time). Each predicate
-    /// compares its column cast to `text`, since `StoragePredicate::value`
-    /// is always a `String` regardless of the column's real type.
+    /// placeholder count is known at generation time).
+    /// `StoragePredicate::value` is always a `String`, so each *parameter*
+    /// is cast to its column's type (`col = $1::BIGINT`) — never the column
+    /// itself (`col::text = $1`), which would defeat every index on it.
+    /// Field names are checked against the entity's columns before being
+    /// spliced into the SQL. Rows come back ordered by `id` (when the entity
+    /// has one) so `LIMIT`/`OFFSET` pages are stable.
     fn list_method(&self) -> Method {
         let entity = self.entity.to_call_string(vec![]);
 
@@ -186,6 +248,8 @@ impl PsqlStorageService {
         context.insert("entity", &entity);
         context.insert("table", &self.table_name());
         context.insert("all_columns", &self.all_columns());
+        context.insert("columns", &self.columns);
+        context.insert("order_by", &if self.has_id() { self.id_field() } else { String::new() });
         context.insert("error", &self.error_name);
         let content = render("service/psql_storage/list.rs.tera", &context);
 
@@ -296,8 +360,44 @@ impl PsqlStorageService {
             name: format!("Psql{}Storage", self.entity.name),
             templates: vec![],
             attrs: vec![Attribute::sql_connector()],
-            traits_impls: vec![self.storage_impl(), self.storage_trait.clone()],
+            traits_impls: vec![self.storage_impl()],
         }
+    }
+
+    /// `pub trait {Entity}Storage: Storage<...> + Send + Sync { ... }` —
+    /// the bound every use case is generic over, extended with the
+    /// single-statement owner-checked writes `owner:` use cases call.
+    pub fn storage_trait_code(&self) -> String {
+        let mut context = Context::new();
+        context.insert("trait_name", &self.storage_trait_name);
+        context.insert("entity", &self.entity.to_call_string(vec![]));
+        context.insert("error", &self.error_name);
+        render("_trait/owned_storage_trait.rs.tera", &context)
+    }
+
+    fn owned_impl_code(&self) -> String {
+        let data = self.data_fields();
+        let set_clause = data
+            .iter()
+            .enumerate()
+            .map(|(i, f)| format!("{} = ${}", f.name, i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let mut context = Context::new();
+        context.insert("trait_name", &self.storage_trait_name);
+        context.insert("struct_name", &format!("Psql{}Storage", self.entity.name));
+        context.insert("entity", &self.entity.to_call_string(vec![]));
+        context.insert("table", &self.table_name());
+        context.insert("set_clause", &set_clause);
+        context.insert("id_field", &self.id_field());
+        context.insert("next", &(data.len() + 1));
+        context.insert("next_owner", &(data.len() + 2));
+        context.insert("all_columns", &self.all_columns());
+        context.insert("data_fields", &self.data_field_views());
+        context.insert("owner_columns", &self.owner_columns());
+        context.insert("error", &self.error_name);
+        render("service/psql_storage/owned.rs.tera", &context)
     }
 
     /// Just the `pub struct Psql{Entity}Storage { ... }` definition, with no
@@ -320,10 +420,12 @@ impl PsqlStorageService {
 
     pub fn trait_impls_code(&self) -> String {
         let service = self.service();
-        service
+        let mut code: String = service
             .traits_impls
             .iter()
             .map(|t| t.to_rust_code(&service) + "\n")
-            .collect()
+            .collect();
+        code.push_str(&self.owned_impl_code());
+        code
     }
 }

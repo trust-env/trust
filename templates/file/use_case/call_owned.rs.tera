@@ -1,0 +1,9 @@
+        // Ownership is checked inside the write itself: someone else's row
+        // reads as NotFound, never as a permission error, so ids can't be
+        // probed.
+        self.{{ field }}
+            .{{ method }}_owned({{ args }})
+            .await
+            .map_err({{ error }}::from)?
+            .ok_or({{ error }}::NotFound)
+            .map({{ output }}::from)

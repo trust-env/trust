@@ -226,8 +226,10 @@ isn't documented syntax sugar — it has real, specific semantics:
   `{ let mut entity = Entity::from(input); entity.<field> = user; entity }`,
   `list` gets a `<field> = user` predicate, `find_one` filters the found row
   (`.filter(|entity| entity.<field> == user)` → `NotFound`), and
-  `update_one`/`delete` first run a `find_one` guard that returns
-  `NotFound` for a row owned by someone else.
+  `update_one`/`delete` call the storage's `update_one_owned`/
+  `delete_owned` (`.update_one_owned(input.id, "<field>", user, entity)`),
+  a single `UPDATE`/`DELETE ... WHERE id = $n AND <field> = $m` whose
+  `None` result becomes `NotFound` for a row owned by someone else.
 
 ## 5d. `code` use cases
 
@@ -318,6 +320,23 @@ StorageListQuery {
   entry's `field` is looked up on the primary call's entity and appended
   to the guessed input struct with that field's own type — e.g. a `Uuid`
   entity field produces a `Uuid` guessed input field, not a `String`.
+
+How the psql `list` turns predicates into SQL:
+
+- Each predicate's field is checked against the entity's columns (an
+  unknown one is a `ConversionError`, never spliced into the SQL), and its
+  text value is cast **on the parameter side** to the column's Postgres
+  type: `spot_id = $1::BIGINT`, not `spot_id::text = $1` — casting the
+  column would make Postgres ignore every index on it. `Like`/`ILike`/
+  `Contains` compare `column::TEXT`; `In`/`NotIn` take a comma-separated
+  value (`= ANY(string_to_array($1, ',')::BIGINT[])`).
+- Rows are `ORDER BY id` (when the entity has an `id`), so `LIMIT`/`OFFSET`
+  pages are stable; `limit` is clamped to `0..=1000` and `offset` to `>= 0`.
+- The migration indexes every column set a generated query filters on —
+  each `filters {}` + `owner:` combination of a `list` use case, and
+  `(user_id, target, action)` on an `auth {}` permission infra — with `id`
+  appended to match the `ORDER BY`:
+  `CREATE INDEX IF NOT EXISTS ratings_spot_id_id_idx ON ratings (spot_id, id);`.
 
 ## 6. HTTP path parameter conversion
 

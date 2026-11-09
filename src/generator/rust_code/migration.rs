@@ -22,8 +22,9 @@ pub fn seed_file_name(entity_name: &str) -> String {
 }
 
 /// Maps a resolved field type to its Postgres column type, plus whether
-/// it's nullable (only `Option<T>` is).
-fn sql_type(entity: &str, field: &str, t: &RustType) -> Result<(String, bool), String> {
+/// it's nullable (only `Option<T>` is). Shared with the storage codegen,
+/// which casts query parameters to these same column types.
+pub(crate) fn sql_type(entity: &str, field: &str, t: &RustType) -> Result<(String, bool), String> {
     if t.name == "Option" {
         let inner = t
             .templates
@@ -62,6 +63,25 @@ struct ColumnView {
     primary_key: bool,
 }
 
+#[derive(Serialize)]
+struct IndexView {
+    name: String,
+    columns: String,
+}
+
+/// Postgres truncates identifiers past 63 bytes; keep the readable prefix
+/// and make the tail unique with a short hash of the full name instead.
+fn index_name(table: &str, columns: &[String]) -> String {
+    let full = format!("{}_{}_idx", table, columns.join("_"));
+    if full.len() <= 63 {
+        return full;
+    }
+    let hash = full
+        .bytes()
+        .fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    format!("{}_{:08x}", &full[..50], hash as u32)
+}
+
 /// Renders the migration for one entity: `CREATE TABLE IF NOT EXISTS`
 /// (so a fresh database gets every column with its real nullability),
 /// followed by one `ADD COLUMN IF NOT EXISTS` per non-key column (so a
@@ -69,7 +89,14 @@ struct ColumnView {
 ///
 /// `id: Int` becomes `BIGSERIAL PRIMARY KEY` — generated `save_one`
 /// never inserts `id`, so the database must assign it.
-pub fn render_create_table(entity: &RustType) -> Result<String, String> {
+///
+/// `indexes` lists the column sets the generated code filters on (`filters
+/// {}`, `owner:`, `auth {}` permission lookups — see
+/// `CodeGenContext::register_psql_index`). Each becomes a btree index,
+/// with `id` appended when the entity has one, since the generated `list`
+/// always orders by `id`: `WHERE a = $1 ORDER BY id LIMIT n` then reads
+/// exactly `n` index entries instead of sorting every match.
+pub fn render_create_table(entity: &RustType, indexes: &[Vec<String>]) -> Result<String, String> {
     let mut columns = Vec::new();
     for field in &entity.fields {
         let (sql, nullable) = sql_type(&entity.name, &field.name, &field.field_type)?;
@@ -89,10 +116,44 @@ pub fn render_create_table(entity: &RustType) -> Result<String, String> {
         });
     }
 
+    let table = table_name(&entity.name);
+    let has_id = entity.fields.iter().any(|f| f.name == "id");
+    let mut index_views: Vec<IndexView> = Vec::new();
+    for index in indexes {
+        let mut cols: Vec<String> = Vec::new();
+        for col in index {
+            if !entity.fields.iter().any(|f| &f.name == col) {
+                return Err(format!(
+                    "psql entity '{}': cannot index unknown field '{}'",
+                    entity.name, col
+                ));
+            }
+            if !cols.contains(col) {
+                cols.push(col.clone());
+            }
+        }
+        if has_id && !cols.iter().any(|c| c == "id") {
+            cols.push("id".to_string());
+        }
+        // Only `id` left: the primary key already covers it.
+        if cols.is_empty() || (cols.len() == 1 && cols[0] == "id") {
+            continue;
+        }
+        let name = index_name(&table, &cols);
+        if index_views.iter().any(|v| v.name == name) {
+            continue;
+        }
+        index_views.push(IndexView {
+            name,
+            columns: cols.join(", "),
+        });
+    }
+
     let mut context = Context::new();
     context.insert("entity", &entity.name);
-    context.insert("table", &table_name(&entity.name));
+    context.insert("table", &table);
     context.insert("columns", &columns);
+    context.insert("indexes", &index_views);
     Ok(render("migration/create_table.sql.tera", &context) + "\n")
 }
 
@@ -121,7 +182,7 @@ mod tests {
             RustType::generic("Option", vec![RustType::primitive("String")], vec![]),
         ));
 
-        let sql = render_create_table(&entity).unwrap();
+        let sql = render_create_table(&entity, &[]).unwrap();
         assert!(
             sql.contains("CREATE TABLE IF NOT EXISTS cart_items ("),
             "{sql}"
@@ -143,7 +204,49 @@ mod tests {
     fn nested_struct_fields_are_rejected() {
         let mut entity = RustType::primitive("Order");
         entity.add_field(field("buyer", RustType::primitive("User")));
-        let err = render_create_table(&entity).unwrap_err();
+        let err = render_create_table(&entity, &[]).unwrap_err();
         assert!(err.contains("'buyer'") && err.contains("'User'"), "{err}");
+    }
+
+    #[test]
+    fn filtered_columns_get_an_index_ending_with_id() {
+        let mut entity = RustType::primitive("Rating");
+        entity.add_field(field("id", RustType::primitive("i64")));
+        entity.add_field(field("spot_id", RustType::primitive("i64")));
+        entity.add_field(field("user_id", RustType::primitive("i64")));
+
+        let sql = render_create_table(
+            &entity,
+            &[
+                vec!["spot_id".to_string()],
+                vec!["spot_id".to_string()],
+                vec!["spot_id".to_string(), "user_id".to_string()],
+                vec!["id".to_string()],
+            ],
+        )
+        .unwrap();
+        assert!(
+            sql.contains("CREATE INDEX IF NOT EXISTS ratings_spot_id_id_idx ON ratings (spot_id, id);"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("CREATE INDEX IF NOT EXISTS ratings_spot_id_user_id_id_idx ON ratings (spot_id, user_id, id);"),
+            "{sql}"
+        );
+        assert_eq!(sql.matches("CREATE INDEX").count(), 2, "{sql}");
+    }
+
+    #[test]
+    fn indexing_an_unknown_field_is_an_error() {
+        let mut entity = RustType::primitive("Rating");
+        entity.add_field(field("id", RustType::primitive("i64")));
+        let err = render_create_table(&entity, &[vec!["nope".to_string()]]).unwrap_err();
+        assert!(err.contains("'nope'"), "{err}");
+    }
+
+    #[test]
+    fn long_index_names_stay_within_postgres_limit() {
+        let name = index_name("a_very_long_table_name_for_testing", &["first_long_column".to_string(), "second_long_column".to_string(), "id".to_string()]);
+        assert!(name.len() <= 63, "{name}");
     }
 }

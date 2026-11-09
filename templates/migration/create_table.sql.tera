@@ -7,3 +7,6 @@ CREATE TABLE IF NOT EXISTS {{ table }} (
 {%- for column in columns %}{% if not column.primary_key %}
 ALTER TABLE {{ table }} ADD COLUMN IF NOT EXISTS {{ column.name }} {{ column.sql_type }};
 {%- endif %}{% endfor %}
+{%- for index in indexes %}
+CREATE INDEX IF NOT EXISTS {{ index.name }} ON {{ table }} ({{ index.columns }});
+{%- endfor %}

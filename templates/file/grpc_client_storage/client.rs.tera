@@ -17,8 +17,22 @@ impl From<tonic::Status> for {{ error_name }} {
     }
 }
 
-pub trait {{ entity }}Storage: Storage<{{ entity }}, {{ error_name }}> + Send + Sync {}
-impl {{ entity }}Storage for {{ struct_name }} {}
+pub trait {{ entity }}Storage: Storage<{{ entity }}, {{ error_name }}> + Send + Sync {
+    fn update_one_owned(&self, id: EntityId, owner_field: &'static str, owner: i64, data: {{ entity }}) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error_name }}>> + Send;
+    fn delete_owned(&self, id: EntityId, owner_field: &'static str, owner: i64) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error_name }}>> + Send;
+}
+
+// Owner-checked writes need `update_one`/`delete`, which a grpc_client
+// infra never supports — same stub as those verbs.
+impl {{ entity }}Storage for {{ struct_name }} {
+    async fn update_one_owned(&self, _id: EntityId, _owner_field: &'static str, _owner: i64, _data: {{ entity }}) -> Result<Option<{{ entity }}>, {{ error_name }}> {
+        Err({{ error_name }}::DatabaseError("update_one is not supported by this grpc_client infra".to_string()))
+    }
+
+    async fn delete_owned(&self, _id: EntityId, _owner_field: &'static str, _owner: i64) -> Result<Option<{{ entity }}>, {{ error_name }}> {
+        Err({{ error_name }}::DatabaseError("delete is not supported by this grpc_client infra".to_string()))
+    }
+}
 
 #[derive(Clone)]
 pub struct {{ struct_name }} {

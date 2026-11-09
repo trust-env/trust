@@ -17,6 +17,7 @@ impl CodeGen {
     /// like every other `.tr` path) into the generated crate.
     fn write_migrations(
         entity: &crate::generator::rust_code::types::RustType,
+        indexes: &[Vec<String>],
         seed: Option<&str>,
         crate_root: &Path,
     ) -> Result<(), String> {
@@ -24,7 +25,7 @@ impl CodeGen {
         create_dir_all(&dir).map_err(|e| format!("Failed to create migrations folder: {}", e))?;
         std::fs::write(
             dir.join(migration::migration_file_name(&entity.name)),
-            migration::render_create_table(entity)?,
+            migration::render_create_table(entity, indexes)?,
         )
         .map_err(|e| format!("Failed to write migration for '{}': {}", entity.name, e))?;
         if let Some(seed) = seed {
@@ -49,6 +50,7 @@ impl CodeGen {
     pub(super) fn gen_psql_storage(
         &mut self,
         context: &mut CodeGenContext,
+        infra_name: &str,
         psql: PsqlInfraService,
         folder: PathBuf,
         crate_root: &Path,
@@ -66,7 +68,8 @@ impl CodeGen {
                     let mut file = PsqlStorageFile::new(rust_type.clone(), folder.clone())?;
 
                     file.write()?;
-                    Self::write_migrations(rust_type, psql.seed.as_deref(), crate_root)?;
+                    let indexes = context.find_psql_indexes(infra_name).to_vec();
+                    Self::write_migrations(rust_type, &indexes, psql.seed.as_deref(), crate_root)?;
                     context.require_git_dependency(
                         "common",
                         "ssh://git@github.com/BH-World/common.git",

@@ -99,7 +99,7 @@ are HTML-escaped.
 Written to **that app's own crate root** (`out/<app>/.env` in a workspace —
 there is no single shared workspace-root `.env`):
 
-- One line per `psql` infra: `<INFRA_NAME>_DB_URL=postgres://postgres:postgres@localhost:5432/<entity>` (env var name is the infra's name, upper-snake-cased, entity name lowercased for the DB name). `grpc_client` infras are skipped — their target address is a compile-time literal, not env-driven.
+- One line per `psql` infra: `<INFRA_NAME>_DB_URL=postgres://postgres:postgres@localhost:5432/<entity>` (env var name is the infra's name, upper-snake-cased, entity name lowercased for the DB name), followed by `<INFRA_NAME>_DB_POOL_SIZE=16` — the maximum number of Postgres connections that infra's pool keeps open (optional at runtime; 16 when unset). `grpc_client` infras are skipped — their target address is a compile-time literal, not env-driven.
 - One line per distinct `${VAR}` referenced by an `http_client` infra's `base_url` or header values, defaulting to `changeme`.
 - One line per distinct `${VAR}` actually referenced in any adapter's `on:`/`cors:` or load-balancer's own `on:` (never `targets`, see [conversions.md](conversions.md#7-address-string--env-var-interpolation)):
   - Names containing `PORT` get a shared counter for that app, starting at **3000** and incrementing by 1 for each such variable encountered.

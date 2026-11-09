@@ -60,6 +60,11 @@ impl CodeGen {
                         var,
                         infra.entity_name.to_lowercase()
                     ));
+                    lines.push(format!(
+                        "{}={}",
+                        MainFile::db_pool_size_env_var(&infra.infra_name),
+                        crate::generator::rust_code::file::main_file::DEFAULT_DB_POOL_SIZE
+                    ));
                 }
                 InfraKind::S3 { .. } => {
                     let (endpoint_var, access_key_var, secret_key_var) =
@@ -384,7 +389,8 @@ impl CodeGen {
             // uses `axum` directly to expose its own router, independent
             // of whether this app also declares a bare `http {}` adapter.
             context.require_version_dependency("axum", "0.8");
-            context.require_version_dependency("reqwest", "0.12");
+            // `stream`: request/response bodies are piped, not buffered.
+            context.require_version_dependency_with_features("reqwest", "0.12", vec!["stream"]);
         }
 
         MainFile::new(src_path.join("main.rs"))?.write(

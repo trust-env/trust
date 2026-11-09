@@ -3,3 +3,11 @@ resolver = "2"
 members = [
 {% for member in members %}    "{{ member }}",
 {% endfor %}]
+
+# Generated services trade build time for runtime speed: whole-program
+# optimisation across every crate (LTO + a single codegen unit). Panics
+# keep unwinding so one failing request never takes the whole server down.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

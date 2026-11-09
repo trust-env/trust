@@ -7,6 +7,11 @@ use crate::generator::rust_code::{
 };
 use tera::Context;
 
+/// Connections each `psql` infra's pool may open when its
+/// `<INFRA>_DB_POOL_SIZE` env var is unset. Postgres allows 100 connections
+/// by default, shared by every infra of every running app.
+pub const DEFAULT_DB_POOL_SIZE: u32 = 16;
+
 /// Distinguishes how `gen_infra` connects a `psql` infra (an env-var-driven
 /// DB URL), a `grpc_client` infra (a static address baked directly into the
 /// `.tr` file, no env var), and an `s3` infra (three env-var-driven
@@ -92,6 +97,11 @@ impl MainFile {
         format!("{}_DB_URL", infra_name.to_shouty_snake_case())
     }
 
+    /// Optional env var sizing a `psql` infra's connection pool.
+    pub fn db_pool_size_env_var(infra_name: &str) -> String {
+        format!("{}_DB_POOL_SIZE", infra_name.to_shouty_snake_case())
+    }
+
     /// `(endpoint, access_key, secret_key)` env var names for an `s3 {}`
     /// infra — same "derived from the infra name" precedent as
     /// `db_url_env_var`, since endpoint/credentials are never written in
@@ -132,6 +142,10 @@ impl MainFile {
                 context.insert("db_var", &db_var);
                 context.insert("env_var_literal", &format!("{:?}", env_var));
                 context.insert("env_var", &env_var);
+                let pool_env_var = Self::db_pool_size_env_var(&infra.infra_name);
+                context.insert("pool_env_var_literal", &format!("{:?}", pool_env_var));
+                context.insert("pool_env_var", &pool_env_var);
+                context.insert("default_pool_size", &DEFAULT_DB_POOL_SIZE);
                 context.insert("entity_var", &infra_var);
                 context.insert("entity", &infra.entity_name);
                 context.insert("migrations", &migrations);
