@@ -41,6 +41,7 @@ fn method_name(method: &HttpMethod) -> &'static str {
 
 impl CodeGen {
     fn client_routes(&self, asts: &[Ast]) -> Result<(Vec<ClientRoute>, CodeGenContext), String> {
+        let asts = &crate::generator::desugar::desugar(asts.to_vec())?;
         let context = self.build_lookup_context(asts)?;
         let mut routes = Vec::new();
         for ast in asts {

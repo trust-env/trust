@@ -124,14 +124,17 @@ fn psql_pool_size_is_configurable_with_a_default() {
     let main = generate(RATINGS_TR).read("main/src/main.rs");
     assert!(main.contains(r#"std::env::var("RATING_INFRA_DB_POOL_SIZE")"#), "{main}");
     assert!(main.contains("Err(_) => 16,"), "{main}");
+    // Falls back to the shared DATABASE_URL; infras on one URL share a pool.
+    assert!(main.contains(r#".or_else(|_| std::env::var("DATABASE_URL"))"#), "{main}");
     assert!(
-        main.contains("SQLConnector::connect_with_pool_size(&rating_infra_db_url, rating_infra_db_pool_size)"),
+        main.contains("trust_connect(&mut db_pools, rating_infra_db_url, rating_infra_db_pool_size)"),
         "{main}"
     );
+    assert!(main.contains("SQLConnector::connect_with_pool_size(&url, pool_size)"), "{main}");
 }
 
 #[test]
-fn dev_env_scaffolds_the_pool_size() {
+fn dev_env_scaffolds_one_database_url() {
     let asts = support::parse(RATINGS_TR);
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("out");
@@ -139,7 +142,8 @@ fn dev_env_scaffolds_the_pool_size() {
         .run(root.clone(), true, &trust::ai::AiConfig::new_for_testing("http://127.0.0.1:1"))
         .unwrap();
     let env = std::fs::read_to_string(root.join("main/.env")).unwrap();
-    assert!(env.contains("RATING_INFRA_DB_POOL_SIZE=16"), "{env}");
+    assert!(env.contains("DATABASE_URL=postgres://"), "{env}");
+    assert!(!env.contains("RATING_INFRA_DB_URL"), "{env}");
 }
 
 #[test]

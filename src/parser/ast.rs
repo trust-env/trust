@@ -108,6 +108,9 @@ pub struct HttpRoute {
     pub use_case: String,
     pub status: Vec<StatusMapping>,
     pub auth: Option<AuthRequirement>,
+    /// The route wrote its own `auth` (`auth: none` included), so the
+    /// adapter's default doesn't apply.
+    pub auth_explicit: bool,
 }
 
 impl HttpRoute {
@@ -131,6 +134,12 @@ pub struct HttpAdapterService {
     /// successful use case run (`auth: required` limits it to the caller's
     /// own events).
     pub events: Option<EventsEndpoint>,
+    /// `auth: required` / `auth { ... }` at the adapter level: the default
+    /// of every route that doesn't write its own (`auth: none` opts out).
+    pub default_auth: Option<AuthRequirement>,
+    /// `resources { Tasks Projects }` — CRUD routes generated from
+    /// `resource` declarations.
+    pub resources: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -147,6 +156,9 @@ pub struct EventsEndpoint {
 pub struct ConfigDeclaration {
     /// `camel`: every generated JSON field is camelCase.
     pub json_case: Option<String>,
+    /// `deps { name: "version" }` — crates every app of the project gets
+    /// (for code shared by several `code {}` bodies).
+    pub deps: Vec<(String, String)>,
 }
 
 /// One `rpc Name { input: X output: Y use_case: Z }` inside a `grpc {
@@ -204,6 +216,12 @@ pub struct AdapterService {
 #[derive(Debug, Clone, Default)]
 pub struct PsqlInfraService {
     pub entity: AllowedType,
+    /// `database: Main` — the `database {}` declaration this infra uses
+    /// (none: the default database).
+    pub database: Option<String>,
+    /// `owner: user_id` — default `owner:` of every `call:` use case whose
+    /// primary call targets this infra.
+    pub owner: Option<String>,
     /// `seed: "./seed/x.sql"` — SQL run at every startup, right after the
     /// entity's table is created. Must be idempotent (e.g. `ON CONFLICT
     /// DO NOTHING`), since it re-runs on every boot.
@@ -598,6 +616,7 @@ pub enum TypeDeclaration {
     TypeAlias(TypeAlias),
     Struct(StructDeclaration),
     Enum(EnumDeclaration),
+    Derived(DerivedDeclaration),
 }
 
 impl TypeDeclaration {
@@ -605,6 +624,7 @@ impl TypeDeclaration {
         match self {
             TypeDeclaration::Struct(s) => s.export.as_deref(),
             TypeDeclaration::Enum(e) => e.export.as_deref(),
+            TypeDeclaration::Derived(d) => d.export.as_deref(),
             TypeDeclaration::TypeAlias(_) => None,
         }
     }
@@ -613,6 +633,7 @@ impl TypeDeclaration {
         match self {
             TypeDeclaration::Struct(s) => &s.name,
             TypeDeclaration::Enum(e) => &e.name,
+            TypeDeclaration::Derived(d) => &d.name,
             TypeDeclaration::TypeAlias(a) => &a.name,
         }
     }
@@ -691,6 +712,59 @@ pub struct ScheduleDeclaration {
     pub jobs: Vec<ScheduleJob>,
 }
 
+/// `database Main { url: "${DATABASE_URL}" pool: 16 }` — one Postgres
+/// database (and connection pool) shared by the `psql` infras naming it.
+#[derive(Debug, Clone)]
+pub struct DatabaseDeclaration {
+    pub name: String,
+    /// `${VAR}` template, resolved at startup.
+    pub url: String,
+    /// Maximum connections of the pool.
+    pub pool: Option<u32>,
+}
+
+/// One operation of a `resource {}` block.
+#[derive(Debug, Clone)]
+pub struct ResourceOperation {
+    /// `list`, `get`, `create`, `update`, `patch`, `upsert` or `delete`.
+    pub kind: String,
+    pub filters: Vec<FilterMapping>,
+    pub order_by: Vec<OrderBy>,
+}
+
+/// `resource Tasks { infra: TaskInfra path: "/tasks" owner: user_id list create patch delete }`:
+/// CRUD use cases (`ListTasksUseCase`, `CreateTaskUseCase`, ...) and, in
+/// every HTTP adapter listing it under `resources {}`, their routes.
+#[derive(Debug, Clone)]
+pub struct ResourceDeclaration {
+    pub name: String,
+    pub infra: String,
+    pub path: String,
+    pub owner: Option<String>,
+    pub operations: Vec<ResourceOperation>,
+}
+
+/// `Omit<Base, a, b>` / `Pick<Base, a, b>` / `Partial<Base>` — a struct
+/// computed from another one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DerivedType {
+    Named(String),
+    Omit(Box<DerivedType>, Vec<String>),
+    Pick(Box<DerivedType>, Vec<String>),
+    /// Every field becomes `Option`.
+    Partial(Box<DerivedType>),
+}
+
+/// `type NewTask = Omit<Task, id, user_id> + { note: String }`.
+#[derive(Debug, Clone)]
+pub struct DerivedDeclaration {
+    pub name: String,
+    pub base: DerivedType,
+    /// Fields added by `+ { ... }`.
+    pub extra: Vec<StructField>,
+    pub export: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Ast {
     Import(ImportDeclaration),
@@ -705,4 +779,7 @@ pub enum Ast {
     /// `include "./other.tr"` — every declaration of that file joins this
     /// one. Resolved (and removed) by `crate::loader`.
     Include(String),
+    Database(DatabaseDeclaration),
+    /// Expanded into use cases and routes before generation.
+    Resource(ResourceDeclaration),
 }

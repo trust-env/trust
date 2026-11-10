@@ -24,6 +24,9 @@ pub enum InfraKind {
         seed: bool,
         /// `migrations/<table>.fk.sql` exists: run once every table does.
         foreign_keys: bool,
+        /// `database: X` — its `url` template and pool size; `None` reads
+        /// `<INFRA>_DB_URL`, falling back to `DATABASE_URL`.
+        database: Option<(String, Option<u32>)>,
     },
     GrpcClient {
         target_address: String,
@@ -140,7 +143,7 @@ impl MainFile {
         // the other.
         let infra_var = infra.infra_name.to_snake_case();
         match &infra.kind {
-            InfraKind::Psql { seed, .. } => {
+            InfraKind::Psql { seed, database, .. } => {
                 let db_var = infra.infra_name.to_snake_case();
                 let env_var = Self::db_url_env_var(&infra.infra_name);
 
@@ -164,6 +167,14 @@ impl MainFile {
                 context.insert("pool_env_var_literal", &format!("{:?}", pool_env_var));
                 context.insert("pool_env_var", &pool_env_var);
                 context.insert("default_pool_size", &DEFAULT_DB_POOL_SIZE);
+                context.insert(
+                    "database_url_expr",
+                    &database.as_ref().map(|(url, _)| env_template::to_rust_expr(url)),
+                );
+                context.insert(
+                    "database_pool",
+                    &database.as_ref().map(|(_, pool)| pool.unwrap_or(DEFAULT_DB_POOL_SIZE)),
+                );
                 context.insert("entity_var", &infra_var);
                 context.insert("entity", &infra.entity_name);
                 context.insert("migrations", &migrations);
@@ -201,14 +212,14 @@ impl MainFile {
                     .iter()
                     .map(|(name, value)| HeaderView {
                         name: format!("{:?}", name),
-                        value_expr: env_template::to_rust_expr(value),
+                        value_expr: env_template::to_rust_expr_lenient(value),
                     })
                     .collect();
 
                 let mut context = Context::new();
                 context.insert("var", &infra_var);
                 context.insert("name", &format!("{}Client", infra.infra_name));
-                context.insert("base_url_expr", &env_template::to_rust_expr(base_url));
+                context.insert("base_url_expr", &env_template::to_rust_expr_lenient(base_url));
                 context.insert("headers", &headers);
                 render("file/main/http_client_infra.rs.tera", &context)
             }
@@ -390,6 +401,7 @@ impl MainFile {
         });
 
         let mut context = Context::new();
+        context.insert("has_psql", &infras.iter().any(|i| matches!(i.kind, InfraKind::Psql { .. })));
         context.insert("mcp_stdio", &mcp_stdio);
         context.insert("has_schedules", &!schedule_jobs.is_empty());
         context.insert("token_command", &adapters.iter().any(|a| a.requires_jwt));

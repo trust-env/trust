@@ -131,6 +131,10 @@ impl Lexer {
                 self.position += 1;
                 return Some(Token::Bang);
             }
+            Some('+') => {
+                self.position += 1;
+                return Some(Token::Plus);
+            }
             Some('[') => {
                 self.position += 1;
                 return Some(Token::OpenBracket);

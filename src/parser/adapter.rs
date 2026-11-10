@@ -241,6 +241,7 @@ impl Parser {
             String,
             Vec<StatusMapping>,
             Option<AuthRequirement>,
+            bool,
         ),
         String,
     > {
@@ -249,6 +250,7 @@ impl Parser {
         let mut use_case = None;
         let mut status = Vec::new();
         let mut auth = None;
+        let mut auth_explicit = false;
         let pos = self.current;
 
         loop {
@@ -290,8 +292,18 @@ impl Parser {
                     status = self.try_status_block()?;
                 }
                 Some(Token::Keyword(Keyword::Auth)) => {
-                    self.revert(1);
-                    auth = Some(self.try_auth_block()?);
+                    auth_explicit = true;
+                    let after = self.current;
+                    match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::Identifier(word))) if word == "none" => {
+                            auth = None;
+                        }
+                        _ => {
+                            self.reset(after);
+                            self.revert(1);
+                            auth = Some(self.try_auth_block()?);
+                        }
+                    }
                 }
                 _ => {
                     self.reset(pos);
@@ -300,7 +312,7 @@ impl Parser {
             }
         }
         match use_case {
-            Some(u) => Ok((input, output, u, status, auth)),
+            Some(u) => Ok((input, output, u, status, auth, auth_explicit)),
             None => Err("HTTP route must declare 'use_case'".to_string()),
         }
     }
@@ -310,7 +322,7 @@ impl Parser {
         match self.next_token() {
             Some(Token::StringLiteral(path)) => match self.next_token() {
                 Some(Token::OpenBrace) => {
-                    let (input, output, use_case, status, auth) = self.try_http_route_body()?;
+                    let (input, output, use_case, status, auth, auth_explicit) = self.try_http_route_body()?;
                     Ok(HttpRoute {
                         method,
                         path,
@@ -319,6 +331,7 @@ impl Parser {
                         use_case,
                         status,
                         auth,
+                        auth_explicit,
                     })
                 }
                 _ => {
@@ -369,9 +382,28 @@ impl Parser {
         let mut cors = None;
         let mut envelope = true;
         let mut events = None;
+        let mut default_auth = None;
+        let mut resources = Vec::new();
         loop {
             match self.next_token() {
                 Some(Token::CloseBrace) => break,
+                Some(Token::Keyword(Keyword::Auth)) => {
+                    self.revert(1);
+                    default_auth = Some(self.try_auth_block()?);
+                }
+                Some(Token::Identifier(k)) if k == "resources" => {
+                    if self.next_token() != Some(Token::OpenBrace) {
+                        return Err("Expected '{' after 'resources'".to_string());
+                    }
+                    loop {
+                        match self.next_token() {
+                            Some(Token::CloseBrace) => break,
+                            Some(Token::Comma) => continue,
+                            Some(Token::Identifier(name)) => resources.push(name),
+                            other => return Err(format!("Expected resource names in 'resources', got {:?}", other)),
+                        }
+                    }
+                }
                 Some(Token::Identifier(k)) if k == "envelope" => match (self.next_token(), self.next_token()) {
                     (Some(Token::Colon), Some(Token::Identifier(v))) if v == "true" || v == "false" => {
                         envelope = v == "true"
@@ -428,7 +460,15 @@ impl Parser {
                 }
             }
         }
-        Ok(HttpAdapterService { routes, on, cors, envelope, events })
+        // The adapter's `auth` applies to every route that didn't write one.
+        if default_auth.is_some() {
+            for route in &mut routes {
+                if !route.auth_explicit {
+                    route.auth = default_auth.clone();
+                }
+            }
+        }
+        Ok(HttpAdapterService { routes, on, cors, envelope, events, default_auth, resources })
     }
 
     /// Parses `rpc Name { input: X output: Y use_case: Z }` — the gRPC
@@ -643,6 +683,8 @@ impl Parser {
                         cors: None,
                         envelope: true,
                         events: None,
+                        default_auth: None,
+                        resources: Vec::new(),
                     }),
                 })),
                 _ => {

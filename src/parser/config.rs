@@ -33,9 +33,34 @@ impl Parser {
                         }
                     }
                 }
+                Some(Token::Identifier(key)) if key == "deps" => {
+                    if self.next_token() != Some(Token::OpenBrace) {
+                        self.reset(start);
+                        return Err("config: expected '{' after deps".to_string());
+                    }
+                    loop {
+                        match self.next_token() {
+                            Some(Token::CloseBrace) => break,
+                            Some(Token::Comma) => continue,
+                            Some(Token::Identifier(name)) | Some(Token::StringLiteral(name)) => {
+                                match (self.next_token(), self.next_token()) {
+                                    (Some(Token::Colon), Some(Token::StringLiteral(version))) => config.deps.push((name, version)),
+                                    _ => {
+                                        self.reset(start);
+                                        return Err(format!("config: expected ': \"<version>\"' after dependency '{}'", name));
+                                    }
+                                }
+                            }
+                            other => {
+                                self.reset(start);
+                                return Err(format!("config: expected '<crate>: \"<version>\"' in deps, got {:?}", other));
+                            }
+                        }
+                    }
+                }
                 other => {
                     self.reset(start);
-                    return Err(format!("config: unexpected {:?} (known keys: json_case)", other));
+                    return Err(format!("config: unexpected {:?} (known keys: json_case, deps)", other));
                 }
             }
         }

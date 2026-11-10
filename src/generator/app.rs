@@ -67,20 +67,24 @@ impl CodeGen {
 
         for infra in infras {
             match &infra.kind {
-                InfraKind::Psql { .. } => {
+                // One database for the app: DATABASE_URL (each infra can
+                // still be pointed elsewhere with <INFRA>_DB_URL).
+                InfraKind::Psql { database: None, .. } => {
                     push(
                         &mut entries,
-                        MainFile::db_url_env_var(&infra.infra_name),
-                        format!(
-                            "postgres://postgres:postgres@localhost:5432/{}",
-                            infra.entity_name.to_lowercase()
-                        ),
+                        "DATABASE_URL".to_string(),
+                        format!("postgres://postgres:postgres@localhost:5432/{}", project_root
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("app")),
                     );
-                    push(
-                        &mut entries,
-                        MainFile::db_pool_size_env_var(&infra.infra_name),
-                        crate::generator::rust_code::file::main_file::DEFAULT_DB_POOL_SIZE.to_string(),
-                    );
+                }
+                InfraKind::Psql { database: Some((url, _)), .. } => {
+                    for var in env_template::extract_vars(url) {
+                        let value = env_template::var_default(url, &var)
+                            .unwrap_or_else(|| "postgres://postgres:postgres@localhost:5432/app".to_string());
+                        push(&mut entries, var, value);
+                    }
                 }
                 InfraKind::S3 { .. } => {
                     let (endpoint_var, access_key_var, secret_key_var) =
@@ -95,8 +99,11 @@ impl CodeGen {
                 InfraKind::GrpcClient { .. } => {}
                 InfraKind::HttpClient { base_url, headers } => {
                     let templates = std::iter::once(base_url).chain(headers.iter().map(|(_, v)| v));
-                    for var in templates.flat_map(|t| env_template::extract_vars(t)) {
-                        push(&mut entries, var, "changeme".to_string());
+                    for template in templates {
+                        for var in env_template::extract_vars(template) {
+                            let value = env_template::var_default(template, &var).unwrap_or_else(|| "changeme".to_string());
+                            push(&mut entries, var, value);
+                        }
                     }
                 }
             }
@@ -114,7 +121,8 @@ impl CodeGen {
                 if entries.iter().any(|e| e.name == var) {
                     continue;
                 }
-                let default = Self::default_for_env_var(&var, &mut next_port);
+                let default = env_template::var_default(on, &var)
+                    .unwrap_or_else(|| Self::default_for_env_var(&var, &mut next_port));
                 push(&mut entries, var, default);
             }
         }
@@ -188,6 +196,7 @@ impl CodeGen {
                 None => InfraKind::Psql {
                     seed: context.has_psql_seed(infra_name),
                     foreign_keys: context.has_psql_foreign_keys(infra_name),
+                    database: context.find_psql_database(infra_name).map(|d| (d.url.clone(), d.pool)),
                 },
             }
         };

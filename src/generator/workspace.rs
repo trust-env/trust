@@ -162,6 +162,21 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
             TypeDeclaration::Struct(s) => s.fields.iter().map(|f| &f.field_type).collect(),
             TypeDeclaration::TypeAlias(a) => vec![&a.aliased_type],
             TypeDeclaration::Enum(_) => vec![],
+            TypeDeclaration::Derived(d) => {
+                let mut base = &d.base;
+                let base_name = loop {
+                    match base {
+                        crate::parser::DerivedType::Named(name) => break name.clone(),
+                        crate::parser::DerivedType::Omit(inner, _)
+                        | crate::parser::DerivedType::Pick(inner, _)
+                        | crate::parser::DerivedType::Partial(inner) => base = inner,
+                    }
+                };
+                if type_names.insert(base_name.clone()) {
+                    worklist.push(base_name);
+                }
+                d.extra.iter().map(|f| &f.field_type).collect()
+            }
         };
         for allowed in referenced_types {
             let mut referenced = HashSet::new();
@@ -176,7 +191,9 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
 
     asts.iter()
         .filter(|ast| match ast {
-            Ast::Import(_) | Ast::Plugin(_) | Ast::Config(_) | Ast::Include(_) => true,
+            Ast::Import(_) | Ast::Plugin(_) | Ast::Config(_) | Ast::Include(_) | Ast::Database(_) => true,
+            // Expanded before partitioning.
+            Ast::Resource(_) => false,
             Ast::App(a) => a.name == app.name,
             Ast::Adapter(a) => adapter_names.contains(&a.name),
             Ast::UseCase(u) => use_case_names.contains(&u.name),
@@ -265,6 +282,8 @@ mod tests {
                 cors: None,
                 envelope: true,
                 events: None,
+                default_auth: None,
+                resources: vec![],
                 routes: vec![HttpRoute {
                     method: HttpMethod::Get,
                     path: "/x".to_string(),
@@ -273,6 +292,7 @@ mod tests {
                     use_case: use_case.to_string(),
                     status: vec![],
                     auth: None,
+                    auth_explicit: false,
                 }],
             }),
         })

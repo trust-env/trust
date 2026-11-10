@@ -1,6 +1,14 @@
 enum TemplateSegment {
     Literal(String),
-    Var(String),
+    /// `${NAME}` or `${NAME:-default}`.
+    Var(String, Option<String>),
+}
+
+fn var_segment(text: String) -> TemplateSegment {
+    match text.split_once(":-") {
+        Some((name, default)) => TemplateSegment::Var(name.to_string(), Some(default.to_string())),
+        None => TemplateSegment::Var(text, None),
+    }
 }
 
 fn parse(template: &str) -> Vec<TemplateSegment> {
@@ -21,7 +29,7 @@ fn parse(template: &str) -> Vec<TemplateSegment> {
             if !literal.is_empty() {
                 segments.push(TemplateSegment::Literal(std::mem::take(&mut literal)));
             }
-            segments.push(TemplateSegment::Var(var));
+            segments.push(var_segment(var));
         } else {
             literal.push(c);
         }
@@ -38,7 +46,7 @@ pub fn extract_vars(template: &str) -> Vec<String> {
     let mut vars = Vec::new();
 
     for segment in parse(template) {
-        if let TemplateSegment::Var(name) = segment {
+        if let TemplateSegment::Var(name, _) = segment {
             if !vars.contains(&name) {
                 vars.push(name);
             }
@@ -47,19 +55,41 @@ pub fn extract_vars(template: &str) -> Vec<String> {
     vars
 }
 
+/// The `${NAME:-default}` default of `name` in `template`, if any.
+pub fn var_default(template: &str, name: &str) -> Option<String> {
+    parse(template).into_iter().find_map(|segment| match segment {
+        TemplateSegment::Var(n, default) if n == name => default,
+        _ => None,
+    })
+}
+
 /// Turns a `"${HOST}:${PORT}"` style string into a Rust expression that
 /// evaluates to a `String` at runtime by reading the referenced env vars.
 /// A template with no `${...}` placeholders becomes a plain string literal.
 pub fn to_rust_expr(template: &str) -> String {
+    rust_expr(template, false)
+}
+
+/// Like `to_rust_expr`, but an unset variable without default reads as an
+/// empty string instead of stopping the program — for values only needed
+/// when used (an `http_client` never called, a shared secret: empty never
+/// matches).
+pub fn to_rust_expr_lenient(template: &str) -> String {
+    rust_expr(template, true)
+}
+
+fn rust_expr(template: &str, lenient: bool) -> String {
     #[derive(serde::Serialize)]
     struct VarView {
         name: String,
         /// The variable name as a Rust string literal.
         literal: String,
+        /// `${NAME:-default}`: the default as a Rust string literal.
+        default_literal: Option<String>,
     }
 
     let segments = parse(template);
-    let has_vars = segments.iter().any(|s| matches!(s, TemplateSegment::Var(_)));
+    let has_vars = segments.iter().any(|s| matches!(s, TemplateSegment::Var(..)));
 
     // Without placeholders the text is used as-is; with them it becomes a
     // `format!` string, so literal braces must be doubled.
@@ -69,9 +99,13 @@ pub fn to_rust_expr(template: &str) -> String {
         match segment {
             TemplateSegment::Literal(l) if has_vars => text.push_str(&l.replace('{', "{{").replace('}', "}}")),
             TemplateSegment::Literal(l) => text.push_str(&l),
-            TemplateSegment::Var(v) => {
+            TemplateSegment::Var(v, default) => {
                 text.push_str("{}");
-                vars.push(VarView { literal: format!("{:?}", v), name: v });
+                vars.push(VarView {
+                    literal: format!("{:?}", v),
+                    name: v,
+                    default_literal: default.map(|d| format!("{:?}", d)),
+                });
             }
         }
     }
@@ -79,6 +113,7 @@ pub fn to_rust_expr(template: &str) -> String {
     let mut context = tera::Context::new();
     context.insert("format_literal", &format!("{:?}", text));
     context.insert("vars", &vars);
+    context.insert("lenient", &lenient);
     crate::generator::rust_code::render::render("env/rust_expr.rs.tera", &context)
 }
 
@@ -128,6 +163,20 @@ mod tests {
         assert_eq!(
             expr,
             "format!(\"{{{}}}\", std::env::var(\"HOST\").expect(\"HOST environment variable not set\"))"
+        );
+    }
+
+    #[test]
+    fn defaults_and_lenient_variables() {
+        assert_eq!(
+            to_rust_expr("${PORT:-8080}"),
+            "format!(\"{}\", std::env::var(\"PORT\").unwrap_or_else(|_| \"8080\".to_string()))"
+        );
+        assert_eq!(extract_vars("${PORT:-8080}"), vec!["PORT".to_string()]);
+        assert_eq!(var_default("x${PORT:-8080}", "PORT").as_deref(), Some("8080"));
+        assert_eq!(
+            to_rust_expr_lenient("${URL}"),
+            "format!(\"{}\", std::env::var(\"URL\").unwrap_or_default())"
         );
     }
 }

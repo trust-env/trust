@@ -135,6 +135,6 @@ impl McpAdapterFile {
     }
 
     pub fn secret_expr(template: &str) -> String {
-        env_template::to_rust_expr(template)
+        env_template::to_rust_expr_lenient(template)
     }
 }

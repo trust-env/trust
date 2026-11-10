@@ -175,9 +175,8 @@ pub fn vendor_dependencies_from(
     vendor_dir: &Path,
     cargo_home: Option<PathBuf>,
 ) -> Result<Vec<String>, String> {
-    if !vendor_dir.is_dir() {
-        return Err(format!("--vendor directory '{}' does not exist", vendor_dir.display()));
-    }
+    // A missing directory (or a bare `--vendor`) just means: everything
+    // from Cargo's git cache.
 
     let mut pending: Vec<GitDependency> = Vec::new();
     for manifest in generated_manifests(out) {

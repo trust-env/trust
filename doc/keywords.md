@@ -940,12 +940,88 @@ adapter Api {
 - Every HTTP adapter answers `GET /health` (`{"status":"ok"}`) unless a route
   uses that path, and logs each request.
 
+### `resource`
+CRUD use cases and routes in one block:
+
+```tr
+resource Tasks {
+    infra: TaskInfra
+    path: "/tasks"
+    owner: user_id
+    list { order_by: priority asc, due asc  filters { status: input.status } }
+    create
+    get
+    patch
+    delete
+}
+
+adapter Api { http { on: "..." auth: required resources { Tasks } routes { ... } } }
+```
+
+| Operation | Use case | Route |
+|---|---|---|
+| `list` | `List{Resource}UseCase` (`list`) | `GET /tasks` |
+| `create` | `Create{Entity}UseCase` (`save_one`) | `POST /tasks` |
+| `upsert` | `Upsert{Entity}UseCase` (`upsert_one`) | `PUT /tasks` |
+| `get` | `Get{Entity}UseCase` (`find_one`) | `GET /tasks/:id` |
+| `update` | `Update{Entity}UseCase` (`update_one`) | `PUT /tasks/:id` |
+| `patch` | `Patch{Entity}UseCase` (`patch_one`) | `PATCH /tasks/:id` |
+| `delete` | `Delete{Entity}UseCase` (`delete`) | `DELETE /tasks/:id` |
+
+The use cases are ordinary ones: `mcp { tools }` and `schedule` can name
+them. Routes appear in every HTTP adapter listing the resource under
+`resources {}`, with that adapter's default `auth`.
+
+### Derived types
+Structs computed from another one, with optional extra fields:
+
+```tr
+type NewTask = Omit<Task, id, user_id, done_at>
+type TaskDraft = Partial<Omit<Task, user_id>> + { clear: Option<List<String>> }
+```
+
+`Omit<T, a, b>` drops fields, `Pick<T, a, b>` keeps only those,
+`Partial<T>` makes every field `Option`; they nest. Naming a field the base
+doesn't have is an error.
+
+### `database`
+One Postgres database, and one connection pool, shared by the `psql` infras
+naming it:
+
+```tr
+database Main { url: "${DATABASE_URL}" pool: 16 }
+infra TaskInfra { storage { psql { entity: Task database: Main } } }
+```
+
+Without `database:`, an infra reads `<INFRA>_DB_URL`, falling back to
+`DATABASE_URL` (pool: `<INFRA>_DB_POOL_SIZE`, `DATABASE_POOL_SIZE`, 16).
+Infras resolving to the same URL share one pool either way, so one
+`DATABASE_URL` is enough for the whole app.
+
+### Defaults
+- **Adapter `auth`**: `auth: required` (or any `auth` form) inside `http {}`
+  applies to every route that doesn't write its own; a route opts out with
+  `auth: none`.
+- **Infra `owner`**: `psql { owner: user_id }` is the `owner:` of every `call:`
+  use case whose primary call targets the infra; a use case opts out with
+  `owner: none`.
+- **Environment variables**: `${NAME:-default}` anywhere `${NAME}` works.
+  Variables of `http_client {}` and `auth { secret }` without a default read
+  as empty when unset (the client fails when used, the secret never
+  matches) instead of stopping the program. The binary loads `.env` from the
+  working directory at startup.
+- **Create inputs**: the guessed input of `save_one` / `upsert_one` has neither
+  `id` nor the owner field.
+
 ### `config`
 Settings for the whole file:
 
 ```tr
 config { json_case: "camel" }
 ```
+
+`deps { "chrono-tz": "0.10" }` adds crates to every app (for code shared by
+several `code {}` bodies).
 
 `json_case: "camel"` renames every generated JSON field to camelCase
 (`weekly_budget_h` → `weeklyBudgetH`) in requests, responses, query strings
