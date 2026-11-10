@@ -4,6 +4,15 @@ Nothing pending.
 
 DONE
 
+- My World needs (backend for a personal planning app): List/Json/Date/Time
+  /enum types and real Regex validation; filter operators, order_by,
+  optional paging; patch_one, upsert_one, unique/index/references, column
+  renames and drops; transactions and shared code includes; schedule {}
+  with time zones; shared-secret auth, service tokens, SSE events, /health,
+  structured logs, camelCase, unwrapped responses; http_client retries,
+  text and forms; MCP adapter; --emit-ts / --emit-openapi; --vendor,
+  --out, quiet compiler output. See doc/keywords.md and doc/cli.md.
+
 - Documentation folder: `doc/` holds the language and usage docs (tutorial,
   language overview, keywords, features, conversions, CLI, recipes,
   limitations), separate from README.md and CONTRIBUTING.md.

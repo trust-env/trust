@@ -15,6 +15,9 @@ pub enum CodeDependency {
         infra_name: String,
         storage_trait: String,
         storage_error: String,
+        /// A `psql` storage: also bound by `TrustTransactional`, so the body
+        /// (or `transaction: true`) can run it inside a transaction.
+        transactional: bool,
     },
     /// An `s3`/`http_client` infra: its concrete struct (neither implements
     /// a shared trait to be generic over).
@@ -44,6 +47,10 @@ pub struct CodeUseCaseFile {
     pub body: String,
     pub dependencies: Vec<CodeDependency>,
     pub error_variants: Vec<String>,
+    /// `transaction: true`: the whole body runs in one transaction.
+    pub transaction: bool,
+    /// Announce successful runs to `events:` streams.
+    pub publish: bool,
 }
 
 impl CodeUseCaseFile {
@@ -56,15 +63,21 @@ impl CodeUseCaseFile {
     }
 
     /// `S0, S1, ...` for each storage dependency, in declaration order.
-    fn generic_params(&self) -> Vec<(String, &str)> {
+    fn generic_params(&self) -> Vec<(String, Vec<String>)> {
         self.dependencies
             .iter()
             .filter_map(|d| match d {
-                CodeDependency::Storage { storage_trait, .. } => Some(storage_trait.as_str()),
+                CodeDependency::Storage { storage_trait, transactional, .. } => {
+                    let mut bounds = vec![storage_trait.clone()];
+                    if *transactional {
+                        bounds.push("TrustTransactional".to_string());
+                    }
+                    Some(bounds)
+                }
                 CodeDependency::Concrete { .. } => None,
             })
             .enumerate()
-            .map(|(i, t)| (format!("S{}", i), t))
+            .map(|(i, bounds)| (format!("S{}", i), bounds))
             .collect()
     }
 
@@ -74,12 +87,7 @@ impl CodeUseCaseFile {
     }
 
     fn where_clause(&self) -> String {
-        let bounds: Vec<(String, Vec<String>)> = self
-            .generic_params()
-            .into_iter()
-            .map(|(p, t)| (p, vec![t.to_string()]))
-            .collect();
-        where_block(&bounds)
+        where_block(&self.generic_params())
     }
 
     fn gen_error(&self) -> String {
@@ -149,7 +157,7 @@ impl CodeUseCaseFile {
     /// The hand-written body, preceded by a use of `user` so an
     /// owner-agnostic body doesn't trigger an unused-variable warning.
     fn indented_body(&self) -> String {
-        let mut lines = vec!["let _ = user;"];
+        let mut lines = vec!["let _ = (user, &input);"];
         lines.extend(
             self.body
                 .trim_end()
@@ -170,6 +178,26 @@ impl CodeUseCaseFile {
         context.insert("body", &self.indented_body());
         context.insert("trait_name", &self.trait_name());
         context.insert("user_param", "user");
+        #[derive(Serialize)]
+        struct TxFieldView {
+            field: String,
+            storage: bool,
+        }
+        let tx_fields: Vec<TxFieldView> = self
+            .dependencies
+            .iter()
+            .map(|d| TxFieldView {
+                field: d.field(),
+                storage: matches!(d, CodeDependency::Storage { .. }),
+            })
+            .collect();
+        context.insert("transaction", &self.transaction);
+        context.insert("publish", &self.publish);
+        context.insert(
+            "tx_first",
+            &tx_fields.iter().find(|f| f.storage).map(|f| f.field.clone()).unwrap_or_default(),
+        );
+        context.insert("tx_fields", &tx_fields);
         render("file/ai_use_case/impl.rs.tera", &context)
     }
 

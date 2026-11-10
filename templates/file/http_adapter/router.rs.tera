@@ -5,7 +5,16 @@ where
         Router::new()
 {% for r in route_lines %}            .route("{{ r.path }}", {{ r.axum_fn }}(Self::{{ r.handler }}))
 {% endfor %}{% if dev_mode %}            .route("/app", get(app_docs::app_docs))
-{% endif %}            .with_state(self){% if cors_expr %}
+{% endif %}{% if health %}            .route("/health", get(health))
+{% endif %}{% if events %}            .route("{{ events_path }}", get(events_stream))
+{% endif %}            .with_state(self)
+            .layer(tower_http::trace::TraceLayer::new_for_http()){% if cors_expr %}
             .layer(cors_layer({{ cors_expr }})){% endif %}
     }
 }
+{% if health %}
+/// Liveness probe for load balancers and container health checks.
+async fn health() -> ([(axum::http::header::HeaderName, &'static str); 1], &'static str) {
+    ([(axum::http::header::CONTENT_TYPE, "application/json")], r#"{"status":"ok"}"#)
+}
+{% endif -%}

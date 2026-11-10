@@ -60,16 +60,36 @@ pub enum AuthRequirement {
     /// checks `infra`'s storage for a permission row matching
     /// `target`/`action`.
     Permission(PermissionRequirement),
+    /// `auth { secret: "${INTERNAL_TOKEN}" header: "X-Token" user: 1 }` — a
+    /// shared secret instead of a JWT: for machines (webhooks, cron, an
+    /// agent), not people.
+    Secret(SecretRequirement),
 }
 
 impl AuthRequirement {
     /// The permission-row infra this requirement queries, if any.
     pub fn permission_infra(&self) -> Option<&str> {
         match self {
-            AuthRequirement::Authenticated => None,
+            AuthRequirement::Authenticated | AuthRequirement::Secret(_) => None,
             AuthRequirement::Permission(p) => Some(&p.infra),
         }
     }
+
+    /// Whether the route validates a JWT (`auth: required` or a
+    /// permission check).
+    pub fn uses_jwt(&self) -> bool {
+        !matches!(self, AuthRequirement::Secret(_))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SecretRequirement {
+    /// The expected value, usually `${VAR}` (resolved at startup).
+    pub secret: String,
+    /// The header carrying it; `None` means `Authorization: Bearer <secret>`.
+    pub header: Option<String>,
+    /// The user id the request acts as (`0` by default).
+    pub user: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +124,29 @@ pub struct HttpAdapterService {
     /// to call this adapter (`*` for any). Supports `${VAR}` interpolation,
     /// like `on:`.
     pub cors: Option<String>,
+    /// `envelope: false` — responses are the entity / list itself instead
+    /// of `{"task": ...}` / `{"tasks": [...]}`.
+    pub envelope: bool,
+    /// `events: "/events"` — a Server-Sent Events stream announcing every
+    /// successful use case run (`auth: required` limits it to the caller's
+    /// own events).
+    pub events: Option<EventsEndpoint>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventsEndpoint {
+    pub path: String,
+    /// Only the caller's own events; the JWT may come from the
+    /// `Authorization` header or an `access_token` query parameter
+    /// (browsers' `EventSource` can't set headers).
+    pub requires_user: bool,
+}
+
+/// `config { json_case: "camel" }` — settings for the whole file.
+#[derive(Debug, Clone, Default)]
+pub struct ConfigDeclaration {
+    /// `camel`: every generated JSON field is camelCase.
+    pub json_case: Option<String>,
 }
 
 /// One `rpc Name { input: X output: Y use_case: Z }` inside a `grpc {
@@ -122,10 +165,34 @@ pub struct GrpcAdapterService {
     pub on: Option<String>,
 }
 
+/// One tool of an `mcp {}` adapter.
+#[derive(Debug, Clone)]
+pub struct McpTool {
+    /// Tool name the agent sees (`snake_case` recommended).
+    pub name: String,
+    pub use_case: String,
+    pub description: Option<String>,
+}
+
+/// `mcp { on: "..." auth ... instructions: "..." tools { name { use_case: X description: "..." } } }`:
+/// a Model Context Protocol server (Streamable HTTP at `POST /mcp`, or
+/// stdio with `<binary> mcp`) exposing each use case as a tool whose input
+/// schema comes from the use case's input type.
+#[derive(Debug, Clone)]
+pub struct McpAdapterService {
+    pub on: Option<String>,
+    /// `auth: required` (a JWT) or `auth { secret ... }`; none means user 0.
+    pub auth: Option<AuthRequirement>,
+    /// Text the client may show the model about how to use the tools.
+    pub instructions: Option<String>,
+    pub tools: Vec<McpTool>,
+}
+
 #[derive(Debug, Clone)]
 pub enum AdapterType {
     Http(HttpAdapterService),
     Grpc(GrpcAdapterService),
+    Mcp(McpAdapterService),
 }
 
 #[derive(Debug, Clone)]
@@ -134,13 +201,35 @@ pub struct AdapterService {
     pub adapter_type: AdapterType,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PsqlInfraService {
     pub entity: AllowedType,
     /// `seed: "./seed/x.sql"` — SQL run at every startup, right after the
     /// entity's table is created. Must be idempotent (e.g. `ON CONFLICT
     /// DO NOTHING`), since it re-runs on every boot.
     pub seed: Option<String>,
+    /// `unique: [a, b]` (repeatable) — unique indexes. The first one is the
+    /// key `upsert_one` conflicts on.
+    pub unique: Vec<Vec<String>>,
+    /// `index: [a, b]` (repeatable) — extra indexes.
+    pub indexes: Vec<Vec<String>>,
+    /// `references { field: OtherInfra [cascade|set_null|restrict] }` —
+    /// foreign keys to another psql infra's `id`.
+    pub references: Vec<ForeignKey>,
+    /// `renamed { old: new }` — columns renamed since the last deploy.
+    pub renamed: Vec<(String, String)>,
+    /// `dropped: [a, b]` — columns removed since the last deploy.
+    pub dropped: Vec<String>,
+}
+
+/// One `references {}` entry of a psql infra.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForeignKey {
+    pub field: String,
+    pub infra: String,
+    /// `cascade`, `set_null` or `restrict`; `None` picks `set_null` for a
+    /// nullable column and `restrict` otherwise.
+    pub on_delete: Option<String>,
 }
 
 /// One `<storage_method>: <RpcName>` line inside a `grpc_client { methods {
@@ -204,6 +293,11 @@ pub enum InfraServiceType {
 pub struct HttpClientInfraService {
     pub base_url: String,
     pub headers: Vec<(String, String)>,
+    /// `retry: 3` — extra attempts after a network error, a 429 or a 5xx
+    /// (exponential backoff from 200 ms).
+    pub retry: u32,
+    /// `timeout: 10` — seconds before a request gives up (30 by default).
+    pub timeout_secs: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -254,17 +348,66 @@ pub struct BlobCall {
     pub operation: String,
 }
 
-/// One `<field>: input.<input_field>` line inside a use case's `filters {}`
-/// block — an equality predicate scoping a `list`-bound primary call's
-/// results, comparing a storage field against one of the use case's own
-/// input fields (e.g. `spot_id: input.spot_id` for "ratings where
-/// spot_id = the route's :spot_id"). Only meaningful when the primary
-/// `call:` is bound to `list` — validated at codegen, not parse time, same
-/// split as `grpc_client`'s `methods {}` storage-verb names.
+/// One line of a use case's `filters {}` block: `<field> <op> <source>`,
+/// a predicate scoping a `list`-bound primary call's results. `field: x`
+/// is the equality shorthand. Only meaningful when the primary `call:` is
+/// bound to `list` — validated at codegen, not parse time.
 #[derive(Debug, Clone)]
 pub struct FilterMapping {
     pub field: String,
+    pub operator: FilterOperator,
     pub source: FilterSource,
+}
+
+/// The comparison of a `filters {}` line. Maps 1:1 onto `common`'s
+/// `StoragePredicateOperator`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterOperator {
+    /// `field: x`, `field = x`, `field == x`
+    Eq,
+    /// `field != x`
+    NotEq,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+    /// `field in [a, b]` / `field in input.list`
+    In,
+    /// `field not in [...]`
+    NotIn,
+    /// `field like "a%"` (case-sensitive SQL pattern)
+    Like,
+    /// `field ilike "a%"` (case-insensitive SQL pattern)
+    ILike,
+    /// `field contains x` — case-insensitive substring match.
+    Contains,
+}
+
+impl FilterOperator {
+    /// The `common::StoragePredicateOperator` variant name.
+    pub fn storage_variant(&self) -> &'static str {
+        match self {
+            FilterOperator::Eq => "Eq",
+            FilterOperator::NotEq => "NotEq",
+            FilterOperator::Gt => "Gt",
+            FilterOperator::Gte => "Gte",
+            FilterOperator::Lt => "Lt",
+            FilterOperator::Lte => "Lte",
+            FilterOperator::In => "In",
+            FilterOperator::NotIn => "NotIn",
+            FilterOperator::Like => "Like",
+            // `contains` is sent as ILIKE '%value%'.
+            FilterOperator::ILike | FilterOperator::Contains => "ILike",
+        }
+    }
+
+    pub fn is_set(&self) -> bool {
+        matches!(self, FilterOperator::In | FilterOperator::NotIn)
+    }
+
+    pub fn is_pattern(&self) -> bool {
+        matches!(self, FilterOperator::Like | FilterOperator::ILike | FilterOperator::Contains)
+    }
 }
 
 /// The right-hand side of a `filters {}` line.
@@ -275,16 +418,30 @@ pub enum FilterSource {
     /// A fixed value: a quoted string, or a bare word such as `true` or
     /// `42`. Compared as text, like every other predicate value.
     Literal(String),
+    /// `[a, b, c]` — fixed values for `in` / `not in`.
+    List(Vec<String>),
+    /// `now()` — the current UTC time when the request runs.
+    Now,
+    /// `today()` / `today("Europe/Paris")` — the current date when the
+    /// request runs, in UTC or in the given IANA time zone.
+    Today(Option<String>),
 }
 
 impl FilterMapping {
-    /// The input field this filter reads, if it isn't a literal.
+    /// The input field this filter reads, if any.
     pub fn input_field(&self) -> Option<&str> {
         match &self.source {
             FilterSource::Input(f) => Some(f),
-            FilterSource::Literal(_) => None,
+            _ => None,
         }
     }
+}
+
+/// One `field [asc|desc]` entry of a use case's `order_by:`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderBy {
+    pub field: String,
+    pub descending: bool,
 }
 
 /// `code { file: "./logic/x.rs" infra: A infra: B errors { E } deps { c: "1" } }`
@@ -300,6 +457,10 @@ pub struct CodeSpec {
     pub infras: Vec<String>,
     pub errors: Vec<String>,
     pub deps: Vec<(String, String)>,
+    /// `include: "./logic/shared.rs"` (repeatable) — Rust files copied
+    /// once into the crate's `src/shared/` and visible from every `code {}`
+    /// body (their `pub` items are re-exported at the crate root).
+    pub includes: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -330,6 +491,30 @@ pub struct UseCaseService {
     pub owner: Option<String>,
     /// Mutually exclusive with `calls`/`ai`/`blob`: a hand-written body.
     pub code: Option<CodeSpec>,
+    /// `order_by: due asc, priority desc` — sort order of a `list` primary
+    /// call (`id` always breaks ties).
+    pub order_by: Vec<OrderBy>,
+    /// `transaction: true` — every `call:` runs in one database
+    /// transaction (all `psql`, all on the same database).
+    pub transaction: bool,
+    /// `notify: true|false` — publish a change event after each successful
+    /// run (for HTTP `events:` streams). Defaults to true when a call
+    /// writes (save/update/patch/upsert/delete), false otherwise.
+    pub notify: Option<bool>,
+}
+
+impl UseCaseService {
+    /// Whether a successful run is announced to `events:` streams.
+    pub fn notifies(&self) -> bool {
+        self.notify.unwrap_or_else(|| {
+            self.calls.iter().any(|c| {
+                matches!(
+                    c.method.as_str(),
+                    "save_one" | "save_many" | "update_one" | "patch_one" | "upsert_one" | "delete" | "delete_many"
+                )
+            })
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -338,8 +523,9 @@ pub struct TypeAlias {
     pub aliased_type: AllowedType,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum AllowedType {
+    #[default]
     String,
     Uuid,
     Int,
@@ -349,6 +535,16 @@ pub enum AllowedType {
     DateTime,
     /// `Option<T>` — a nullable field.
     Option(Box<AllowedType>),
+    /// `List<T>` — a list of values (`Vec<T>`), stored as `JSONB`.
+    List(Box<AllowedType>),
+    /// `Json` — any JSON value (`serde_json::Value`), stored as `JSONB`.
+    Json,
+    /// `Date` — a calendar date without time or zone (`chrono::NaiveDate`).
+    Date,
+    /// `Time` — a wall-clock time without date or zone (`chrono::NaiveTime`).
+    Time,
+    /// `Regex<"pattern">` or `Regex<preset>` — a `String` validated
+    /// against the pattern whenever it is decoded from JSON.
     Regex(String),
     DefinedType(String),
 }
@@ -364,6 +560,10 @@ impl AllowedType {
             AllowedType::Bool => "bool".to_string(),
             AllowedType::DateTime => "date_time".to_string(),
             AllowedType::Option(inner) => inner.to_file_name(),
+            AllowedType::List(inner) => inner.to_file_name(),
+            AllowedType::Json => "json".to_string(),
+            AllowedType::Date => "date".to_string(),
+            AllowedType::Time => "time".to_string(),
             AllowedType::Regex(_) => "regex".to_string(),
             AllowedType::DefinedType(name) => name.to_snake_case(),
         }
@@ -383,17 +583,37 @@ pub struct StructDeclaration {
     pub export: Option<String>,
 }
 
+/// `enum TaskStatus { todo doing done }` — a closed set of values.
+/// Each variant is written exactly as it appears on the wire (JSON and the
+/// database column); the generated Rust variant is its UpperCamelCase form.
+#[derive(Debug, Clone)]
+pub struct EnumDeclaration {
+    pub name: String,
+    pub variants: Vec<String>,
+    pub export: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum TypeDeclaration {
     TypeAlias(TypeAlias),
     Struct(StructDeclaration),
+    Enum(EnumDeclaration),
 }
 
 impl TypeDeclaration {
     pub fn export_name(&self) -> Option<&str> {
         match self {
             TypeDeclaration::Struct(s) => s.export.as_deref(),
+            TypeDeclaration::Enum(e) => e.export.as_deref(),
             TypeDeclaration::TypeAlias(_) => None,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            TypeDeclaration::Struct(s) => &s.name,
+            TypeDeclaration::Enum(e) => &e.name,
+            TypeDeclaration::TypeAlias(a) => &a.name,
         }
     }
 }
@@ -448,6 +668,29 @@ pub struct PluginAst {
     pub raw_body: String,
 }
 
+/// One `"<cron>" => UseCase` line of a `schedule {}` block.
+#[derive(Debug, Clone)]
+pub struct ScheduleJob {
+    /// Five-field cron expression: minute hour day-of-month month day-of-week.
+    pub cron: String,
+    pub use_case: String,
+    /// Overrides the schedule's own `tz` for this job.
+    pub tz: Option<String>,
+}
+
+/// `schedule Name { tz: "..." user: 1 "<cron>" => UseCase ... }`: runs use
+/// cases on a timer inside the app that lists `Name` in its `run {}`
+/// block. Each run calls `execute(user, Default::default())`.
+#[derive(Debug, Clone)]
+pub struct ScheduleDeclaration {
+    pub name: String,
+    /// IANA time zone the cron expressions are read in (UTC by default).
+    pub tz: Option<String>,
+    /// The user id scheduled runs act as (`0` by default).
+    pub user: i64,
+    pub jobs: Vec<ScheduleJob>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Ast {
     Import(ImportDeclaration),
@@ -457,4 +700,6 @@ pub enum Ast {
     TypeDecl(TypeDeclaration),
     App(AppService),
     Plugin(PluginAst),
+    Schedule(ScheduleDeclaration),
+    Config(ConfigDeclaration),
 }

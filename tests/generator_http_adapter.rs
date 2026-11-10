@@ -257,5 +257,7 @@ fn adapters_without_cors_get_no_layer() {
             .read("main/src/adapters/http/http_api.rs")
             .contains("cors_layer")
     );
-    assert!(!project.read("main/Cargo.toml").contains("tower-http"));
+    // tower-http stays (request logs), without its `cors` feature.
+    let cargo = project.read("main/Cargo.toml");
+    assert!(!cargo.contains("\"cors\""), "{cargo}");
 }

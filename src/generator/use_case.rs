@@ -5,7 +5,7 @@ use heck::ToSnakeCase;
 use crate::{
     ai::AiConfig,
     generator::{
-        CodeGen, CodeGenContext, UseCaseIo,
+        CodeGen, CodeGenContext, FieldSerde, UseCaseIo,
         rust_code::{
             file::{
                 ai_use_case_file::{AiInfraBinding, AiUseCaseFile},
@@ -32,6 +32,8 @@ pub(super) struct UseCaseShape {
     /// `owner: <field>` on the primary call's entity, validated to exist
     /// and be `i64`.
     pub owner: Option<String>,
+    /// Validated `order_by:` entries of a `list` primary call.
+    pub order_by: Vec<crate::parser::OrderBy>,
 }
 
 impl CodeGen {
@@ -63,10 +65,27 @@ impl CodeGen {
         owner: Option<&str>,
     ) -> RustType {
         match call_kind {
-            CallKind::Create | CallKind::Update => {
+            CallKind::Create | CallKind::Update | CallKind::Upsert => {
                 let mut guessed = entity_type.clone();
                 guessed.fields.retain(|f| Some(f.name.as_str()) != owner);
                 guessed
+            }
+            CallKind::Patch => {
+                // `id` plus every other field as `Option`: absent fields
+                // are left as they are.
+                let mut fields = Vec::new();
+                for field in &entity_type.fields {
+                    if Some(field.name.as_str()) == owner {
+                        continue;
+                    }
+                    let field_type = if field.name == "id" {
+                        field.field_type.clone()
+                    } else {
+                        RustType::generic("Option", vec![field.field_type.clone()], vec![])
+                    };
+                    fields.push(RustField { name: field.name.clone(), field_type });
+                }
+                RustType::generic("GuessedPatchInput", vec![], fields)
             }
             CallKind::Read | CallKind::Delete => {
                 let id_field_type = entity_type
@@ -86,28 +105,40 @@ impl CodeGen {
                 )
             }
             CallKind::List => {
+                let optional_i64 =
+                    RustType::generic("Option", vec![RustType::primitive("i64")], vec![]);
                 let mut fields = vec![
                     RustField {
                         name: "limit".to_string(),
-                        field_type: RustType::primitive("i64"),
+                        field_type: optional_i64.clone(),
                     },
                     RustField {
                         name: "offset".to_string(),
-                        field_type: RustType::primitive("i64"),
+                        field_type: optional_i64,
                     },
                 ];
                 for filter in filters {
                     let Some(input_field) = filter.input_field() else {
                         continue;
                     };
+                    if fields.iter().any(|f| f.name == input_field) {
+                        continue;
+                    }
                     // `filter.field` is guaranteed present on `entity_type`
                     // by the validation in `resolve_use_case_shape`.
-                    let field_type = entity_type
-                        .fields
-                        .iter()
-                        .find(|f| f.name == filter.field)
-                        .map(|f| f.field_type.clone())
-                        .unwrap_or_else(|| RustType::primitive("String"));
+                    // `in` lists and patterns travel as plain text (a
+                    // comma-separated list for `in`), which also works
+                    // from a query string.
+                    let field_type = if filter.operator.is_set() || filter.operator.is_pattern() {
+                        RustType::primitive("String")
+                    } else {
+                        entity_type
+                            .fields
+                            .iter()
+                            .find(|f| f.name == filter.field)
+                            .map(|f| f.field_type.clone())
+                            .unwrap_or_else(|| RustType::primitive("String"))
+                    };
                     fields.push(RustField {
                         name: input_field.to_string(),
                         field_type,
@@ -164,7 +195,22 @@ impl CodeGen {
             // that only surfaces once someone builds the generated crate
             // against the real `common` checkout. Catch it here instead,
             // with a message that says why. See doc/limitations.md.
-            if matches!(call_kind, CallKind::Read | CallKind::Update | CallKind::Delete)
+            if matches!(call_kind, CallKind::Upsert | CallKind::Patch | CallKind::List)
+                && context.find_infra_target_address(&call.target).is_some()
+                && call_kind != CallKind::List
+            {
+                return Err(format!(
+                    "UseCase '{}': '{}' needs a psql infra, '{}' is a grpc_client",
+                    use_case.name, call.method, call.target
+                ));
+            }
+            if call_kind == CallKind::Upsert && !context.has_psql_unique_key(&call.target) {
+                return Err(format!(
+                    "UseCase '{}': 'upsert_one' needs a unique key: declare `unique: [...]` on infra '{}'",
+                    use_case.name, call.target
+                ));
+            }
+            if matches!(call_kind, CallKind::Read | CallKind::Update | CallKind::Delete | CallKind::Patch)
                 && let Some(id_field) = entity_type.fields.iter().find(|f| f.name == "id")
                 && id_field.field_type.name != "i64"
             {
@@ -214,6 +260,18 @@ impl CodeGen {
             });
         }
 
+        if use_case.transaction {
+            if let Some(call) = resolved_calls
+                .iter()
+                .find(|c| context.find_infra_target_address(&c.infra_name).is_some())
+            {
+                return Err(format!(
+                    "UseCase '{}': 'transaction: true' needs psql infras, '{}' is a grpc_client",
+                    use_case.name, call.infra_name
+                ));
+            }
+        }
+
         let primary_entity = resolved_calls.last().unwrap().entity_type.clone();
         let primary_call_kind = resolved_calls.last().unwrap().call_kind;
 
@@ -225,12 +283,40 @@ impl CodeGen {
                 ));
             }
             for filter in &use_case.filters {
-                if !primary_entity.fields.iter().any(|f| f.name == filter.field) {
+                let Some(field) = primary_entity.fields.iter().find(|f| f.name == filter.field) else {
                     return Err(format!(
                         "UseCase '{}': 'filters' references unknown field '{}' on entity '{}'",
                         use_case.name, filter.field, primary_entity.name
                     ));
+                };
+                if field.field_type.is_json_wrapped() {
+                    return Err(format!(
+                        "UseCase '{}': 'filters' can't compare '{}' (a JSONB list/struct column)",
+                        use_case.name, filter.field
+                    ));
                 }
+            }
+        }
+        if !use_case.order_by.is_empty() {
+            if primary_call_kind != CallKind::List {
+                return Err(format!(
+                    "UseCase '{}': 'order_by' is only valid when the primary call is 'list'",
+                    use_case.name
+                ));
+            }
+            for order in &use_case.order_by {
+                if !primary_entity.fields.iter().any(|f| f.name == order.field) {
+                    return Err(format!(
+                        "UseCase '{}': 'order_by' references unknown field '{}' on entity '{}'",
+                        use_case.name, order.field, primary_entity.name
+                    ));
+                }
+            }
+            if resolved_calls.last().is_some_and(|c| context.find_infra_target_address(&c.infra_name).is_some()) {
+                return Err(format!(
+                    "UseCase '{}': 'order_by' needs a psql infra (grpc_client can't sort)",
+                    use_case.name
+                ));
             }
         }
 
@@ -309,6 +395,7 @@ impl CodeGen {
             copy_id,
             filters: use_case.filters.clone(),
             owner: use_case.owner.clone(),
+            order_by: use_case.order_by.clone(),
         }))
     }
 
@@ -396,6 +483,9 @@ impl CodeGen {
                     requires_user: false,
                     raw_input: input_type.name == Self::RAW_REQUEST
                         && context.find_type(Self::RAW_REQUEST).is_none(),
+                    input_serde: FieldSerde::of_fields(&input_type.fields),
+                    input_type: input_type.clone(),
+                    output_type: output_type.clone(),
                 },
             );
             return Ok(());
@@ -432,6 +522,9 @@ impl CodeGen {
                     output_wrapper_field: None,
                     requires_user: false,
                     raw_input: false,
+                    input_serde: FieldSerde::of_fields(&input_type.fields),
+                    input_type: input_type.clone(),
+                    output_type: output_type.clone(),
                 },
             );
             return Ok(());
@@ -442,6 +535,16 @@ impl CodeGen {
                 .map_err(|e| format!("UseCase '{}': {}", use_case.name, e))?;
             let field_docs = |fields: Vec<(&str, &str)>| {
                 fields.into_iter().map(|(n, t)| (n.to_string(), t.to_string())).collect()
+            };
+            let rust_type = |name: String, fields: Vec<(&str, &str)>| {
+                RustType::generic(
+                    &name,
+                    vec![],
+                    fields
+                        .into_iter()
+                        .map(|(n, t)| RustField { name: n.to_string(), field_type: RustType::primitive(t) })
+                        .collect(),
+                )
             };
             context.register_use_case_io(
                 use_case.name.clone(),
@@ -455,6 +558,9 @@ impl CodeGen {
                     output_wrapper_field: None,
                     requires_user: false,
                     raw_input: false,
+                    input_serde: Vec::new(),
+                    input_type: rust_type(format!("{}Input", use_case.name), BlobOperation::input_fields()),
+                    output_type: rust_type(format!("{}Output", use_case.name), operation.output_fields()),
                 },
             );
             return Ok(());
@@ -477,9 +583,27 @@ impl CodeGen {
                     output_entity: primary.entity_type.name.clone(),
                     output_fields: Self::field_docs(&primary.entity_type.fields),
                     output_is_list: is_list,
-                    output_wrapper_field: Some(wrapper_field),
+                    output_wrapper_field: Some(wrapper_field.clone()),
                     requires_user: shape.owner.is_some(),
                     raw_input: false,
+                    input_serde: FieldSerde::of_fields(&shape.input_type.fields),
+                    input_type: RustType {
+                        name: format!("{}Input", use_case.name),
+                        ..shape.input_type.clone()
+                    },
+                    output_type: RustType::generic(
+                        &format!("{}Output", use_case.name),
+                        vec![],
+                        vec![RustField {
+                            name: wrapper_field.clone(),
+                            field_type: if is_list {
+                                RustType::generic("Vec", vec![primary.entity_type.clone()], vec![])
+                            } else {
+                                primary.entity_type.clone()
+                            },
+                        }],
+                    )
+                    .with_kind(crate::generator::rust_code::types::TypeKind::Struct),
                 },
             );
         }
@@ -693,10 +817,12 @@ impl CodeGen {
                     Some(_) => format!("Grpc{}ClientError", entity_type.name),
                     None => format!("Psql{}StorageError", entity_type.name),
                 };
+                let transactional = context.find_infra_target_address(infra_name).is_none();
                 CodeDependency::Storage {
                     infra_name: infra_name.clone(),
                     storage_trait: format!("{}Storage", entity_type.name),
                     storage_error,
+                    transactional,
                 }
             };
             dependencies.push(dependency);
@@ -709,6 +835,28 @@ impl CodeGen {
                     use_case.name, reserved
                 ));
             }
+        }
+
+        if use_case.transaction {
+            if !dependencies.iter().any(|d| matches!(d, CodeDependency::Storage { transactional: true, .. })) {
+                return Err(format!(
+                    "UseCase '{}': 'transaction: true' needs at least one psql infra",
+                    use_case.name
+                ));
+            }
+            if let Some(CodeDependency::Storage { infra_name, .. }) = dependencies
+                .iter()
+                .find(|d| matches!(d, CodeDependency::Storage { transactional: false, .. }))
+            {
+                return Err(format!(
+                    "UseCase '{}': 'transaction: true' can't include grpc_client infra '{}'",
+                    use_case.name, infra_name
+                ));
+            }
+        }
+
+        for include in &code.includes {
+            self.write_shared_module(context, &use_case.name, include, &folder)?;
         }
 
         let body = std::fs::read_to_string(&code.file).map_err(|e| {
@@ -748,9 +896,57 @@ impl CodeGen {
             body,
             dependencies,
             error_variants: code.errors.clone(),
+            transaction: use_case.transaction,
+            publish: context.has_events() && use_case.notifies(),
         }
         .write(&folder)?;
         context.register_use_case_module(use_case.name.to_snake_case());
+        Ok(())
+    }
+
+    /// Copies a `code { include: "..." }` file into `src/shared/<stem>.rs`
+    /// (once per crate); its `pub` items end up at the crate root, where
+    /// every `code {}` body sees them.
+    fn write_shared_module(
+        &self,
+        context: &mut CodeGenContext,
+        use_case_name: &str,
+        include: &str,
+        use_case_folder: &PathBuf,
+    ) -> Result<(), String> {
+        let stem = std::path::Path::new(include)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_snake_case())
+            .ok_or_else(|| format!("UseCase '{}': invalid include path '{}'", use_case_name, include))?;
+        match context.find_shared_module(&stem) {
+            Some(existing) if existing == include => return Ok(()),
+            Some(existing) => {
+                return Err(format!(
+                    "UseCase '{}': include '{}' and '{}' would both become module '{}' — rename one",
+                    use_case_name, include, existing, stem
+                ));
+            }
+            None => {}
+        }
+        let source = std::fs::read_to_string(include).map_err(|e| {
+            format!("UseCase '{}': failed to read include '{}': {}", use_case_name, include, e)
+        })?;
+        let shared_dir = use_case_folder
+            .parent()
+            .ok_or("applications folder has no parent")?
+            .join("shared");
+        std::fs::create_dir_all(&shared_dir)
+            .map_err(|e| format!("Failed to create the shared folder: {}", e))?;
+        let mut tera_context = tera::Context::new();
+        tera_context.insert("file", include);
+        tera_context.insert("source", &source);
+        std::fs::write(
+            shared_dir.join(format!("{}.rs", stem)),
+            crate::generator::rust_code::render::render("file/code_use_case/shared.rs.tera", &tera_context),
+        )
+        .map_err(|e| format!("Failed to write shared module '{}': {}", stem, e))?;
+        context.register_shared_module(stem, include.to_string());
         Ok(())
     }
 
@@ -784,6 +980,29 @@ impl CodeGen {
                     context.require_version_dependency_with_features("uuid", "1", vec!["serde"]);
                 }
 
+                if shape
+                    .input_type
+                    .fields
+                    .iter()
+                    .any(|f| f.field_type.is_option() && f.field_type.unwrap_option().is_option())
+                {
+                    context.require_double_option();
+                }
+                for filter in &shape.filters {
+                    match &filter.source {
+                        crate::parser::FilterSource::Now | crate::parser::FilterSource::Today(None) => {
+                            context.require_version_dependency_with_features("chrono", "0.4", vec!["serde"]);
+                        }
+                        crate::parser::FilterSource::Today(Some(tz)) => {
+                            tz.parse::<chrono_tz::Tz>().map_err(|_| {
+                                format!("UseCase '{}': unknown time zone '{}' in today(...)", use_case.name, tz)
+                            })?;
+                            context.require_version_dependency_with_features("chrono", "0.4", vec!["serde"]);
+                            context.require_version_dependency("chrono-tz", "0.10");
+                        }
+                        _ => {}
+                    }
+                }
                 let mut file = UseCaseFile::new(
                     use_case.name.clone(),
                     shape.input_type,
@@ -791,8 +1010,12 @@ impl CodeGen {
                     shape.copy_id,
                     shape.filters,
                     shape.owner,
+                    shape.order_by,
+                    use_case.transaction,
                     folder,
-                )?;
+                )?
+                .with_publish(context.has_events() && use_case.notifies())
+                .with_json_camel(context.json_camel());
 
                 file.write()?;
                 context.register_use_case_module(use_case.name.to_snake_case());

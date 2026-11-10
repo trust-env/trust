@@ -1,6 +1,0 @@
-impl Psql{{ entity }}Storage {
-    pub fn new(db: SQLConnector) -> Self {
-        Self { db }
-    }
-}
-

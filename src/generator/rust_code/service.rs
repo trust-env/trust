@@ -1,4 +1,4 @@
-pub mod psql_storage;
+
 
 use crate::generator::rust_code::{
     _trait::TraitImpl,

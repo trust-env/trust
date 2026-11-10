@@ -4,14 +4,18 @@ use crate::{
     generator::{
         CodeGen, CodeGenContext,
         rust_code::{
+            file::mcp_adapter_file::McpAuth,
             env_template,
             file::main_file::{
                 AdapterBinding, GrpcAdapterBinding, InfraBinding, InfraKind, LoadBalancerRuntime,
-                MainFile, UseCaseBinding,
+                MainFile, ScheduleJobRuntime, UseCaseBinding,
             },
         },
     },
-    parser::{AdapterType, AllowedType, AppService, Ast, GrpcAdapterService, HttpAdapterService},
+    parser::{
+        AdapterType, AllowedType, AppService, Ast, GrpcAdapterService, HttpAdapterService,
+        ScheduleDeclaration,
+    },
 };
 
 impl CodeGen {
@@ -183,14 +187,28 @@ impl CodeGen {
                 },
                 None => InfraKind::Psql {
                     seed: context.has_psql_seed(infra_name),
+                    foreign_keys: context.has_psql_foreign_keys(infra_name),
                 },
             }
         };
+        let is_psql = matches!(kind, InfraKind::Psql { .. });
         infra_bindings.push(InfraBinding {
             infra_name: infra_name.to_string(),
             entity_name,
             kind,
         });
+        // A foreign key needs the referenced table: connect (and migrate)
+        // that infra too.
+        if is_psql {
+            for referenced in context.find_psql_references(infra_name).to_vec() {
+                Self::register_infra_binding(
+                    context,
+                    infra_bindings,
+                    &referenced,
+                    &format!("infra '{}''s references", infra_name),
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -310,6 +328,71 @@ impl CodeGen {
         Ok(use_case_names)
     }
 
+    fn find_schedule<'a>(asts: &'a [Ast], name: &str) -> Option<&'a ScheduleDeclaration> {
+        asts.iter().find_map(|ast| match ast {
+            Ast::Schedule(s) if s.name == name => Some(s),
+            _ => None,
+        })
+    }
+
+    /// Checks a `schedule {}` (cron syntax, time zones, use cases) and
+    /// registers the use cases it runs, like an adapter's routes.
+    fn collect_schedule_bindings(
+        context: &CodeGenContext,
+        schedule: &ScheduleDeclaration,
+        infra_bindings: &mut Vec<InfraBinding>,
+        use_case_bindings: &mut Vec<UseCaseBinding>,
+        jobs: &mut Vec<ScheduleJobRuntime>,
+    ) -> Result<(), String> {
+        for job in &schedule.jobs {
+            let cron = crate::cron::parse(&job.cron)
+                .map_err(|e| format!("schedule '{}': {}", schedule.name, e))?;
+            let tz = job.tz.clone().or_else(|| schedule.tz.clone()).unwrap_or_else(|| "UTC".to_string());
+            tz.parse::<chrono_tz::Tz>().map_err(|_| {
+                format!("schedule '{}': unknown time zone '{}' (use an IANA name such as \"Europe/Paris\")", schedule.name, tz)
+            })?;
+            if !context.is_known_use_case(&job.use_case) {
+                return Err(format!("schedule '{}' runs unknown use_case '{}'", schedule.name, job.use_case));
+            }
+            if context.find_use_case_io(&job.use_case).is_some_and(|io| io.raw_input) {
+                return Err(format!(
+                    "schedule '{}': use_case '{}' takes a RawRequest, which a schedule can't provide",
+                    schedule.name, job.use_case
+                ));
+            }
+            if !use_case_bindings.iter().any(|u| u.use_case_name == job.use_case) {
+                let infra_names = context.find_use_case_infra(&job.use_case);
+                if infra_names.is_empty() && !context.is_ai_use_case_without_infra(&job.use_case) {
+                    return Err(format!(
+                        "UseCase '{}' has no known infra target (missing 'call')",
+                        job.use_case
+                    ));
+                }
+                for infra_name in infra_names {
+                    Self::register_infra_binding(
+                        context,
+                        infra_bindings,
+                        infra_name,
+                        &format!("use_case '{}'", job.use_case),
+                    )?;
+                }
+                use_case_bindings.push(UseCaseBinding {
+                    use_case_name: job.use_case.clone(),
+                    infra_names: infra_names.to_vec(),
+                });
+            }
+            jobs.push(ScheduleJobRuntime {
+                name: format!("{}.{}", schedule.name, job.use_case),
+                cron_text: job.cron.clone(),
+                cron,
+                tz,
+                use_case: job.use_case.clone(),
+                user: schedule.user,
+            });
+        }
+        Ok(())
+    }
+
     pub(super) fn generate_app(
         &mut self,
         context: &mut CodeGenContext,
@@ -326,9 +409,20 @@ impl CodeGen {
         let mut grpc_adapter_bindings: Vec<GrpcAdapterBinding> = Vec::new();
         let mut load_balancer_bindings: Vec<LoadBalancerRuntime> = Vec::new();
 
+        let mut schedule_jobs: Vec<ScheduleJobRuntime> = Vec::new();
         for adapter_name in &app.adapters {
+            if let Some(schedule) = Self::find_schedule(asts, adapter_name) {
+                Self::collect_schedule_bindings(
+                    context,
+                    schedule,
+                    &mut infra_bindings,
+                    &mut use_case_bindings,
+                    &mut schedule_jobs,
+                )?;
+                continue;
+            }
             let adapter = Self::find_adapter(asts, adapter_name)
-                .ok_or_else(|| format!("app:run references unknown adapter '{}'", adapter_name))?;
+                .ok_or_else(|| format!("app:run references unknown adapter or schedule '{}'", adapter_name))?;
 
             match &adapter.adapter_type {
                 AdapterType::Http(http_data) => {
@@ -352,8 +446,59 @@ impl CodeGen {
                         on,
                         use_cases: use_case_names,
                         auth_infra_names,
-                        requires_jwt: http_data.routes.iter().any(|r| r.auth.is_some()),
+                        requires_jwt: http_data.routes.iter().any(|r| r.auth.as_ref().is_some_and(|a| a.uses_jwt()))
+                            || http_data.events.as_ref().is_some_and(|e| e.requires_user),
                         cors: http_data.cors.clone(),
+                        mcp_stdio_user: None,
+                    });
+                }
+                AdapterType::Mcp(mcp_data) => {
+                    let on = mcp_data.on.clone().ok_or_else(|| {
+                        format!(
+                            "Adapter '{}' must declare 'on' to be started by app:run",
+                            adapter_name
+                        )
+                    })?;
+                    let file = Self::mcp_adapter_file(context, adapter_name, mcp_data)?;
+                    let use_case_names = file.constructor_use_cases();
+                    for use_case_name in &use_case_names {
+                        if use_case_bindings.iter().any(|u| &u.use_case_name == use_case_name) {
+                            continue;
+                        }
+                        let infra_names = context.find_use_case_infra(use_case_name);
+                        if infra_names.is_empty() && !context.is_ai_use_case_without_infra(use_case_name) {
+                            return Err(format!(
+                                "UseCase '{}' has no known infra target (missing 'call')",
+                                use_case_name
+                            ));
+                        }
+                        for infra_name in infra_names {
+                            Self::register_infra_binding(
+                                context,
+                                &mut infra_bindings,
+                                infra_name,
+                                &format!("use_case '{}'", use_case_name),
+                            )?;
+                        }
+                        use_case_bindings.push(UseCaseBinding {
+                            use_case_name: use_case_name.clone(),
+                            infra_names: infra_names.to_vec(),
+                        });
+                    }
+                    // `<binary> mcp` (stdio) acts as the secret's user, or
+                    // `MCP_USER_ID`.
+                    let stdio_user = match &file.auth {
+                        McpAuth::Secret { user, .. } => *user,
+                        _ => 0,
+                    };
+                    adapter_bindings.push(AdapterBinding {
+                        adapter_name: adapter_name.clone(),
+                        on,
+                        use_cases: use_case_names,
+                        auth_infra_names: Vec::new(),
+                        requires_jwt: matches!(file.auth, McpAuth::Jwt),
+                        cors: None,
+                        mcp_stdio_user: Some(stdio_user),
                     });
                 }
                 AdapterType::Grpc(grpc_data) => {
@@ -396,6 +541,23 @@ impl CodeGen {
         context.require_git_dependency("common", "ssh://git@github.com/BH-World/common.git");
         context.require_version_dependency_with_features("tokio", "1", vec!["full"]);
         context.require_version_dependency("dotenvy", "0.15");
+        // Structured logs: `RUST_LOG` filters, `LOG_FORMAT=json` for JSON lines.
+        context.require_version_dependency("tracing", "0.1");
+        context.require_version_dependency_with_features(
+            "tracing-subscriber",
+            "0.3",
+            vec!["env-filter", "json"],
+        );
+        // `<binary> token <user_id> [days]` mints long-lived service tokens.
+        if adapter_bindings.iter().any(|a| a.requires_jwt) {
+            context.require_version_dependency("jsonwebtoken", "9");
+            context.require_version_dependency("serde_json", "1");
+        }
+        if !schedule_jobs.is_empty() {
+            context.require_version_dependency_with_features("chrono", "0.4", vec!["serde"]);
+            context.require_version_dependency("chrono-tz", "0.10");
+            context.require_version_dependency("tracing", "0.1");
+        }
         if !load_balancer_bindings.is_empty() {
             // The proxy file itself (`templates/file/load_balancer.rs`)
             // uses `axum` directly to expose its own router, independent
@@ -412,6 +574,7 @@ impl CodeGen {
             &adapter_bindings,
             &grpc_adapter_bindings,
             &load_balancer_bindings,
+            &schedule_jobs,
         )?;
 
         if dev_mode {

@@ -1,0 +1,380 @@
+{%- macro bind(var, f) -%}
+{% if f.json == "plain" %}sqlx::types::Json({{ var }}.{{ f.name }}){% elif f.json == "nullable" %}{{ var }}.{{ f.name }}.map(sqlx::types::Json){% else %}{{ var }}.{{ f.name }}{% endif %}
+{%- endmacro bind -%}
+{%- macro bind_value(f) -%}
+{% if f.json == "plain" %}sqlx::types::Json(value){% elif f.json == "nullable" %}value.map(sqlx::types::Json){% else %}value{% endif %}
+{%- endmacro bind_value -%}
+use common::{EntityId, SQLConnector, Storage, StorageListQuery, StoragePredicateOperator};
+{{ uses }}
+
+#[derive(Debug)]
+pub enum {{ error }} {
+    /// No row matched (an unknown id, or a row owned by someone else).
+    NotFound,
+    ConversionError(String),
+    DatabaseError(String),
+}
+
+impl From<sqlx::Error> for {{ error }} {
+    fn from(error: sqlx::Error) -> Self {
+        match error {
+            sqlx::Error::RowNotFound => {{ error }}::NotFound,
+            other => {{ error }}::DatabaseError(other.to_string()),
+        }
+    }
+}
+
+/// The fields a `patch_one` call changes: `None` leaves a column as is.
+/// A nullable column is `Option<Option<T>>`: `Some(None)` sets it to NULL.
+#[derive(Debug, Clone, Default)]
+pub struct {{ patch }} {
+{%- for f in data_fields %}
+    pub {{ f.name }}: Option<{{ f.rust_type }}>,
+{%- endfor %}
+}
+
+pub trait {{ trait_name }}: Storage<{{ entity }}, {{ error }}> + Send + Sync {
+    /// `update_one` restricted to the row whose `owner_field` equals
+    /// `owner`; `Ok(None)` when no such row exists for that owner.
+    fn update_one_owned(&self, id: EntityId, owner_field: &'static str, owner: i64, data: {{ entity }}) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error }}>> + Send;
+    /// `delete` restricted to the row whose `owner_field` equals `owner`;
+    /// `Ok(None)` when no such row exists for that owner.
+    fn delete_owned(&self, id: EntityId, owner_field: &'static str, owner: i64) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error }}>> + Send;
+    /// `list` sorted by `(column, descending)` pairs; `id` breaks ties.
+    fn list_sorted(&self, query: StorageListQuery, order_by: &'static [(&'static str, bool)]) -> impl std::future::Future<Output = Result<Vec<{{ entity }}>, {{ error }}>> + Send;
+    /// Inserts `data`, or updates the row with the same unique key. With
+    /// `owner`, an existing row owned by someone else is left untouched
+    /// (`Ok(None)`).
+    fn upsert_one(&self, data: {{ entity }}, owner: Option<&'static str>) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error }}>> + Send;
+    /// Updates only the columns set in `patch`. With `owner`, only that
+    /// owner's row; `Ok(None)` when no row matches.
+    fn patch_one(&self, id: EntityId, owner: Option<(&'static str, i64)>, patch: {{ patch }}) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error }}>> + Send;
+}
+
+#[derive(Clone)]
+pub struct {{ struct_name }} {
+    db: SQLConnector,
+    /// Set by `in_transaction`: every query then runs on that transaction.
+    tx: Option<TrustTx>,
+}
+
+impl {{ struct_name }} {
+    pub fn new(db: SQLConnector) -> Self {
+        Self { db, tx: None }
+    }
+}
+
+/// Runs a query on the shared transaction when there is one, on the pool
+/// otherwise.
+macro_rules! run {
+    ($self:ident, $query:expr, $fetch:ident) => {
+        match &$self.tx {
+            Some(tx) => {
+                let mut guard = tx.lock().await;
+                match guard.as_mut() {
+                    Some(conn) => $query.$fetch(&mut **conn).await,
+                    None => Err(sqlx::Error::Protocol("transaction already finished".to_string())),
+                }
+            }
+            None => $query.$fetch($self.db.pool()).await,
+        }
+    };
+}
+
+impl TrustTransactional for {{ struct_name }} {
+    async fn begin(&self) -> Result<TrustTx, sqlx::Error> {
+        crate::begin_transaction(&self.db).await
+    }
+
+    fn in_transaction(&self, tx: &TrustTx) -> Self {
+        Self { db: self.db.clone(), tx: Some(tx.clone()) }
+    }
+}
+
+impl Storage<{{ entity }}, {{ error }}> for {{ struct_name }} {
+    async fn save_one(&self, data: {{ entity }}) -> Result<{{ entity }}, {{ error }}> {
+        let query = sqlx::query_as::<_, {{ entity }}>(
+            "INSERT INTO {{ table }} ({% for f in data_fields %}{{ f.name }}{% if not loop.last %}, {% endif %}{% endfor %}) VALUES ({% for f in data_fields %}${{ loop.index }}{% if not loop.last %}, {% endif %}{% endfor %}) RETURNING {{ all_columns | join(sep=", ") }}",
+        ){% for f in data_fields %}
+            .bind({{ self::bind(var="data", f=f) }}){% endfor %};
+        run!(self, query, fetch_one).map_err({{ error }}::from)
+    }
+
+    async fn save_many(&self, data: Vec<{{ entity }}>) -> Result<Vec<{{ entity }}>, {{ error }}> {
+        if data.is_empty() {
+            return Ok(Vec::new());
+        }
+        // One round-trip (and one implicit transaction) for the whole batch:
+        // columns are sent as arrays and zipped back into rows by UNNEST.
+{%- for f in data_fields %}
+        let mut col_{{ f.name }} = Vec::with_capacity(data.len());
+{%- endfor %}
+        for item in data {
+{%- for f in data_fields %}
+            col_{{ f.name }}.push({{ self::bind(var="item", f=f) }});
+{%- endfor %}
+        }
+        let query = sqlx::query_as::<_, {{ entity }}>(
+            "INSERT INTO {{ table }} ({% for f in data_fields %}{{ f.name }}{% if not loop.last %}, {% endif %}{% endfor %}) SELECT * FROM UNNEST({% for f in data_fields %}${{ loop.index }}::{{ f.sql_type }}[]{% if not loop.last %}, {% endif %}{% endfor %}) RETURNING {{ all_columns | join(sep=", ") }}",
+        )
+{%- for f in data_fields %}
+            .bind(col_{{ f.name }})
+{%- endfor %};
+        run!(self, query, fetch_all).map_err({{ error }}::from)
+    }
+
+    async fn find_one(&self, id: EntityId) -> Result<Option<{{ entity }}>, {{ error }}> {
+        let query = sqlx::query_as::<_, {{ entity }}>(
+            "SELECT {{ all_columns | join(sep=", ") }} FROM {{ table }} WHERE {{ id_field }} = $1",
+        )
+        .bind(id);
+        run!(self, query, fetch_optional).map_err({{ error }}::from)
+    }
+
+    async fn find_many(&self, ids: Vec<EntityId>) -> Result<Vec<{{ entity }}>, {{ error }}> {
+        let query = sqlx::query_as::<_, {{ entity }}>(
+            "SELECT {{ all_columns | join(sep=", ") }} FROM {{ table }} WHERE {{ id_field }} = ANY($1)",
+        )
+        .bind(&ids);
+        run!(self, query, fetch_all).map_err({{ error }}::from)
+    }
+
+    async fn list(&self, query: StorageListQuery) -> Result<Vec<{{ entity }}>, {{ error }}> {
+        self.list_sorted(query, &[]).await
+    }
+
+    /// `NotFound` when no row has this id.
+    async fn update_one(&self, id: EntityId, data: {{ entity }}) -> Result<{{ entity }}, {{ error }}> {
+        let query = sqlx::query_as::<_, {{ entity }}>(
+            "UPDATE {{ table }} SET {% for f in data_fields %}{{ f.name }} = ${{ loop.index }}{% if not loop.last %}, {% endif %}{% endfor %} WHERE {{ id_field }} = ${{ next }} RETURNING {{ all_columns | join(sep=", ") }}",
+        ){% for f in data_fields %}
+            .bind({{ self::bind(var="data", f=f) }}){% endfor %}
+            .bind(id);
+        run!(self, query, fetch_one).map_err({{ error }}::from)
+    }
+
+    /// `NotFound` when no row has this id.
+    async fn delete(&self, id: EntityId) -> Result<{{ entity }}, {{ error }}> {
+        let query = sqlx::query_as::<_, {{ entity }}>(
+            "DELETE FROM {{ table }} WHERE {{ id_field }} = $1 RETURNING {{ all_columns | join(sep=", ") }}",
+        )
+        .bind(id);
+        run!(self, query, fetch_one).map_err({{ error }}::from)
+    }
+
+    async fn delete_many(&self, ids: Vec<EntityId>) -> Result<Vec<{{ entity }}>, {{ error }}> {
+        let query = sqlx::query_as::<_, {{ entity }}>(
+            "DELETE FROM {{ table }} WHERE {{ id_field }} = ANY($1) RETURNING {{ all_columns | join(sep=", ") }}",
+        )
+        .bind(&ids);
+        run!(self, query, fetch_all).map_err({{ error }}::from)
+    }
+}
+
+impl {{ trait_name }} for {{ struct_name }} {
+{%- if owner_columns %}
+    async fn update_one_owned(&self, id: EntityId, owner_field: &'static str, owner: i64, data: {{ entity }}) -> Result<Option<{{ entity }}>, {{ error }}> {
+        // Ownership check and write in one statement: someone else's row
+        // simply matches nothing (`None`), exactly like a missing one.
+        let sql: &'static str = match owner_field {
+{%- for o in owner_columns %}
+            "{{ o }}" => "UPDATE {{ table }} SET {% for f in data_fields %}{{ f.name }} = ${{ loop.index }}{% if not loop.last %}, {% endif %}{% endfor %} WHERE {{ id_field }} = ${{ next }} AND {{ o }} = ${{ next_owner }} RETURNING {{ all_columns | join(sep=", ") }}",
+{%- endfor %}
+            other => return Err({{ error }}::ConversionError(format!("'{}' is not an owner column of {{ table }}", other))),
+        };
+        let query = sqlx::query_as::<_, {{ entity }}>(sql)
+{%- for f in data_fields %}
+            .bind({{ self::bind(var="data", f=f) }})
+{%- endfor %}
+            .bind(id)
+            .bind(owner);
+        run!(self, query, fetch_optional).map_err({{ error }}::from)
+    }
+
+    async fn delete_owned(&self, id: EntityId, owner_field: &'static str, owner: i64) -> Result<Option<{{ entity }}>, {{ error }}> {
+        let sql: &'static str = match owner_field {
+{%- for o in owner_columns %}
+            "{{ o }}" => "DELETE FROM {{ table }} WHERE {{ id_field }} = $1 AND {{ o }} = $2 RETURNING {{ all_columns | join(sep=", ") }}",
+{%- endfor %}
+            other => return Err({{ error }}::ConversionError(format!("'{}' is not an owner column of {{ table }}", other))),
+        };
+        let query = sqlx::query_as::<_, {{ entity }}>(sql).bind(id).bind(owner);
+        run!(self, query, fetch_optional).map_err({{ error }}::from)
+    }
+{%- else %}
+    // {{ entity }} has no integer column an `owner:` could name.
+    async fn update_one_owned(&self, _id: EntityId, owner_field: &'static str, _owner: i64, _data: {{ entity }}) -> Result<Option<{{ entity }}>, {{ error }}> {
+        Err({{ error }}::ConversionError(format!("'{}' is not an owner column of {{ table }}", owner_field)))
+    }
+
+    async fn delete_owned(&self, _id: EntityId, owner_field: &'static str, _owner: i64) -> Result<Option<{{ entity }}>, {{ error }}> {
+        Err({{ error }}::ConversionError(format!("'{}' is not an owner column of {{ table }}", owner_field)))
+    }
+{%- endif %}
+
+    /// `query.predicates` is a runtime-length list, so the WHERE clause and
+    /// its binds are built dynamically. `StoragePredicate::value` is always
+    /// a `String`, so each *parameter* is cast to its column's type (`col =
+    /// $1::BIGINT`) — never the column itself (`col::text = $1`), which
+    /// would defeat every index on it. Column names (filters and sort) are
+    /// checked against the entity's columns before reaching the SQL text.
+    async fn list_sorted(&self, query: StorageListQuery, order_by: &'static [(&'static str, bool)]) -> Result<Vec<{{ entity }}>, {{ error }}> {
+        use std::fmt::Write as _;
+
+        // Hard ceiling on one page, whatever the caller asks for.
+        const MAX_LIST_LIMIT: i64 = 1000;
+
+        let predicate_count = query.predicates.len();
+        let mut sql = String::from("SELECT {{ all_columns | join(sep=", ") }} FROM {{ table }}");
+        for (i, predicate) in query.predicates.iter().enumerate() {
+            // Whitelist: only real columns ever reach the SQL text, and each
+            // one knows its Postgres type so the *parameter* is cast — the
+            // column stays bare, so its index stays usable.
+            let column_type = match predicate.field.as_str() {
+{%- for c in columns %}
+                "{{ c.name }}" => "{{ c.sql_type }}",
+{%- endfor %}
+                other => {
+                    return Err({{ error }}::ConversionError(format!(
+                        "unknown column '{}' for table {{ table }}",
+                        other
+                    )))
+                }
+            };
+            sql.push_str(if i == 0 { " WHERE " } else { " AND " });
+            let n = i + 1;
+            let _ = match predicate.operator {
+                StoragePredicateOperator::In => write!(
+                    sql,
+                    "{} = ANY(string_to_array(${}, ',')::{}[])",
+                    predicate.field, n, column_type
+                ),
+                StoragePredicateOperator::NotIn => write!(
+                    sql,
+                    "{} <> ALL(string_to_array(${}, ',')::{}[])",
+                    predicate.field, n, column_type
+                ),
+                // Pattern matching only makes sense on text.
+                StoragePredicateOperator::Like
+                | StoragePredicateOperator::ILike
+                | StoragePredicateOperator::Contains => write!(
+                    sql,
+                    "{}::TEXT {} ${}",
+                    predicate.field,
+                    predicate.operator.to_string(),
+                    n
+                ),
+                _ => write!(
+                    sql,
+                    "{} {} ${}::{}",
+                    predicate.field,
+                    predicate.operator.to_string(),
+                    n,
+                    column_type
+                ),
+            };
+        }
+        let mut separator = " ORDER BY ";
+        for (column, descending) in order_by {
+            match *column {
+                {% for c in columns %}"{{ c.name }}"{% if not loop.last %} | {% endif %}{% endfor %} => {}
+                other => {
+                    return Err({{ error }}::ConversionError(format!(
+                        "unknown column '{}' for table {{ table }}",
+                        other
+                    )))
+                }
+            }
+            let _ = write!(sql, "{}{} {}", separator, column, if *descending { "DESC" } else { "ASC" });
+            separator = ", ";
+        }
+{%- if has_id %}
+        // `id` last, so pages are stable.
+        let _ = write!(sql, "{}{}", separator, "{{ id_field }}");
+{%- endif %}
+        let _ = write!(sql, " LIMIT ${} OFFSET ${}", predicate_count + 1, predicate_count + 2);
+
+        let mut q = sqlx::query_as::<_, {{ entity }}>(sqlx::AssertSqlSafe(sql));
+        for predicate in query.predicates {
+            q = q.bind(predicate.value);
+        }
+        let q = q
+            .bind(query.limit.clamp(0, MAX_LIST_LIMIT))
+            .bind(query.offset.max(0));
+        run!(self, q, fetch_all).map_err({{ error }}::from)
+    }
+
+    async fn upsert_one(&self, data: {{ entity }}, owner: Option<&'static str>) -> Result<Option<{{ entity }}>, {{ error }}> {
+{%- if unique_key %}
+        // On a unique-key conflict the existing row takes the new values;
+        // with an owner, only when that row belongs to the same owner.
+        let sql: &'static str = match owner {
+            None => "INSERT INTO {{ table }} ({% for f in data_fields %}{{ f.name }}{% if not loop.last %}, {% endif %}{% endfor %}) VALUES ({% for f in data_fields %}${{ loop.index }}{% if not loop.last %}, {% endif %}{% endfor %}) ON CONFLICT ({{ unique_key | join(sep=", ") }}) DO UPDATE SET {% for f in upsert_fields %}{{ f }} = EXCLUDED.{{ f }}{% if not loop.last %}, {% endif %}{% endfor %} RETURNING {{ all_columns | join(sep=", ") }}",
+{%- for o in owner_columns %}
+            Some("{{ o }}") => "INSERT INTO {{ table }} ({% for f in data_fields %}{{ f.name }}{% if not loop.last %}, {% endif %}{% endfor %}) VALUES ({% for f in data_fields %}${{ loop.index }}{% if not loop.last %}, {% endif %}{% endfor %}) ON CONFLICT ({{ unique_key | join(sep=", ") }}) DO UPDATE SET {% for f in upsert_fields %}{{ f }} = EXCLUDED.{{ f }}{% if not loop.last %}, {% endif %}{% endfor %} WHERE {{ table }}.{{ o }} = EXCLUDED.{{ o }} RETURNING {{ all_columns | join(sep=", ") }}",
+{%- endfor %}
+            Some(other) => return Err({{ error }}::ConversionError(format!("'{}' is not an owner column of {{ table }}", other))),
+        };
+        let query = sqlx::query_as::<_, {{ entity }}>(sql)
+{%- for f in data_fields %}
+            .bind({{ self::bind(var="data", f=f) }})
+{%- endfor %};
+        run!(self, query, fetch_optional).map_err({{ error }}::from)
+{%- else %}
+        let _ = (data, owner);
+        Err({{ error }}::ConversionError("{{ table }} has no unique key: declare `unique: [...]` on its psql infra to upsert".to_string()))
+{%- endif %}
+    }
+
+    async fn patch_one(&self, id: EntityId, owner: Option<(&'static str, i64)>, patch: {{ patch }}) -> Result<Option<{{ entity }}>, {{ error }}> {
+        use std::fmt::Write as _;
+
+        let mut sql = String::from("UPDATE {{ table }} SET ");
+        let mut n = 0;
+{%- for f in data_fields %}
+        if patch.{{ f.name }}.is_some() {
+            n += 1;
+            let _ = write!(sql, "{}{} = ${}", if n == 1 { "" } else { ", " }, "{{ f.name }}", n);
+        }
+{%- endfor %}
+        if n == 0 {
+            // Nothing to change: answer with the row as it is.
+            let current = match owner {
+                None => self.find_one(id).await?,
+{%- if owner_columns %}
+                Some((column, value)) => self.find_one(id).await?.filter(|row| match column {
+{%- for o in owner_columns %}
+                    "{{ o }}" => row.{{ o }} == value,
+{%- endfor %}
+                    _ => false,
+                }),
+{%- else %}
+                // No integer column could hold an owner.
+                Some(_) => None,
+{%- endif %}
+            };
+            return Ok(current);
+        }
+        let _ = write!(sql, " WHERE {{ id_field }} = ${}", n + 1);
+        if let Some((column, _)) = owner {
+            const OWNER_COLUMNS: &[&str] = &[{% for o in owner_columns %}"{{ o }}"{% if not loop.last %}, {% endif %}{% endfor %}];
+            if !OWNER_COLUMNS.contains(&column) {
+                return Err({{ error }}::ConversionError(format!("'{}' is not an owner column of {{ table }}", column)));
+            }
+            let _ = write!(sql, " AND {} = ${}", column, n + 2);
+        }
+        sql.push_str(" RETURNING {{ all_columns | join(sep=", ") }}");
+
+        let mut q = sqlx::query_as::<_, {{ entity }}>(sqlx::AssertSqlSafe(sql));
+{%- for f in data_fields %}
+        if let Some(value) = patch.{{ f.name }} {
+            q = q.bind({{ self::bind_value(f=f) }});
+        }
+{%- endfor %}
+        q = q.bind(id);
+        if let Some((_, value)) = owner {
+            q = q.bind(value);
+        }
+        run!(self, q, fetch_optional).map_err({{ error }}::from)
+    }
+}

@@ -172,6 +172,9 @@ pub enum Token {
     CloseAngle,
     Quote,
     DoubleQuote,
+    Bang,
+    OpenBracket,
+    CloseBracket,
     Eof,
 }
 
@@ -194,6 +197,9 @@ impl ToString for Token {
             Token::CloseAngle => ">".to_string(),
             Token::Quote => "'".to_string(),
             Token::DoubleQuote => "\"".to_string(),
+            Token::Bang => "!".to_string(),
+            Token::OpenBracket => "[".to_string(),
+            Token::CloseBracket => "]".to_string(),
             Token::Eof => "EOF".to_string(),
         }
     }

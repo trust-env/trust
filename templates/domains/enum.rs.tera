@@ -1,0 +1,77 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+pub enum {{ name }} {
+{%- for v in variants %}
+{%- if loop.first %}
+    #[default]{% endif %}
+    #[serde(rename = "{{ v.wire }}")]
+    {{ v.ident }},
+{%- endfor %}
+}
+
+impl {{ name }} {
+    /// Every value, in declaration order.
+    pub const ALL: [{{ name }}; {{ variants | length }}] = [{% for v in variants %}{{ name }}::{{ v.ident }}{% if not loop.last %}, {% endif %}{% endfor %}];
+
+    /// The value as written on the wire and in the database.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+{%- for v in variants %}
+            {{ name }}::{{ v.ident }} => "{{ v.wire }}",
+{%- endfor %}
+        }
+    }
+}
+
+impl std::fmt::Display for {{ name }} {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for {{ name }} {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+{%- for v in variants %}
+            "{{ v.wire }}" => Ok({{ name }}::{{ v.ident }}),
+{%- endfor %}
+            other => Err(format!("'{}' is not a valid {{ name }} (expected one of: {% for v in variants %}{{ v.wire }}{% if not loop.last %}, {% endif %}{% endfor %})", other)),
+        }
+    }
+}
+{%- if sqlx %}
+
+// Stored as TEXT: encoded and decoded through its wire value.
+impl sqlx::Type<sqlx::Postgres> for {{ name }} {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <String as sqlx::Type<sqlx::Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
+        <String as sqlx::Type<sqlx::Postgres>>::compatible(ty)
+    }
+}
+
+impl sqlx::postgres::PgHasArrayType for {{ name }} {
+    fn array_type_info() -> sqlx::postgres::PgTypeInfo {
+        <String as sqlx::postgres::PgHasArrayType>::array_type_info()
+    }
+}
+
+impl sqlx::Encode<'_, sqlx::Postgres> for {{ name }} {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
+        <&str as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.as_str(), buf)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Postgres> for {{ name }} {
+    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
+        let text = <&str as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+        text.parse().map_err(Into::into)
+    }
+}
+{%- endif %}

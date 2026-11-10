@@ -22,6 +22,8 @@ pub enum InfraKind {
     /// `seed`: the infra declares a `seed:` file, applied after its table.
     Psql {
         seed: bool,
+        /// `migrations/<table>.fk.sql` exists: run once every table does.
+        foreign_keys: bool,
     },
     GrpcClient {
         target_address: String,
@@ -63,6 +65,9 @@ pub struct AdapterBinding {
     pub requires_jwt: bool,
     /// The adapter's `cors:` template, scanned for `${VAR}`s in `--dev`.
     pub cors: Option<String>,
+    /// An `mcp {}` adapter: `<binary> mcp` serves it over stdio, acting as
+    /// this user (unless `MCP_USER_ID` says otherwise).
+    pub mcp_stdio_user: Option<i64>,
 }
 
 pub struct GrpcAdapterBinding {
@@ -79,6 +84,19 @@ pub struct LoadBalancerRuntime {
     pub name: String,
     pub backend_addresses: Vec<String>,
     pub on: String,
+}
+
+/// One `"<cron>" => UseCase` of a `schedule {}` listed in the app.
+pub struct ScheduleJobRuntime {
+    /// `Schedule.UseCase`, used in logs.
+    pub name: String,
+    pub cron_text: String,
+    pub cron: crate::cron::CronMask,
+    /// IANA time zone, already validated.
+    pub tz: String,
+    pub use_case: String,
+    /// The user id runs act as.
+    pub user: i64,
 }
 
 pub struct MainFile {
@@ -122,7 +140,7 @@ impl MainFile {
         // the other.
         let infra_var = infra.infra_name.to_snake_case();
         match &infra.kind {
-            InfraKind::Psql { seed } => {
+            InfraKind::Psql { seed, .. } => {
                 let db_var = infra.infra_name.to_snake_case();
                 let env_var = Self::db_url_env_var(&infra.infra_name);
 
@@ -278,6 +296,7 @@ impl MainFile {
         adapters: &[AdapterBinding],
         grpc_adapters: &[GrpcAdapterBinding],
         load_balancers: &[LoadBalancerRuntime],
+        schedule_jobs: &[ScheduleJobRuntime],
     ) -> Result<(), String> {
         let mut lib_items: Vec<String> = Vec::new();
         for infra in infras {
@@ -302,6 +321,10 @@ impl MainFile {
             lib_items.push("RoundRobinProxy".to_string());
             lib_items.push("load_balancer_router".to_string());
         }
+        if !schedule_jobs.is_empty() {
+            lib_items.push("TrustCron".to_string());
+            lib_items.push("run_scheduled_job".to_string());
+        }
         let lib_items: Vec<&str> = lib_items.iter().map(String::as_str).collect();
         let crate_ident = package_name.replace('-', "_");
 
@@ -322,10 +345,59 @@ impl MainFile {
             blocks.push(lb_code);
             task_vars.extend(lb_task_vars);
         }
+        for (i, job) in schedule_jobs.iter().enumerate() {
+            let var = format!("schedule_job_{}_task", i);
+            let mut context = Context::new();
+            context.insert("var", &var);
+            context.insert("name_literal", &format!("{:?}", job.name));
+            context.insert("cron_text", &job.cron_text);
+            context.insert("cron", &serde_json::json!({
+                "minutes": format!("{:#x}", job.cron.minutes),
+                "hours": format!("{:#x}", job.cron.hours),
+                "days": format!("{:#x}", job.cron.days),
+                "months": format!("{:#x}", job.cron.months),
+                "weekdays": format!("{:#x}", job.cron.weekdays),
+                "any_day": job.cron.any_day,
+                "any_weekday": job.cron.any_weekday,
+            }));
+            context.insert("tz_literal", &format!("{:?}", job.tz));
+            context.insert("use_case", &job.use_case.to_snake_case());
+            context.insert("user", &job.user);
+            blocks.push(render("file/main/schedule_job.rs.tera", &context));
+            task_vars.push(var);
+        }
+
+        // Foreign keys reference other tables: added once all exist.
+        let mut foreign_keys = String::new();
+        for infra in infras {
+            if let InfraKind::Psql { foreign_keys: true, .. } = infra.kind {
+                let mut context = Context::new();
+                context.insert("file", &migration::foreign_keys_file_name(&infra.entity_name));
+                context.insert("db_var", &infra.infra_name.to_snake_case());
+                foreign_keys.push_str(&render("file/main/migration.rs.tera", &context));
+            }
+        }
+
+        // `<binary> mcp`: the first MCP adapter over stdio instead of servers.
+        let mcp_stdio = adapters.iter().find_map(|a| {
+            a.mcp_stdio_user.map(|user| {
+                serde_json::json!({
+                    "name": a.adapter_name,
+                    "params": a.use_cases.iter().map(|u| u.to_snake_case()).collect::<Vec<_>>(),
+                    "user": user,
+                })
+            })
+        });
 
         let mut context = Context::new();
+        context.insert("mcp_stdio", &mcp_stdio);
+        context.insert("has_schedules", &!schedule_jobs.is_empty());
+        context.insert("token_command", &adapters.iter().any(|a| a.requires_jwt));
         context.insert("lib_use", &use_statement(&crate_ident, &lib_items));
-        context.insert("infras", &infras.iter().map(Self::gen_infra).collect::<String>());
+        context.insert(
+            "infras",
+            &(infras.iter().map(Self::gen_infra).collect::<String>() + &foreign_keys),
+        );
         context.insert("use_cases", &use_cases.iter().map(Self::gen_use_case).collect::<String>());
         context.insert("blocks", &blocks);
         context.insert("task_vars", &task_vars);

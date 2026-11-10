@@ -1,9 +1,9 @@
 use crate::{
     lexer::{Keyword, Token},
     parser::{
-        AdapterService, AdapterType, AllowedType, Ast, AuthRequirement, GrpcAdapterService,
-        GrpcRpc, HttpAdapterService, HttpMethod, HttpRoute, Parser, PermissionRequirement,
-        StatusMapping,
+        AdapterService, AdapterType, AllowedType, Ast, AuthRequirement, EventsEndpoint,
+        GrpcAdapterService, GrpcRpc, HttpAdapterService, HttpMethod, HttpRoute, McpAdapterService,
+        McpTool, Parser, PermissionRequirement, SecretRequirement, StatusMapping,
     },
 };
 
@@ -135,6 +135,9 @@ impl Parser {
         let mut infra = None;
         let mut target = None;
         let mut action = None;
+        let mut secret = None;
+        let mut header = None;
+        let mut user = 0;
 
         loop {
             match self.next_token() {
@@ -179,11 +182,39 @@ impl Parser {
                         return Err("Expected ':' after 'action'".to_string());
                     }
                 },
+                Some(Token::Identifier(s)) if s == "secret" || s == "header" => {
+                    match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::StringLiteral(v))) => {
+                            if s == "secret" { secret = Some(v) } else { header = Some(v) }
+                        }
+                        _ => {
+                            self.reset(pos);
+                            return Err(format!("Expected ': \"...\"' after '{}'", s));
+                        }
+                    }
+                }
+                Some(Token::Identifier(s)) if s == "user" => match (self.next_token(), self.next_token()) {
+                    (Some(Token::Colon), Some(Token::Identifier(id))) if id.parse::<i64>().is_ok() => {
+                        user = id.parse().unwrap_or(0)
+                    }
+                    _ => {
+                        self.reset(pos);
+                        return Err("Expected ': <user id>' after 'user'".to_string());
+                    }
+                },
                 _ => {
                     self.reset(pos);
                     return Err("Failed to parse 'auth' block".to_string());
                 }
             }
+        }
+
+        if let Some(secret) = secret {
+            if infra.is_some() || target.is_some() || action.is_some() {
+                self.reset(pos);
+                return Err("'auth' uses either 'secret' or 'infra'/'target'/'action', not both".to_string());
+            }
+            return Ok(AuthRequirement::Secret(SecretRequirement { secret, header, user }));
         }
 
         match (infra, target, action) {
@@ -336,9 +367,36 @@ impl Parser {
         let mut routes = Vec::new();
         let mut on = None;
         let mut cors = None;
+        let mut envelope = true;
+        let mut events = None;
         loop {
             match self.next_token() {
                 Some(Token::CloseBrace) => break,
+                Some(Token::Identifier(k)) if k == "envelope" => match (self.next_token(), self.next_token()) {
+                    (Some(Token::Colon), Some(Token::Identifier(v))) if v == "true" || v == "false" => {
+                        envelope = v == "true"
+                    }
+                    _ => return Err("Expected ': true' or ': false' after 'envelope'".to_string()),
+                },
+                Some(Token::Identifier(k)) if k == "events" => {
+                    let path = match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::StringLiteral(path))) => path,
+                        _ => return Err("Expected ': \"/path\"' after 'events'".to_string()),
+                    };
+                    let pos = self.current;
+                    let requires_user = match (self.next_token(), self.next_token(), self.next_token()) {
+                        (Some(Token::Keyword(Keyword::Auth)), Some(Token::Colon), Some(Token::Identifier(v)))
+                            if v == "required" =>
+                        {
+                            true
+                        }
+                        _ => {
+                            self.reset(pos);
+                            false
+                        }
+                    };
+                    events = Some(EventsEndpoint { path, requires_user });
+                }
                 Some(Token::Keyword(Keyword::Routes)) => {
                     self.revert(1);
                     routes = self.try_http_routes_block()?;
@@ -370,7 +428,7 @@ impl Parser {
                 }
             }
         }
-        Ok(HttpAdapterService { routes, on, cors })
+        Ok(HttpAdapterService { routes, on, cors, envelope, events })
     }
 
     /// Parses `rpc Name { input: X output: Y use_case: Z }` — the gRPC
@@ -495,6 +553,77 @@ impl Parser {
         Ok(GrpcAdapterService { rpcs, on })
     }
 
+    /// Parses `mcp { on: "..." auth ... instructions: "..." tools { ... } }`
+    /// (`mcp`, `tools`, `instructions`, `description` are contextual).
+    fn try_mcp_block(&mut self) -> Result<McpAdapterService, String> {
+        match (self.next_token(), self.next_token()) {
+            (Some(Token::Identifier(word)), Some(Token::OpenBrace)) if word == "mcp" => {}
+            _ => return Err("Expected 'mcp {' block".to_string()),
+        }
+        let mut service = McpAdapterService { on: None, auth: None, instructions: None, tools: Vec::new() };
+        loop {
+            match self.next_token() {
+                Some(Token::CloseBrace) => break,
+                Some(Token::Comma) => continue,
+                Some(Token::Keyword(Keyword::On)) => match (self.next_token(), self.next_token()) {
+                    (Some(Token::Colon), Some(Token::StringLiteral(address))) => service.on = Some(address),
+                    _ => return Err("Expected ': \"<address>\"' after 'on' in 'mcp'".to_string()),
+                },
+                Some(Token::Keyword(Keyword::Auth)) => {
+                    self.revert(1);
+                    service.auth = Some(self.try_auth_block()?);
+                }
+                Some(Token::Identifier(word)) if word == "instructions" => {
+                    match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::StringLiteral(text))) => service.instructions = Some(text),
+                        _ => return Err("Expected ': \"...\"' after 'instructions'".to_string()),
+                    }
+                }
+                Some(Token::Identifier(word)) if word == "tools" => {
+                    if self.next_token() != Some(Token::OpenBrace) {
+                        return Err("Expected '{' after 'tools'".to_string());
+                    }
+                    loop {
+                        let name = match self.next_token() {
+                            Some(Token::CloseBrace) => break,
+                            Some(Token::Comma) => continue,
+                            Some(Token::Identifier(name)) => name,
+                            Some(Token::Keyword(k)) => k.to_string(),
+                            other => return Err(format!("Expected a tool name in 'tools', got {:?}", other)),
+                        };
+                        if self.next_token() != Some(Token::OpenBrace) {
+                            return Err(format!("Expected '{{' after tool '{}'", name));
+                        }
+                        let mut use_case = None;
+                        let mut description = None;
+                        loop {
+                            match self.next_token() {
+                                Some(Token::CloseBrace) => break,
+                                Some(Token::Comma) => continue,
+                                Some(Token::Keyword(Keyword::UseCase)) => match (self.next_token(), self.next_token()) {
+                                    (Some(Token::Colon), Some(Token::Identifier(uc))) => use_case = Some(uc),
+                                    _ => return Err(format!("Expected ': <UseCase>' in tool '{}'", name)),
+                                },
+                                Some(Token::Identifier(k)) if k == "description" => match (self.next_token(), self.next_token()) {
+                                    (Some(Token::Colon), Some(Token::StringLiteral(text))) => description = Some(text),
+                                    _ => return Err(format!("Expected ': \"...\"' after 'description' in tool '{}'", name)),
+                                },
+                                other => return Err(format!("Unexpected {:?} in tool '{}' (expected use_case, description)", other, name)),
+                            }
+                        }
+                        let use_case = use_case.ok_or(format!("tool '{}' must declare 'use_case'", name))?;
+                        if service.tools.iter().any(|t| t.name == name) {
+                            return Err(format!("tool '{}' is declared twice", name));
+                        }
+                        service.tools.push(McpTool { name, use_case, description });
+                    }
+                }
+                other => return Err(format!("Unexpected {:?} in 'mcp' block (expected on, auth, instructions, tools)", other)),
+            }
+        }
+        Ok(service)
+    }
+
     pub(super) fn try_adapter_service(&mut self) -> Result<Ast, String> {
         match (
             self.next_token(),
@@ -512,18 +641,20 @@ impl Parser {
                         routes: vec![],
                         on: None,
                         cors: None,
+                        envelope: true,
+                        events: None,
                     }),
                 })),
                 _ => {
                     self.revert(1);
                     let pos = self.current;
-                    let is_grpc = matches!(self.next_token(), Some(Token::Keyword(Keyword::Grpc)));
+                    let first = self.next_token();
                     self.reset(pos);
 
-                    let adapter_type = if is_grpc {
-                        AdapterType::Grpc(self.try_grpc_block()?)
-                    } else {
-                        AdapterType::Http(self.try_http_block()?)
+                    let adapter_type = match first {
+                        Some(Token::Keyword(Keyword::Grpc)) => AdapterType::Grpc(self.try_grpc_block()?),
+                        Some(Token::Identifier(word)) if word == "mcp" => AdapterType::Mcp(self.try_mcp_block()?),
+                        _ => AdapterType::Http(self.try_http_block()?),
                     };
 
                     match self.next_token() {

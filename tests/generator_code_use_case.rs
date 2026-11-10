@@ -110,7 +110,8 @@ fn code_infras_become_fields_generic_for_storage_concrete_for_http_clients() {
     let dir = tempfile::tempdir().unwrap();
     let use_case = generate(&shop_tr(dir.path(), CHECKOUT_BODY)).read("main/src/applications/checkout_use_case.rs");
     assert!(use_case.contains("pub struct CheckoutUseCase<S0>"), "{use_case}");
-    assert!(use_case.contains("S0: CartLineStorage,"), "{use_case}");
+    // psql storages can also open transactions from the body.
+    assert!(use_case.contains("S0: CartLineStorage + TrustTransactional,"), "{use_case}");
     assert!(use_case.contains("pub cart_infra: S0,"), "{use_case}");
     assert!(use_case.contains("pub payment_api: PaymentApiClient,"), "{use_case}");
     assert!(use_case.contains("pub fn new(cart_infra: S0, payment_api: PaymentApiClient)"), "{use_case}");

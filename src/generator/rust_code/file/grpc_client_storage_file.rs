@@ -196,6 +196,22 @@ impl GrpcClientStorageFile {
         context.insert("client_module", &client_module);
         context.insert("service_name", &self.service_name);
         context.insert("methods_code", &self.gen_methods_code());
+        #[derive(serde::Serialize)]
+        struct PatchFieldView {
+            name: String,
+            rust_type: String,
+        }
+        let patch_fields: Vec<PatchFieldView> = self
+            .entity
+            .fields
+            .iter()
+            .filter(|f| f.name != "id")
+            .map(|f| PatchFieldView {
+                name: f.name.clone(),
+                rust_type: f.field_type.to_call_string(Vec::new()),
+            })
+            .collect();
+        context.insert("patch_fields", &patch_fields);
         let code = render("file/grpc_client_storage/client.rs.tera", &context);
 
         self.rust_file

@@ -46,6 +46,17 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
     let mut use_case_names: HashSet<String> = HashSet::new();
     let mut infra_names: HashSet<String> = HashSet::new();
 
+    // A `schedule` listed in `run {}` brings in the use cases it runs.
+    let mut schedule_names: HashSet<String> = HashSet::new();
+    for name in &adapter_names {
+        if let Some(schedule) = find_schedule(asts, name) {
+            schedule_names.insert(name.clone());
+            for job in &schedule.jobs {
+                use_case_names.insert(job.use_case.clone());
+            }
+        }
+    }
+
     for adapter_name in &adapter_names {
         let Some(adapter) = find_adapter(asts, adapter_name) else {
             continue;
@@ -62,6 +73,11 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
             AdapterType::Grpc(grpc) => {
                 for rpc in &grpc.rpcs {
                     use_case_names.insert(rpc.use_case.clone());
+                }
+            }
+            AdapterType::Mcp(mcp) => {
+                for tool in &mcp.tools {
+                    use_case_names.insert(tool.use_case.clone());
                 }
             }
         }
@@ -102,6 +118,18 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
         }
     }
 
+    // Foreign keys need the referenced tables in the same app.
+    let mut pending: Vec<String> = infra_names.iter().cloned().collect();
+    while let Some(infra_name) = pending.pop() {
+        if let Some(InfraService { service_type: Storage(Psql(psql)), .. }) = find_infra(asts, &infra_name) {
+            for reference in &psql.references {
+                if infra_names.insert(reference.infra.clone()) {
+                    pending.push(reference.infra.clone());
+                }
+            }
+        }
+    }
+
     for infra_name in &infra_names {
         let Some(infra) = find_infra(asts, infra_name) else {
             continue;
@@ -133,6 +161,7 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
         let referenced_types: Vec<&AllowedType> = match decl {
             TypeDeclaration::Struct(s) => s.fields.iter().map(|f| &f.field_type).collect(),
             TypeDeclaration::TypeAlias(a) => vec![&a.aliased_type],
+            TypeDeclaration::Enum(_) => vec![],
         };
         for allowed in referenced_types {
             let mut referenced = HashSet::new();
@@ -147,12 +176,13 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
 
     asts.iter()
         .filter(|ast| match ast {
-            Ast::Import(_) | Ast::Plugin(_) => true,
+            Ast::Import(_) | Ast::Plugin(_) | Ast::Config(_) => true,
             Ast::App(a) => a.name == app.name,
             Ast::Adapter(a) => adapter_names.contains(&a.name),
             Ast::UseCase(u) => use_case_names.contains(&u.name),
             Ast::Infra(i) => infra_names.contains(&i.name),
             Ast::TypeDecl(t) => type_names.contains(type_decl_name(t)),
+            Ast::Schedule(s) => schedule_names.contains(&s.name),
         })
         .cloned()
         .collect()
@@ -163,21 +193,25 @@ fn collect_defined_type_name(allowed: &AllowedType, out: &mut HashSet<String>) {
         AllowedType::DefinedType(name) => {
             out.insert(name.clone());
         }
-        AllowedType::Option(inner) => collect_defined_type_name(inner, out),
+        AllowedType::Option(inner) | AllowedType::List(inner) => collect_defined_type_name(inner, out),
         _ => {}
     }
 }
 
 fn type_decl_name(t: &TypeDeclaration) -> &str {
-    match t {
-        TypeDeclaration::Struct(s) => &s.name,
-        TypeDeclaration::TypeAlias(a) => &a.name,
-    }
+    t.name()
 }
 
 fn find_adapter<'a>(asts: &'a [Ast], name: &str) -> Option<&'a AdapterService> {
     asts.iter().find_map(|ast| match ast {
         Ast::Adapter(a) if a.name == name => Some(a),
+        _ => None,
+    })
+}
+
+fn find_schedule<'a>(asts: &'a [Ast], name: &str) -> Option<&'a crate::parser::ScheduleDeclaration> {
+    asts.iter().find_map(|ast| match ast {
+        Ast::Schedule(s) if s.name == name => Some(s),
         _ => None,
     })
 }
@@ -229,6 +263,8 @@ mod tests {
             adapter_type: AdapterType::Http(HttpAdapterService {
                 on: Some("0.0.0.0:8080".to_string()),
                 cors: None,
+                envelope: true,
+                events: None,
                 routes: vec![HttpRoute {
                     method: HttpMethod::Get,
                     path: "/x".to_string(),
@@ -272,6 +308,9 @@ mod tests {
             filters: vec![],
             owner: None,
             code: None,
+            order_by: vec![],
+            transaction: false,
+            notify: None,
         })
     }
 
@@ -279,8 +318,8 @@ mod tests {
         Ast::Infra(InfraService {
             name: name.to_string(),
             service_type: InfraServiceType::Storage(StorageType::Psql(PsqlInfraService {
-                seed: None,
                 entity: AllowedType::DefinedType(entity.to_string()),
+                ..Default::default()
             })),
         })
     }

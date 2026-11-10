@@ -14,23 +14,15 @@
 
 ## `filters` Coverage
 
-- **Equality only.** Every `filters {}` entry becomes a
-  `StoragePredicateOperator::Eq` predicate — there's no syntax for
-  `>`/`<`/`!=`/`LIKE`/`IN`/etc.
-- **AND-only, no OR.** Multiple `filters {}` entries all apply together
-  (`WHERE a = X AND b = Y`) — there's no way to express alternatives.
-- **Only valid on a `list`-bound primary call.** `find_many` (which also
-  takes a collection of some kind — a list of IDs) doesn't accept
-  `filters {}`, only `list`.
-- **Only on the use case's own `list` predicates**, not composable with a
-  route's own query-string parameters or anything outside `input.<field>`
-  — the right-hand side must reference an existing input field, full stop.
-- No way to filter on a field of a *different* type than the one declared
-  on `input` — the guessed-input path always matches the entity field's
-  type exactly; an explicit `input` with a mismatched type for that field
-  will still compile (the predicate's value is always `.to_string()`'d)
-  but may not compare correctly against the stored column depending on
-  its actual SQL type.
+- **AND-only, no OR.** Every `filters {}` line applies together — there's no
+  way to express alternatives (`a = X OR b = Y`).
+- **No `IS NULL`.** A filter can't select rows where a nullable column is
+  empty.
+- `in` lists travel as one comma-separated string: a value containing a
+  comma can't be matched with `in`.
+- Only on a `list` primary call (`find_many` takes ids, not filters), and
+  only on scalar columns (not JSONB lists/structs).
+- `today()` without a zone is the UTC date.
 
 ## `s3` / `blob` Coverage
 
@@ -125,35 +117,30 @@
 - `code {}` error variants always carry a `String` payload.
 - `RawRequest` is HTTP-only, can't be combined with path parameters, and
   reads the body as UTF-8 text (no binary uploads).
-- `http_client` speaks JSON only, and every header is static per process
-  (no per-request headers).
+- `http_client`'s configured headers are static per process; per-request
+  headers (an OAuth token) go through `request(...)` + `send_raw(...)`.
 
 ## Migrations
 
-- Additive only: a new field becomes a new (nullable) column, but renamed,
-  removed or retyped fields are left untouched in the database.
-- Only scalar and `Option<scalar>` fields can be stored — a field whose
-  type is another struct is a codegen error on a `psql` entity.
-- No foreign keys or unique constraints are generated. Indexes are only
-  generated for the columns generated queries filter on (`filters {}`,
-  `owner:` lists, `auth {}` permission lookups); a `code {}` use case's own
-  predicates aren't indexed.
+- Added fields become new (nullable) columns; `renamed {}` and `dropped`
+  handle renames and removals. **Retyped** fields are not migrated: change
+  the column type by hand (`ALTER TABLE ... ALTER COLUMN ... TYPE`).
+- Foreign keys are only generated toward another `psql` infra's `id`, and
+  need both tables in the same database.
 - Indexes are created with a plain `CREATE INDEX IF NOT EXISTS` at startup,
   which blocks writes to that table while the index builds — on a large
   existing table, create it `CONCURRENTLY` by hand before deploying.
 - `seed:` files re-run on every startup; they must be idempotent.
+- Each `psql` infra opens its own connection pool (from its own
+  `<INFRA>_DB_URL`), even when several point to the same database.
 
 ## HTTP Status Mapping
 
-- `delete`/`update_one` on an id that doesn't exist fail inside the storage
-  (`RETURNING` finds no row) and surface as a `StorageError`, so the route
-  answers `500` rather than `404`. `owner:` use cases are the exception:
-  their owner-checked writes report a missing row as `NotFound`.
-
 - `NotFound` and `StorageError` always map to `404`/`500` respectively and
-  **cannot be overridden** by a route's `status {}` block, even if you write
-  an explicit `NotFound -> 400` entry — the generated code emits the
-  hardcoded arms unconditionally.
+  **cannot be overridden** by a route's `status {}` block.
+- A database constraint violation (unique key, foreign key) is a
+  `StorageError` (`500`) unless the call maps `DatabaseError` in its
+  `errors {}` block.
 
 ## Load Balancer Targets
 
@@ -164,11 +151,10 @@
 
 ## `Regex<...>` Type Semantics
 
-- `Regex<...>` syntax exists as a declared type form.
-- It compiles down to a plain `String` field — the pattern is discarded at
-  codegen and no runtime validator is ever generated or enforced.
-- The pattern itself is also restricted at the lexer level to a single
-  alphanumeric/`_` word — real regex metacharacters break lexing.
+- Validation happens when JSON / query strings are decoded. Values built in
+  `code {}` bodies or read from the database are not re-checked.
+- `List<Regex<...>>` items and `Option<Regex<...>>` fields of a `patch_one`
+  input are not validated.
 
 ## AI Provider Support
 
@@ -193,12 +179,28 @@
 
 ## CLI / Process Behavior
 
-- A missing or unreadable `.tr` file path causes a Rust `panic!` (process
-  exit code 101), not the same clean `eprintln!` + `exit(1)` path used for
-  every lex/parse/plugin/codegen error.
-- A successful compile currently prints the full lexed token stream and the
-  full parsed AST to stdout unconditionally — this isn't gated by `--dev` or
-  any verbosity flag, and there's no way to suppress it today.
-- `./out` (the generation target, currently hardcoded and not
-  flag-configurable) is fully deleted and recreated on every run — there is
-  no incremental generation and no way to preserve hand-edits.
+- The output directory is fully deleted and recreated on every run — there
+  is no incremental generation and no way to preserve hand-edits.
+- Several `.tr` files passed in one invocation are compiled one after the
+  other into the same output directory: the last one wins.
+
+## Schedules
+
+- Scheduled runs build their input with `Default::default()`; a use case
+  needing real arguments must read them itself (from storage, settings).
+- A schedule runs inside one process: with several replicas of the same app,
+  every replica runs every job.
+
+## MCP Adapter
+
+- Tools only (no MCP resources, prompts or server-initiated notifications);
+  `GET /mcp` (a server-to-client stream) is not offered.
+- `<binary> mcp` serves the first `mcp {}` adapter of the app over stdio.
+- The HTTP transport doesn't check the `Origin` header: bind it to
+  `127.0.0.1` or put it behind auth.
+
+## `--emit-ts` / `--emit-openapi`
+
+- Only HTTP adapters are described (not gRPC or MCP).
+- Schemas are inlined (no shared `components/schemas`).
+

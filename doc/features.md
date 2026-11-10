@@ -250,7 +250,27 @@ Everything a typical user-facing app needs beyond CRUD, all documented in
 - **Webhooks**: the built-in `RawRequest` input gives a `code` use case the
   raw body and headers, e.g. to verify an HMAC signature.
 
-## 14. Dev Mode Artifacts
+## 14. Backend Features for Real Apps
+
+Everything a small product backend needs, declared in `.tr` (details in
+[keywords.md](keywords.md)):
+
+- Types: `List<T>`, `Json`, `Date`, `Time`, `enum`, validated `Regex<...>`,
+  nested structs stored as JSONB.
+- Queries: filter operators (`>=`, `in`, `contains`, `now()`,
+  `today("Europe/Paris")`, ...), `order_by`, optional paging.
+- Writes: `patch_one`, `upsert_one`, `unique` keys, foreign keys, indexes,
+  column renames and drops, `transaction: true`.
+- Logic: `code {}` bodies sharing code through `include`.
+- Time: `schedule {}` cron jobs with time zones.
+- HTTP: shared-secret routes, long-lived service tokens (`<binary> token`),
+  Server-Sent Events (`events:`), `/health`, structured logs, camelCase
+  JSON (`config {}`), unwrapped responses (`envelope: false`), resilient
+  `http_client` (retries, timeouts, text and form bodies).
+- Agents: `mcp {}` adapters expose use cases as MCP tools.
+- Clients: `--emit-ts` (typed TypeScript client) and `--emit-openapi`.
+
+## 15. Dev Mode Artifacts
 
 What it does:
 - Adds a live `GET /app` HTML docs route to every HTTP adapter (method,
@@ -262,7 +282,7 @@ What it does:
 How to use:
 - Run with `--dev`. Full defaulting rules: [cli.md](cli.md#dev-mode---dev).
 
-## 15. Scenarios and E2E Workflows
+## 16. Scenarios and E2E Workflows
 
 What it does:
 - Demonstrates complete, live-executed workflows (not just compile checks):
@@ -281,8 +301,6 @@ How to use:
 
 - `./out` is fully wiped (`remove_dir_all` + `create_dir_all`) on **every**
   compile — never hand-edit generated code and expect it to survive.
-- A successful compile currently prints the full token stream and full AST
-  to stdout unconditionally — expect noisy output, this isn't a `--dev`-only
-  thing and isn't suppressible today.
-- A missing/unreadable `.tr` file path causes a Rust panic (exit code 101),
-  not the clean `exit(1)` every other error path uses.
+- Private dependencies (`common`, `auth`, ...) come from BH-World over SSH;
+  `--vendor=<dir>` copies local checkouts into the output so it builds
+  without SSH (Docker, CI).

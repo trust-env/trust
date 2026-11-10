@@ -1,0 +1,39 @@
+//! Database transactions shared across `psql` storages: a use case with
+//! `transaction: true` (or a `code {}` body) begins one, rebinds its
+//! storages to it with `in_transaction`, and commits or rolls back.
+//! Every storage taking part must point to the same database.
+
+/// A transaction shared by several storages. `None` once committed or
+/// rolled back.
+pub type TrustTx = std::sync::Arc<tokio::sync::Mutex<Option<sqlx::Transaction<'static, sqlx::Postgres>>>>;
+
+/// Implemented by every `psql` storage.
+pub trait TrustTransactional: Sized {
+    /// Starts a transaction on this storage's database.
+    fn begin(&self) -> impl std::future::Future<Output = Result<TrustTx, sqlx::Error>> + Send;
+    /// A copy of this storage whose queries all run inside `tx`.
+    fn in_transaction(&self, tx: &TrustTx) -> Self;
+}
+
+pub async fn begin_transaction(db: &common::SQLConnector) -> Result<TrustTx, sqlx::Error> {
+    let tx = db.pool().begin().await?;
+    Ok(std::sync::Arc::new(tokio::sync::Mutex::new(Some(tx))))
+}
+
+/// Commits `tx` (a no-op if it already ended).
+pub async fn commit_transaction(tx: &TrustTx) -> Result<(), sqlx::Error> {
+    let pending = tx.lock().await.take();
+    match pending {
+        Some(tx) => tx.commit().await,
+        None => Ok(()),
+    }
+}
+
+/// Rolls `tx` back (a no-op if it already ended).
+pub async fn rollback_transaction(tx: &TrustTx) -> Result<(), sqlx::Error> {
+    let pending = tx.lock().await.take();
+    match pending {
+        Some(tx) => tx.rollback().await,
+        None => Ok(()),
+    }
+}

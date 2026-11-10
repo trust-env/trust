@@ -29,6 +29,27 @@ pub struct ResolvedAuth {
     pub action: String,
 }
 
+/// `auth { secret: ... }`: the request must carry a shared secret.
+pub struct ResolvedSecret {
+    /// Rust expression producing the expected secret (`${VAR}` resolved).
+    pub value_expr: String,
+    /// Lowercase header name; `None` means `Authorization: Bearer <secret>`.
+    pub header: Option<String>,
+    /// The user id the request acts as.
+    pub user: i64,
+}
+
+/// Adapter-wide settings of an `http {}` block.
+pub struct HttpOptions {
+    pub dev_mode: bool,
+    pub cors: Option<String>,
+    /// `false`: responses are the entity / list itself, not `{"task": ...}`.
+    pub envelope: bool,
+    pub events: Option<crate::parser::EventsEndpoint>,
+    /// `config { json_case: "camel" }`.
+    pub json_camel: bool,
+}
+
 pub struct HttpRouteBinding {
     pub method: HttpMethod,
     pub path: String,
@@ -51,9 +72,15 @@ pub struct HttpRouteBinding {
     /// couldn't be resolved (shouldn't normally happen by the time routes
     /// are generated, but docs are best-effort, not load-bearing).
     pub input_fields: Vec<(String, String)>,
+    /// Serde rules of input fields that need one, re-applied to the
+    /// path/body structs a split input is decoded through.
+    pub input_serde: Vec<(String, crate::generator::FieldSerde)>,
     pub output_entity: String,
     pub output_fields: Vec<(String, String)>,
     pub output_is_list: bool,
+    /// The single field CRUD outputs wrap their entity in (`task`,
+    /// `tasks`), dropped when the adapter has `envelope: false`.
+    pub output_wrapper_field: Option<String>,
     /// Names of `:name` segments captured from the route path — these
     /// fields of the use case's input come from the URL, not the JSON body.
     pub path_params: Vec<String>,
@@ -65,12 +92,15 @@ pub struct HttpRouteBinding {
     pub raw_input: bool,
     /// Only the permission form (`auth { infra target action }`).
     pub auth: Option<ResolvedAuth>,
+    /// Only the shared-secret form (`auth { secret ... }`).
+    pub secret: Option<ResolvedSecret>,
 }
 
 #[derive(Serialize)]
 struct StructFieldView {
     name: String,
     field_type: String,
+    serde: crate::generator::FieldSerde,
 }
 
 enum InputExtraction<'a> {
@@ -92,6 +122,7 @@ pub struct HttpAdapterFile {
     routes_dir: PathBuf,
     dev_mode: bool,
     cors: Option<String>,
+    options: HttpOptions,
     file: File,
 }
 
@@ -99,10 +130,11 @@ impl HttpAdapterFile {
     pub fn new(
         name: String,
         routes: Vec<HttpRouteBinding>,
-        dev_mode: bool,
-        cors: Option<String>,
+        options: HttpOptions,
         folder: PathBuf,
     ) -> Result<Self, String> {
+        let dev_mode = options.dev_mode;
+        let cors = options.cors.clone();
         let file_stem = name.to_snake_case();
         let routes_dir = folder.join(&file_stem);
         create_dir_all(&routes_dir)
@@ -118,7 +150,29 @@ impl HttpAdapterFile {
             routes_dir,
             dev_mode,
             cors,
+            options,
         })
+    }
+
+    /// The output a route's handler answers with: the use case's output,
+    /// or (with `envelope: false`) the entity / list it wraps.
+    fn response_type(&self, route: &HttpRouteBinding) -> (String, Option<String>) {
+        match (&route.output_wrapper_field, self.options.envelope) {
+            (Some(field), false) => {
+                let entity = if route.output_is_list {
+                    format!("Vec<{}>", route.output_entity)
+                } else {
+                    route.output_entity.clone()
+                };
+                (entity, Some(field.clone()))
+            }
+            _ => (route.output_type_name.clone(), None),
+        }
+    }
+
+    /// `GET /health` unless a declared route already uses that path.
+    fn has_health_route(&self) -> bool {
+        !self.routes.iter().any(|r| r.path == "/health")
     }
 
     fn unique_bindings(&self) -> Vec<&HttpRouteBinding> {
@@ -185,7 +239,7 @@ impl HttpAdapterFile {
 
     fn gen_main_imports(&self) -> String {
         let mut axum_fns: Vec<&str> = self.routes.iter().map(|r| r.method.as_axum_fn()).collect();
-        if self.dev_mode {
+        if self.dev_mode || self.has_health_route() || self.options.events.is_some() {
             axum_fns.push("get");
         }
         axum_fns.sort();
@@ -307,6 +361,9 @@ impl HttpAdapterFile {
         context.insert("where_clause", &self.where_clause());
         context.insert("route_lines", &route_lines);
         context.insert("dev_mode", &self.dev_mode);
+        context.insert("health", &self.has_health_route());
+        context.insert("events", &self.options.events.is_some());
+        context.insert("events_path", &self.options.events.as_ref().map(|e| e.path.clone()).unwrap_or_default());
         context.insert(
             "cors_expr",
             &self.cors.as_deref().map(env_template::to_rust_expr),
@@ -314,6 +371,11 @@ impl HttpAdapterFile {
         let mut code = render("file/http_adapter/router.rs.tera", &context);
         if self.cors.is_some() {
             code.push_str(&render("file/http_adapter/cors.rs.tera", &Context::new()));
+        }
+        if let Some(events) = &self.options.events {
+            let mut context = Context::new();
+            context.insert("requires_user", &events.requires_user);
+            code.push_str(&render("file/http_adapter/events.rs.tera", &context));
         }
         code
     }
@@ -353,12 +415,18 @@ impl HttpAdapterFile {
         format!("{}Body", route.use_case_name)
     }
 
-    fn struct_field_views(fields: &[&(String, String)]) -> Vec<StructFieldView> {
+    fn struct_field_views(route: &HttpRouteBinding, fields: &[&(String, String)]) -> Vec<StructFieldView> {
         fields
             .iter()
             .map(|(name, ty)| StructFieldView {
                 name: name.clone(),
                 field_type: ty.clone(),
+                serde: route
+                    .input_serde
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, s)| s.clone())
+                    .unwrap_or_default(),
             })
             .collect()
     }
@@ -371,12 +439,14 @@ impl HttpAdapterFile {
         route: &HttpRouteBinding,
         path_fields: &[&(String, String)],
         body_fields: &[&(String, String)],
+        json_camel: bool,
     ) -> String {
         let mut context = Context::new();
         context.insert("path_name", &Self::path_struct_name(route));
-        context.insert("path_fields", &Self::struct_field_views(path_fields));
+        context.insert("path_fields", &Self::struct_field_views(route, path_fields));
         context.insert("body_name", &Self::body_struct_name(route));
-        context.insert("body_fields", &Self::struct_field_views(body_fields));
+        context.insert("body_fields", &Self::struct_field_views(route, body_fields));
+        context.insert("camel", &json_camel);
         render("file/http_adapter/split_structs.rs.tera", &context)
     }
 
@@ -444,7 +514,10 @@ impl HttpAdapterFile {
             crate_items.push(auth.storage_trait.clone());
         }
         crate_items.push(route.input_type_name.clone());
-        crate_items.push(route.output_type_name.clone());
+        match self.response_type(route) {
+            (_, Some(_)) => crate_items.push(route.output_entity.clone()),
+            (output, None) => crate_items.push(output),
+        }
         crate_items.push(format!("{}Error", route.use_case_name));
         crate_items.sort();
         crate_items.dedup();
@@ -544,6 +617,7 @@ impl HttpAdapterFile {
 
         let mut params_context = Context::new();
         params_context.insert("requires_user", &route.requires_user);
+        params_context.insert("secret", &route.secret.is_some());
         params_context.insert("extractor", Self::body_extractor(route));
         params_context.insert("input_type", &route.input_type_name);
         let (pre_structs, prelude) = if route.raw_input {
@@ -567,7 +641,7 @@ impl HttpAdapterFile {
                     params_context.insert("kind", "split");
                     params_context.insert("path_name", &Self::path_struct_name(route));
                     params_context.insert("body_name", &Self::body_struct_name(route));
-                    let structs = Self::gen_split_structs(route, &path_fields, &body_fields);
+                    let structs = Self::gen_split_structs(route, &path_fields, &body_fields, self.options.json_camel);
                     let fields: Vec<SplitFieldView> = route
                         .input_fields
                         .iter()
@@ -586,6 +660,13 @@ impl HttpAdapterFile {
         let full_params = render("file/http_adapter/handler_params.rs.tera", &params_context);
 
         let mut full_prelude = Self::gen_auth_prelude(route);
+        if let Some(secret) = &route.secret {
+            let mut context = Context::new();
+            context.insert("value_expr", &secret.value_expr);
+            context.insert("header_literal", &format!("{:?}", secret.header.as_deref().unwrap_or("authorization")));
+            context.insert("bearer", &secret.header.is_none());
+            full_prelude.push_str(&render("file/http_adapter/secret_prelude.rs.tera", &context));
+        }
         full_prelude.push_str(&prelude);
 
         code.push_str(&pre_structs);
@@ -596,17 +677,17 @@ impl HttpAdapterFile {
         context.insert("where_clause", &self.where_clause());
         context.insert("handler", &self.handler_name(route));
         context.insert("full_params", &full_params);
-        context.insert("output_type", &route.output_type_name);
+        let (output_type, unwrap_field) = self.response_type(route);
+        context.insert("output_type", &output_type);
+        context.insert("unwrap_field", &unwrap_field);
         context.insert("full_prelude", &full_prelude);
         context.insert("field", &route.use_case_field);
-        context.insert(
-            "user_expr",
-            if route.requires_user {
-                "user_context.user_id"
-            } else {
-                "0"
-            },
-        );
+        let user_expr = match &route.secret {
+            Some(secret) => secret.user.to_string(),
+            None if route.requires_user => "user_context.user_id".to_string(),
+            None => "0".to_string(),
+        };
+        context.insert("user_expr", &user_expr);
         context.insert("status_fn", &format!("{}_status", self.handler_name(route)));
         code.push_str(&render("file/http_adapter/handler.rs.tera", &context));
         code

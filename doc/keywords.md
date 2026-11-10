@@ -9,8 +9,11 @@ usage see [cli.md](cli.md).
 
 These apply across the whole language and aren't tied to one keyword:
 
-- **No comment syntax.** There is no `#`, `//`, or `/* */` form. Any stray
-  character that isn't part of a token (including `#`) is a hard lexer error.
+- **`//` line comments.** Everything from `//` to the end of the line is
+  ignored (outside string literals). There is no `#` or `/* */` form.
+- **Contextual words.** Newer constructs (`enum`, `schedule`, `config`,
+  `mcp`, `order_by`, `transaction`, `notify`, `unique`, ...) are matched by
+  position, not reserved — they stay usable as field names.
 - **Struct field separators are optional.** Commas between `type { ... }`
   fields may be present or omitted; both are accepted.
 - **HTTP verbs (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`) are not reserved
@@ -31,7 +34,8 @@ These apply across the whole language and aren't tied to one keyword:
   of confusion, so it's called out twice.
 - **Undefined type references fail at codegen, not at parse time.** A typo'd
   type name in a field lexes and parses fine; you only find out when you
-  actually compile ("Undefined type reference: ...").
+  actually compile ("Undefined type reference: ..."). Types may reference
+  types declared later in the file.
 
 ## Core Structural Keywords
 
@@ -144,21 +148,60 @@ type Order {
 }
 ```
 
+### `List`
+`List<T>` → Rust `Vec<T>`, a JSON array. In a `psql` entity it is stored as
+`JSONB` (through `sqlx::types::Json`), like a nested struct field.
+
+```tr
+type Task {
+    id: Int
+    tags: List<String>
+    steps: Option<List<Step>>
+}
+```
+
+### `Json`
+Any JSON value → `serde_json::Value`, stored as `JSONB`. For payloads whose
+shape varies (undo data, channel settings).
+
+### `Date` and `Time`
+A calendar date / a wall-clock time without zone → `chrono::NaiveDate` /
+`chrono::NaiveTime`, Postgres `DATE` / `TIME`, JSON `"2026-11-10"` /
+`"07:30:00"`.
+
+### `enum`
+A closed set of values:
+
+```tr
+enum TaskStatus { todo doing done "in-review" }
+```
+
+Each value is written as it appears on the wire and in the database (an
+identifier or a string literal); the Rust variant is its UpperCamelCase form
+(`InReview`). The generated enum serializes to that value, implements
+`Display`/`FromStr` (`as_str()`, `ALL`), defaults to its first value, and is
+stored as `TEXT`. An unknown value in a request is a 422.
+
+### Nested structs in entities
+A field whose type is another declared struct is stored as `JSONB`.
+
 ### `Regex`
-Regex-annotated type form (`Regex<pattern>`).
+A `String` validated against a pattern whenever it is decoded from JSON
+(request bodies, query strings): a mismatch is a 422.
 
 ```tr
 type ApiKey {
     id: Int,
-    label: Regex<slug>
+    label: Regex<slug>,
+    code: Option<Regex<"^[A-Z]{3}-[0-9]+$">>
 }
 ```
 
-**The pattern is purely documentation today** — `Regex<slug>` compiles down
-to a plain `String` field, byte-identical to writing `String` directly. No
-regex crate is added, no validation is generated or enforced anywhere. Also
-note the pattern itself must be a single alphanumeric/`_` word — real regex
-metacharacters (e.g. a literal `-`) break lexing.
+The argument is a pattern string or a preset: `slug`, `email`, `alpha`,
+`alphanumeric`, `numeric`, `hex`, `identifier`. Patterns are checked when
+Trust compiles (an invalid one is an error). Validation lives in the serde
+layer: values built in Rust code (`code {}` bodies) or read from the
+database are not re-checked.
 
 ### `entity`
 Specifies the entity type for storage infra. For `psql`/`grpc_client`, the
@@ -222,6 +265,34 @@ The path is read at compile time relative to the working directory and
 copied into the crate as `migrations/<table>.seed.sql`. Because it re-runs
 on every boot it **must be idempotent** (`INSERT ... ON CONFLICT DO
 NOTHING`, explicit ids, ...).
+
+#### Schema options
+
+```tr
+infra EventInfra {
+    storage {
+        psql {
+            entity: CalendarEvent
+            unique: [calendar, external_id]
+            index: [start_at]
+            references { task_id: TaskInfra set_null }
+            renamed { start: start_at }
+            dropped: [legacy_field]
+        }
+    }
+}
+```
+
+| Option | Effect |
+|---|---|
+| `unique: [a, b]` (repeatable) | `CREATE UNIQUE INDEX`. The first key is what `upsert_one` conflicts on. |
+| `index: [a, b]` (repeatable) | An extra index (Trust already indexes the columns its own queries filter and sort on). |
+| `references { field: Infra [cascade \| set_null \| restrict] }` | A foreign key to the other psql infra's `id`, added once every table exists. Default: `set_null` for an `Option<Int>` column, `restrict` otherwise. The column is indexed. |
+| `renamed { old: new }` | Renames the column on existing databases, before new columns are added, so data follows the rename. `new` must be a field, `old` must not. |
+| `dropped: [a]` | `DROP COLUMN IF EXISTS` — data in that column is deleted. |
+
+Foreign keys and transactions need every infra involved on the same
+database.
 
 #### Shorthand forms
 
@@ -330,10 +401,17 @@ infra PaymentApi {
 
 Generates `src/infrastructures/http_client/<infra>.rs` with a
 `{Infra}Client` (here `PaymentApiClient`) exposing
-`get_json`, `post_json`, `put_json` and `delete_json` — each takes a path
-appended to `base_url`, sends the configured headers, and returns
-`Result<T, String>` (non-2xx statuses and undecodable bodies are errors,
-with the response body in the message). `base_url` and header values
+`get_json`, `post_json`, `put_json`, `patch_json` and `delete_json` — each
+takes a path appended to `base_url`, sends the configured headers, and
+returns `Result<T, String>` (non-2xx statuses and undecodable bodies are
+errors, with the response body in the message) — plus `get_text` (any text
+body: an ICS feed, HTML, CSV), `post_form` (`x-www-form-urlencoded`, e.g.
+OAuth token refresh), and `request(method, path)` / `send_raw(builder)` for
+anything else (per-request headers, bearer tokens).
+
+Optional settings: `retry: 3` retries a network error, a 429 or a 5xx up to
+3 times (backoff 200 ms, 400 ms, ...); `timeout: 10` gives up after 10 s
+(30 by default). `base_url` and header values
 support `${VAR}`, resolved when the binary starts, so secrets never live in
 `.tr` source; `--dev` scaffolds each variable as `changeme`. Pulls in
 `reqwest` (`json`) and `serde_json`.
@@ -394,62 +472,57 @@ See [conversions.md](conversions.md#5-use_case-multi-call-semantics) for the
 full breakdown.
 
 ### `filters`
-Scopes a `list`-bound primary `call:`'s results by one or more equality
-predicates, each comparing a storage field against one of the use case's
-own input fields — or against a fixed literal:
+Scopes a `list`-bound primary `call:`'s results. One predicate per line:
+`<field> <operator> <value>`.
 
 ```tr
-use_case ListCommunityStickersUseCase {
-    call: StickerInfra.list
+use_case ListOpenTasksUseCase {
+    call: TaskInfra.list
+    owner: user_id
     filters {
-        visibility: "community"
-        published: true
+        status in ["todo", "doing"]
+        project_id: input.project_id
+        priority >= input.min_priority
+        title contains input.q
+        due < now()
+        day >= today("Europe/Paris")
     }
+    order_by: priority desc, due
 }
 ```
 
-A literal is a quoted string or a bare word (`true`, `42`); like every
-predicate value it's sent as text and cast to the column's type
-(`field = $1::BOOLEAN`), so the column itself stays indexable. Literal
-filters add nothing to the guessed input. The filtered columns get a
-`CREATE INDEX` in the entity's migration (see
-[conversions.md §5c](conversions.md#5c-filters-and-storagelistquery-predicates)).
+| Operator | Meaning |
+|---|---|
+| `:` / `=` / `==` | equal |
+| `!=` | not equal |
+| `>` `>=` `<` `<=` | comparisons (numbers, dates, text) |
+| `in` / `not in` | one of a `[list]` or of `input.<field>` (a comma-separated string, or a `List`) |
+| `like` / `ilike` | SQL pattern (`%`, `_`), case-sensitive / not |
+| `contains` | case-insensitive substring |
 
-```tr
-use_case ListRatingsForSpotUseCase {
-    call: RatingInfra.list
-    filters {
-        spot_id: input.spot_id
-    }
-}
-```
+Values: `input.<field>`, a literal (quoted string or bare word: `true`,
+`42`), a `[list]` for `in`, `now()` (UTC time of the request), `today()` or
+`today("Europe/Paris")` (the current date, in UTC or in that zone).
 
-- Only valid when the **primary** (last) `call:` is bound to `list` — a
-  hard codegen error otherwise (`'filters' is only valid when the primary
-  call is 'list'`).
-- The left-hand side (`spot_id`) must be a field on the primary call's
-  entity — checked at codegen (`'filters' references unknown field '...'
-  on entity '...'`).
-- The right-hand side must be exactly `input.<field>` — no other
-  expression form is accepted (no literals, no operators beyond implied
-  equality). If you don't declare an explicit `input`, the referenced
-  field is **added automatically** to the guessed list input (alongside
-  `limit`/`offset`), with the same type as the matching entity field. If
-  you do declare an explicit `input`, it must already have a field with
-  that name, or it's a codegen error.
-- Every `filters {}` entry becomes exactly one **equality** predicate
-  (`StoragePredicateOperator::Eq`) in the generated `StorageListQuery` —
-  there's no way to express `>`/`<`/`LIKE`/etc. today.
-- A route's `:name` path parameter reaches a filtered field exactly the
-  way it reaches any other input field — by name match against the
-  guessed/declared input (see [conversions.md §6](conversions.md#6-http-path-parameter-conversion)).
-  No extra wiring is needed: `GET "/spots/:spot_id/ratings"` on a use case
-  filtering by `spot_id` "just works".
-- Mutually exclusive with `ai`/`blob` (which don't have a `list`-shaped
-  `call:` to scope in the first place).
+- Only valid when the **primary** (last) `call:` is `list`; the field must
+  exist on its entity and can't be a JSONB list/struct column.
+- With no explicit `input`, every `input.<field>` is added to the guessed
+  input with the entity field's type (`String` for `in`/patterns).
+- An `input.<field>` whose type is `Option<T>` filters only when it is set
+  (`?project_id=3` filters, no parameter lists everything).
+- Values are sent as text and the *parameter* is cast to the column type,
+  so indexes stay usable. Trust creates a btree index on the equality
+  columns followed by the first sort/range column.
+- A path parameter reaches a filter field by name like any input field.
 
-See [conversions.md §5c](conversions.md#5c-filters-and-storagelistquery-predicates)
-for the exact generated shape.
+### `order_by`
+`order_by: field [asc|desc], ...` sorts a `list` primary call (`id` always
+breaks ties, so pages are stable). Default: by `id`.
+
+### `limit` / `offset`
+Every guessed `list` input has optional `limit` (100 when absent, 1000 at
+most) and `offset` (0). An explicit input may declare them (`Int` or
+`Option<Int>`) or leave them out.
 
 ### `errors`
 Maps infra/storage errors into use case errors.
@@ -479,6 +552,33 @@ Notes:
 - `NotFound` and `StorageError` always exist on the generated `{Name}Error`
   enum regardless of what you map, and (see [`status`](#status) below) their
   eventual HTTP status codes are hardcoded and **not** overridable.
+
+### `patch_one` and `upsert_one`
+Two more `call:` verbs on `psql` infras:
+
+- `patch_one` updates only the fields the request carries. Its guessed
+  input is `id` plus every other field as `Option`; a missing field is left
+  as is and, for a nullable column, `null` clears it. Missing row → 404.
+- `upsert_one` inserts the entity, or updates the row with the same value
+  of the infra's first `unique` key (a codegen error without one).
+
+Both honour `owner:` (an upsert never takes over someone else's row; it
+answers 404 instead).
+
+### `transaction`
+`transaction: true` runs every `call:` of a use case — or the whole body of a
+`code {}` use case — in one Postgres transaction: committed when the run
+succeeds, rolled back on any error. Every infra involved must be `psql`, on
+the same database. A `code {}` body can also manage one itself:
+`let tx = self.task_infra.begin().await?;`, `self.task_infra.in_transaction(&tx)`
+returns a storage bound to it, then `crate::commit_transaction(&tx)` /
+`crate::rollback_transaction(&tx)`.
+
+### `notify`
+`notify: true|false` — whether a successful run is announced on HTTP
+`events:` streams. Default: true when a call writes (`save_one`,
+`update_one`, `patch_one`, `upsert_one`, `delete`, ...), false otherwise
+(reads, `code {}`).
 
 ### `owner`
 Scopes a `call`-based use case to **the calling user** — the `user_id` of
@@ -546,6 +646,9 @@ use_case CheckoutUseCase {
   with [`status`](#status) like any other error target.
 - `deps {}`: extra crates (`name: "version"`) for the generated
   `Cargo.toml`.
+- `include: "./logic/shared.rs"` (repeatable): a Rust file copied once into
+  the crate (`src/shared/`); its `pub` items are visible from every `code {}`
+  body — for logic several use cases share (a priority score, a parser).
 - `?` works on every infra: storage errors and the `String` errors of
   `s3`/`http_client` convert into `StorageError`.
 - The body sees `common::{Storage, StorageListQuery, StoragePredicate,
@@ -734,6 +837,19 @@ GET "/cart" {
 }
 ```
 
+**Shared secret** — for machines (webhooks, cron, an agent), not people:
+
+```tr
+POST "/webhooks/telegram" {
+    use_case: TelegramWebhookUseCase
+    auth { secret: "${TELEGRAM_SECRET}" header: "X-Telegram-Bot-Api-Secret-Token" user: 1 }
+}
+```
+
+The request must carry the secret (compared in constant time) in `header`,
+or as `Authorization: Bearer <secret>` without one; otherwise 401. The use
+case runs as `user` (0 by default). No JWT is involved.
+
 **Permission row** — additionally requires a matching grant:
 
 ```tr
@@ -767,6 +883,92 @@ with at least one `auth`-requiring route pulls in the `auth` crate as a
 dependency, and (in `--dev` mode) gets a scaffolded `JWT_SECRET=changeme`
 line in its `.env` — `auth::UserContext` reads that variable to validate
 JWTs at runtime.
+
+### HTTP adapter options
+
+```tr
+adapter Api {
+    http {
+        on: "0.0.0.0:${PORT}"
+        cors: "${CORS_ORIGINS}"
+        envelope: false
+        events: "/events" auth: required
+        routes { ... }
+    }
+}
+```
+
+- `envelope: false` — responses are the entity or list itself (`{...}`,
+  `[...]`) instead of `{"task": {...}}` / `{"tasks": [...]}`.
+- `events: "/path"` — a Server-Sent Events stream: one `change` event
+  (`{"use_case", "user", "at"}`) per successful run of a use case with
+  `notify`. With `auth: required`, the JWT comes from the `Authorization`
+  header or an `access_token` query parameter (a browser `EventSource`
+  can't set headers) and only the caller's own events are sent.
+- Every HTTP adapter answers `GET /health` (`{"status":"ok"}`) unless a route
+  uses that path, and logs each request.
+
+### `config`
+Settings for the whole file:
+
+```tr
+config { json_case: "camel" }
+```
+
+`json_case: "camel"` renames every generated JSON field to camelCase
+(`weekly_budget_h` → `weeklyBudgetH`) in requests, responses, query strings
+and JSONB columns. Path parameters keep the names written in the route.
+
+### `schedule`
+Runs use cases on a timer, inside the app that lists the schedule in its
+`run {}` block:
+
+```tr
+schedule Jobs {
+    tz: "Europe/Paris"
+    user: 1
+    "*/15 * * * *" => SyncCalendarsUseCase
+    "30 7 * * *" => SendBriefUseCase
+    "0 18 * * sun" => PlanWeekUseCase tz: "UTC"
+}
+
+app Main: run { Api Jobs }
+```
+
+- Five-field cron (`minute hour day-of-month month day-of-week`) with `*`,
+  `a-b`, `*/n`, lists and `jan`/`mon` names; checked by Trust at compile
+  time. When both day fields are restricted, either one matches.
+- `tz` (IANA name, UTC by default) applies per schedule or per line;
+  daylight-saving changes are handled.
+- Each run calls `execute(user, Default::default())` — the input type's
+  defaults — as `user` (0 by default). A run never overlaps the next one of
+  the same line. Results and errors are logged.
+
+### `mcp`
+A Model Context Protocol server: each tool runs one use case, with an input
+schema derived from the use case's input type.
+
+```tr
+adapter Agent {
+    mcp {
+        on: "127.0.0.1:${MCP_PORT}"
+        auth { secret: "${MCP_TOKEN}" user: 1 }
+        instructions: "My World tools: capture ideas, read the day."
+        tools {
+            capture { use_case: CaptureUseCase description: "Add an item to the inbox" }
+            today { use_case: TodayUseCase description: "Tasks and events of the day" }
+        }
+    }
+}
+```
+
+- Transports: Streamable HTTP at `POST /mcp` (JSON responses), and stdio with
+  `<binary> mcp` for clients that start the server themselves.
+- `auth: required` (JWT, e.g. one from `<binary> token`) or `auth { secret
+  ... }`; without auth, tools run as user 0 and `owner` use cases are
+  refused.
+- Tool results come back as text and `structuredContent`; a use case error
+  is a result with `isError: true`. `RawRequest` use cases can't be tools.
 
 ### `grpc`
 Declares gRPC adapter configuration.
