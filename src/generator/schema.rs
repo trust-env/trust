@@ -26,6 +26,20 @@ pub fn json_schema(t: &RustType, camel: bool) -> Value {
     if let TypeKind::Enum(values) = &t.kind {
         return json!({ "type": "string", "enum": values });
     }
+    if let TypeKind::TaggedEnum(variants) = &t.kind {
+        let options: Vec<Value> = variants
+            .iter()
+            .map(|(wire, fields)| {
+                let mut schema = object_schema(&RustType::generic(&t.name, vec![], fields.clone()), camel);
+                schema["properties"]["type"] = json!({ "const": wire });
+                let mut required = schema["required"].as_array().cloned().unwrap_or_default();
+                required.insert(0, json!("type"));
+                schema["required"] = Value::Array(required);
+                schema
+            })
+            .collect();
+        return json!({ "oneOf": options });
+    }
     match t.name.as_str() {
         "Option" => {
             let inner = t.templates.first().map(|i| json_schema(i, camel)).unwrap_or(json!({}));
@@ -75,7 +89,7 @@ fn object_schema(t: &RustType, camel: bool) -> Value {
 /// A TypeScript type expression for `t`, naming declared structs and enums
 /// (their own declarations come from `ts_declaration`).
 pub fn ts_type(t: &RustType) -> String {
-    if t.is_enum() || t.kind == TypeKind::Struct {
+    if t.is_enum() || t.kind == TypeKind::Struct || matches!(t.kind, TypeKind::TaggedEnum(_)) {
         return t.name.clone();
     }
     match t.name.as_str() {
@@ -103,6 +117,20 @@ pub fn ts_declaration(t: &RustType, camel: bool) -> String {
         let values: Vec<String> = values.iter().map(|v| format!("{:?}", v)).collect();
         return format!("export type {} = {};\n", t.name, values.join(" | "));
     }
+    if let TypeKind::TaggedEnum(variants) = &t.kind {
+        let options: Vec<String> = variants
+            .iter()
+            .map(|(wire, fields)| {
+                let mut members = vec![format!("type: {:?}", wire)];
+                for field in fields {
+                    let optional = if field.field_type.is_option() { "?" } else { "" };
+                    members.push(format!("{}{}: {}", wire_name(&field.name, camel), optional, ts_type(&field.field_type)));
+                }
+                format!("{{ {} }}", members.join("; "))
+            })
+            .collect();
+        return format!("export type {} =\n  | {};\n", t.name, options.join("\n  | "));
+    }
     let mut out = format!("export interface {} {{\n", t.name);
     for field in &t.fields {
         let optional = if field.field_type.is_option() { "?" } else { "" };
@@ -120,7 +148,10 @@ pub fn ts_declaration(t: &RustType, camel: bool) -> String {
 /// Every declared struct / enum `t` mentions (itself included), depth
 /// first, each once.
 pub fn collect_named_types(t: &RustType, out: &mut Vec<RustType>) {
-    let named = t.is_enum() || t.kind == TypeKind::Struct || (!t.fields.is_empty() && t.name != "Option" && t.name != "Vec");
+    let named = t.is_enum()
+        || t.kind == TypeKind::Struct
+        || matches!(t.kind, TypeKind::TaggedEnum(_))
+        || (!t.fields.is_empty() && t.name != "Option" && t.name != "Vec");
     if named {
         if out.iter().any(|o| o.name == t.name) {
             return;
@@ -132,6 +163,13 @@ pub fn collect_named_types(t: &RustType, out: &mut Vec<RustType>) {
     }
     for field in &t.fields {
         collect_named_types(&field.field_type, out);
+    }
+    if let TypeKind::TaggedEnum(variants) = &t.kind {
+        for (_, fields) in variants {
+            for field in fields {
+                collect_named_types(&field.field_type, out);
+            }
+        }
     }
 }
 

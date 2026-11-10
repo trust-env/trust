@@ -80,6 +80,14 @@ pub fn desugar(asts: Vec<Ast>) -> Result<Vec<Ast>, String> {
         }
     }
 
+    let infra_sets: HashMap<String, Vec<String>> = asts
+        .iter()
+        .filter_map(|ast| match ast {
+            Ast::InfraSet(name, members) => Some((name.clone(), members.clone())),
+            _ => None,
+        })
+        .collect();
+
     let mut resource_routes: HashMap<String, Vec<HttpRoute>> = HashMap::new();
     let mut out: Vec<Ast> = Vec::new();
     for ast in asts {
@@ -88,10 +96,12 @@ pub fn desugar(asts: Vec<Ast>) -> Result<Vec<Ast>, String> {
                 let entity = infra_entities.get(&resource.infra).ok_or_else(|| {
                     format!("resource '{}': '{}' is not a psql infra", resource.name, resource.infra)
                 })?;
-                let (use_cases, routes) = expand(&resource, entity);
+                let singular = resource.singular.clone().unwrap_or_else(|| entity.clone());
+                let (use_cases, routes) = expand(&resource, &singular);
                 out.extend(use_cases.into_iter().map(Ast::UseCase));
                 resource_routes.insert(resource.name.clone(), routes);
             }
+            Ast::InfraSet(..) => {}
             other => out.push(other),
         }
     }
@@ -113,6 +123,17 @@ pub fn desugar(asts: Vec<Ast>) -> Result<Vec<Ast>, String> {
                 }
             }
             Ast::UseCase(use_case) => {
+                if let Some(code) = &mut use_case.code {
+                    let mut infras: Vec<String> = Vec::new();
+                    for name in &code.infras {
+                        for member in infra_sets.get(name).cloned().unwrap_or_else(|| vec![name.clone()]) {
+                            if !infras.contains(&member) {
+                                infras.push(member);
+                            }
+                        }
+                    }
+                    code.infras = infras;
+                }
                 if use_case.owner.as_deref() == Some("none") {
                     use_case.owner = None;
                 } else if use_case.owner.is_none() && use_case.code.is_none() {

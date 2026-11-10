@@ -169,6 +169,33 @@ pub(super) fn write_domain_type(
             ctx.insert("sqlx", &context.has_psql());
             render("domains/enum.rs.tera", &ctx)
         }
+        TypeKind::TaggedEnum(variants) => {
+            let all_fields: Vec<_> = variants.iter().flat_map(|(_, fields)| fields.iter().cloned()).collect();
+            let imports = LocalImports::from_fields(&all_fields, &t.name);
+            require_field_dependencies(context, &imports, false, false);
+            #[derive(Serialize)]
+            struct TaggedVariantView {
+                ident: String,
+                wire: String,
+                fields: Vec<serde_json::Value>,
+            }
+            let views: Vec<TaggedVariantView> = variants
+                .iter()
+                .map(|(wire, fields)| {
+                    let as_struct = RustType::generic(&t.name, vec![], fields.clone());
+                    TaggedVariantView {
+                        ident: enum_variant_ident(wire),
+                        wire: wire.clone(),
+                        fields: field_views(context, &as_struct, false),
+                    }
+                })
+                .collect();
+            let mut ctx = Context::new();
+            ctx.insert("name", &t.name);
+            ctx.insert("variants", &views);
+            ctx.insert("camel", &context.json_camel());
+            imports.to_use_statements() + &render("domains/tagged_enum.rs.tera", &ctx)
+        }
         _ => {
             let imports = LocalImports::from_fields(&t.fields, &t.name);
             let is_storage_entity = context.is_storage_entity(&t.name);

@@ -85,8 +85,10 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
 
     let mut type_names: HashSet<String> = HashSet::new();
 
-    for use_case_name in &use_case_names {
-        let Some(use_case) = find_use_case(asts, use_case_name) else {
+    // A `code {}` use case brings the use cases it runs.
+    let mut pending_use_cases: Vec<String> = use_case_names.iter().cloned().collect();
+    while let Some(use_case_name) = pending_use_cases.pop() {
+        let Some(use_case) = find_use_case(asts, &use_case_name) else {
             continue;
         };
         for call in &use_case.calls {
@@ -102,6 +104,11 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
         }
         if let Some(code) = &use_case.code {
             infra_names.extend(code.infras.iter().cloned());
+            for dependency in &code.use_cases {
+                if use_case_names.insert(dependency.clone()) {
+                    pending_use_cases.push(dependency.clone());
+                }
+            }
             // A hand-written body may name any declared type, which this
             // closure can't see into — keep every type for this app.
             for ast in asts {
@@ -161,7 +168,7 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
         let referenced_types: Vec<&AllowedType> = match decl {
             TypeDeclaration::Struct(s) => s.fields.iter().map(|f| &f.field_type).collect(),
             TypeDeclaration::TypeAlias(a) => vec![&a.aliased_type],
-            TypeDeclaration::Enum(_) => vec![],
+            TypeDeclaration::Enum(e) => e.fields.iter().flatten().map(|f| &f.field_type).collect(),
             TypeDeclaration::Derived(d) => {
                 let mut base = &d.base;
                 let base_name = loop {
@@ -193,7 +200,7 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
         .filter(|ast| match ast {
             Ast::Import(_) | Ast::Plugin(_) | Ast::Config(_) | Ast::Include(_) | Ast::Database(_) => true,
             // Expanded before partitioning.
-            Ast::Resource(_) => false,
+            Ast::Resource(_) | Ast::InfraSet(..) => false,
             Ast::App(a) => a.name == app.name,
             Ast::Adapter(a) => adapter_names.contains(&a.name),
             Ast::UseCase(u) => use_case_names.contains(&u.name),

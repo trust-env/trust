@@ -276,6 +276,7 @@ impl CodeGen {
             use_case_bindings.push(UseCaseBinding {
                 use_case_name: use_case_name.clone(),
                 infra_names: infra_names.to_vec(),
+                use_case_deps: Vec::new(),
             });
         }
 
@@ -331,6 +332,7 @@ impl CodeGen {
             use_case_bindings.push(UseCaseBinding {
                 use_case_name: use_case_name.clone(),
                 infra_names: infra_names.to_vec(),
+                use_case_deps: Vec::new(),
             });
         }
 
@@ -388,9 +390,35 @@ impl CodeGen {
                 use_case_bindings.push(UseCaseBinding {
                     use_case_name: job.use_case.clone(),
                     infra_names: infra_names.to_vec(),
+                    use_case_deps: Vec::new(),
                 });
             }
+            // A literal input: field names checked against the input type
+            // and written as they travel (json_case).
+            let input = match &job.input {
+                None => None,
+                Some(value) => {
+                    let io = context
+                        .find_use_case_io(&job.use_case)
+                        .ok_or_else(|| format!("schedule '{}': use_case '{}' has no resolved input", schedule.name, job.use_case))?;
+                    let serde_json::Value::Object(fields) = value else {
+                        return Err(format!("schedule '{}': the input of '{}' must be {{ ... }}", schedule.name, job.use_case));
+                    };
+                    let mut wire = serde_json::Map::new();
+                    for (key, field_value) in fields {
+                        if !io.input_type.fields.iter().any(|f| &f.name == key) {
+                            return Err(format!(
+                                "schedule '{}': '{}' has no input field '{}'",
+                                schedule.name, job.use_case, key
+                            ));
+                        }
+                        wire.insert(crate::generator::schema::wire_name(key, context.json_camel()), field_value.clone());
+                    }
+                    Some((io.input_type_name.clone(), serde_json::Value::Object(wire).to_string()))
+                }
+            };
             jobs.push(ScheduleJobRuntime {
+                input,
                 name: format!("{}.{}", schedule.name, job.use_case),
                 cron_text: job.cron.clone(),
                 cron,
@@ -399,6 +427,72 @@ impl CodeGen {
                 user: schedule.user,
             });
         }
+        Ok(())
+    }
+
+    /// Binds the use cases `code {}` bodies run (and their infras), then
+    /// orders every binding so a use case is built after those it runs.
+    fn resolve_use_case_dependencies(
+        context: &CodeGenContext,
+        infra_bindings: &mut Vec<InfraBinding>,
+        use_case_bindings: &mut Vec<UseCaseBinding>,
+    ) -> Result<(), String> {
+        let mut i = 0;
+        while i < use_case_bindings.len() {
+            let deps = context.find_use_case_deps(&use_case_bindings[i].use_case_name).to_vec();
+            for dep in &deps {
+                if !context.is_known_use_case(dep) {
+                    return Err(format!(
+                        "UseCase '{}': 'code' runs unknown use_case '{}'",
+                        use_case_bindings[i].use_case_name, dep
+                    ));
+                }
+                if use_case_bindings.iter().any(|u| &u.use_case_name == dep) {
+                    continue;
+                }
+                let infra_names = context.find_use_case_infra(dep).to_vec();
+                for infra_name in &infra_names {
+                    Self::register_infra_binding(context, infra_bindings, infra_name, &format!("use_case '{}'", dep))?;
+                }
+                use_case_bindings.push(UseCaseBinding {
+                    use_case_name: dep.clone(),
+                    infra_names,
+                    use_case_deps: Vec::new(),
+                });
+            }
+            use_case_bindings[i].use_case_deps = deps;
+            i += 1;
+        }
+
+        // Depth-first: dependencies first; a cycle is an error.
+        fn visit(
+            name: &str,
+            bindings: &[UseCaseBinding],
+            done: &mut Vec<String>,
+            path: &mut Vec<String>,
+        ) -> Result<(), String> {
+            if done.iter().any(|d| d == name) {
+                return Ok(());
+            }
+            if path.iter().any(|p| p == name) {
+                path.push(name.to_string());
+                return Err(format!("use cases run each other in a cycle: {}", path.join(" -> ")));
+            }
+            path.push(name.to_string());
+            if let Some(binding) = bindings.iter().find(|b| b.use_case_name == name) {
+                for dep in &binding.use_case_deps {
+                    visit(dep, bindings, done, path)?;
+                }
+            }
+            path.pop();
+            done.push(name.to_string());
+            Ok(())
+        }
+        let mut order = Vec::new();
+        for binding in use_case_bindings.iter() {
+            visit(&binding.use_case_name, use_case_bindings, &mut order, &mut Vec::new())?;
+        }
+        use_case_bindings.sort_by_key(|b| order.iter().position(|o| o == &b.use_case_name));
         Ok(())
     }
 
@@ -492,6 +586,7 @@ impl CodeGen {
                         use_case_bindings.push(UseCaseBinding {
                             use_case_name: use_case_name.clone(),
                             infra_names: infra_names.to_vec(),
+                            use_case_deps: Vec::new(),
                         });
                     }
                     // `<binary> mcp` (stdio) acts as the secret's user, or
@@ -562,6 +657,9 @@ impl CodeGen {
             context.require_version_dependency("jsonwebtoken", "9");
             context.require_version_dependency("serde_json", "1");
         }
+        if schedule_jobs.iter().any(|j| j.input.is_some()) {
+            context.require_version_dependency("serde_json", "1");
+        }
         if !schedule_jobs.is_empty() {
             context.require_version_dependency_with_features("chrono", "0.4", vec!["serde"]);
             context.require_version_dependency("chrono-tz", "0.10");
@@ -575,6 +673,8 @@ impl CodeGen {
             // `stream`: request/response bodies are piped, not buffered.
             context.require_version_dependency_with_features("reqwest", "0.12", vec!["stream"]);
         }
+
+        Self::resolve_use_case_dependencies(context, &mut infra_bindings, &mut use_case_bindings)?;
 
         MainFile::new(src_path.join("main.rs"))?.write(
             package_name,

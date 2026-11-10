@@ -93,7 +93,9 @@ impl LocalImports {
             crate::generator::types::JSON_VALUE => self.needs_json = true,
             "String" | "i64" | "f64" | "bool" => {}
             name if name != exclude && !self.types.contains(&name.to_string()) => {
-                if rust_type.kind == crate::generator::rust_code::types::TypeKind::Struct {
+                if rust_type.kind == crate::generator::rust_code::types::TypeKind::Struct
+                    || matches!(rust_type.kind, crate::generator::rust_code::types::TypeKind::TaggedEnum(_))
+                {
                     self.needs_json_column = true;
                 }
                 self.types.push(name.to_string());

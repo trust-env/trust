@@ -479,6 +479,13 @@ pub struct CodeSpec {
     /// once into the crate's `src/shared/` and visible from every `code {}`
     /// body (their `pub` items are re-exported at the crate root).
     pub includes: Vec<String>,
+    /// `use_case: PlanWeekUseCase` (repeatable) — other use cases the body
+    /// runs, as `self.plan_week_use_case.execute(user, input)`.
+    pub use_cases: Vec<String>,
+    /// `module: "./capture.rs"` instead of `file:` — `file` is then a real
+    /// Rust module defining `pub async fn execute(deps: &impl {Name}Deps,
+    /// user: i64, input: In) -> Result<Out, {Name}Error>`.
+    pub module: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -608,7 +615,17 @@ pub struct StructDeclaration {
 pub struct EnumDeclaration {
     pub name: String,
     pub variants: Vec<String>,
+    /// Fields of each variant, aligned with `variants` (empty for a plain
+    /// value). Any non-empty one makes the enum a tagged union: JSON
+    /// `{"type": "<variant>", ...fields}`, stored as `JSONB`.
+    pub fields: Vec<Vec<StructField>>,
     pub export: Option<String>,
+}
+
+impl EnumDeclaration {
+    pub fn is_tagged(&self) -> bool {
+        self.fields.iter().any(|f| !f.is_empty())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -697,6 +714,9 @@ pub struct ScheduleJob {
     pub use_case: String,
     /// Overrides the schedule's own `tz` for this job.
     pub tz: Option<String>,
+    /// `=> UseCase { send: true }` — input fields; the rest keep their
+    /// default.
+    pub input: Option<serde_json::Value>,
 }
 
 /// `schedule Name { tz: "..." user: 1 "<cron>" => UseCase ... }`: runs use
@@ -741,6 +761,9 @@ pub struct ResourceDeclaration {
     pub infra: String,
     pub path: String,
     pub owner: Option<String>,
+    /// `name: Event` — the singular in generated names (`CreateEventUseCase`);
+    /// the entity's name by default.
+    pub singular: Option<String>,
     pub operations: Vec<ResourceOperation>,
 }
 
@@ -782,4 +805,7 @@ pub enum Ast {
     Database(DatabaseDeclaration),
     /// Expanded into use cases and routes before generation.
     Resource(ResourceDeclaration),
+    /// `infra_set DayData { TaskInfra EventInfra }` — a name standing for
+    /// several infras in `code { infra: ... }`. Expanded before generation.
+    InfraSet(String, Vec<String>),
 }

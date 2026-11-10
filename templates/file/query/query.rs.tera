@@ -1,0 +1,120 @@
+//! Typed list queries for `code {}` bodies:
+//!
+//! ```ignore
+//! let events = self.event_infra
+//!     .query(Query::new().eq("user_id", user).gt("end_at", from).lt("start_at", to).order_by("start_at"))
+//!     .await?;
+//! ```
+//!
+//! Values are sent as text and cast to each column's type by the storage,
+//! like `filters {}`; column names are checked by the storage too.
+
+use common::{StorageListQuery, StoragePredicate, StoragePredicateOperator};
+
+#[derive(Debug, Clone)]
+pub struct Query {
+    pub limit: i64,
+    pub offset: i64,
+    pub predicates: Vec<StoragePredicate>,
+    /// `(column, descending)`; `id` always breaks ties.
+    pub order_by: Vec<(&'static str, bool)>,
+}
+
+impl Default for Query {
+    fn default() -> Self {
+        Query { limit: 1000, offset: 0, predicates: Vec::new(), order_by: Vec::new() }
+    }
+}
+
+impl Query {
+    /// Everything (up to 1000 rows, the storage's page ceiling).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn with(mut self, field: &str, operator: StoragePredicateOperator, value: String) -> Self {
+        self.predicates.push(StoragePredicate { field: field.to_string(), operator, value });
+        self
+    }
+
+    pub fn eq(self, field: &str, value: impl std::fmt::Display) -> Self {
+        self.with(field, StoragePredicateOperator::Eq, value.to_string())
+    }
+
+    pub fn ne(self, field: &str, value: impl std::fmt::Display) -> Self {
+        self.with(field, StoragePredicateOperator::NotEq, value.to_string())
+    }
+
+    pub fn gt(self, field: &str, value: impl std::fmt::Display) -> Self {
+        self.with(field, StoragePredicateOperator::Gt, value.to_string())
+    }
+
+    pub fn gte(self, field: &str, value: impl std::fmt::Display) -> Self {
+        self.with(field, StoragePredicateOperator::Gte, value.to_string())
+    }
+
+    pub fn lt(self, field: &str, value: impl std::fmt::Display) -> Self {
+        self.with(field, StoragePredicateOperator::Lt, value.to_string())
+    }
+
+    pub fn lte(self, field: &str, value: impl std::fmt::Display) -> Self {
+        self.with(field, StoragePredicateOperator::Lte, value.to_string())
+    }
+
+    /// SQL pattern (`%`, `_`), case-sensitive.
+    pub fn like(self, field: &str, pattern: impl std::fmt::Display) -> Self {
+        self.with(field, StoragePredicateOperator::Like, pattern.to_string())
+    }
+
+    /// SQL pattern, case-insensitive.
+    pub fn ilike(self, field: &str, pattern: impl std::fmt::Display) -> Self {
+        self.with(field, StoragePredicateOperator::ILike, pattern.to_string())
+    }
+
+    /// Case-insensitive substring.
+    pub fn contains(self, field: &str, text: impl std::fmt::Display) -> Self {
+        self.with(field, StoragePredicateOperator::ILike, format!("%{}%", text))
+    }
+
+    /// One of `values` (none: no row matches).
+    pub fn is_in<V: std::fmt::Display>(self, field: &str, values: impl IntoIterator<Item = V>) -> Self {
+        let values: Vec<String> = values.into_iter().map(|v| v.to_string()).collect();
+        self.with(field, StoragePredicateOperator::In, values.join(","))
+    }
+
+    pub fn not_in<V: std::fmt::Display>(self, field: &str, values: impl IntoIterator<Item = V>) -> Self {
+        let values: Vec<String> = values.into_iter().map(|v| v.to_string()).collect();
+        self.with(field, StoragePredicateOperator::NotIn, values.join(","))
+    }
+
+    pub fn order_by(mut self, field: &'static str) -> Self {
+        self.order_by.push((field, false));
+        self
+    }
+
+    pub fn order_by_desc(mut self, field: &'static str) -> Self {
+        self.order_by.push((field, true));
+        self
+    }
+
+    pub fn limit(mut self, limit: i64) -> Self {
+        self.limit = limit;
+        self
+    }
+
+    pub fn offset(mut self, offset: i64) -> Self {
+        self.offset = offset;
+        self
+    }
+
+    /// The `common` query (without the sort order).
+    pub fn to_list_query(&self) -> StorageListQuery {
+        StorageListQuery { limit: self.limit, offset: self.offset, predicates: self.predicates.clone() }
+    }
+}
+
+impl From<Query> for StorageListQuery {
+    fn from(query: Query) -> Self {
+        query.to_list_query()
+    }
+}

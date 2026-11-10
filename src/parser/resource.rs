@@ -9,6 +9,28 @@ use crate::{
 const OPERATIONS: &[&str] = &["list", "get", "create", "update", "patch", "upsert", "delete"];
 
 impl Parser {
+    /// `infra_set DayData { TaskInfra EventInfra }`.
+    pub(super) fn try_infra_set(&mut self) -> Result<Ast, String> {
+        let start = self.current;
+        let name = match (self.next_token(), self.next_token(), self.next_token()) {
+            (Some(Token::Identifier(kw)), Some(Token::Identifier(name)), Some(Token::OpenBrace)) if kw == "infra_set" => name,
+            _ => {
+                self.reset(start);
+                return Err("Expected 'infra_set <Name> {'".to_string());
+            }
+        };
+        let mut members = Vec::new();
+        loop {
+            match self.next_token() {
+                Some(Token::CloseBrace) => break,
+                Some(Token::Comma) => continue,
+                Some(Token::Identifier(member)) => members.push(member),
+                other => return Err(format!("infra_set '{}': expected infra names, got {:?}", name, other)),
+            }
+        }
+        Ok(Ast::InfraSet(name, members))
+    }
+
     /// `database Main { url: "${DATABASE_URL}" pool: 16 }`.
     pub(super) fn try_database_declaration(&mut self) -> Result<Ast, String> {
         let start = self.current;
@@ -55,6 +77,7 @@ impl Parser {
         let mut infra = None;
         let mut path = None;
         let mut owner = None;
+        let mut singular = None;
         let mut operations: Vec<ResourceOperation> = Vec::new();
         loop {
             match self.next_token() {
@@ -67,6 +90,10 @@ impl Parser {
                 Some(Token::Identifier(k)) if k == "path" => match (self.next_token(), self.next_token()) {
                     (Some(Token::Colon), Some(Token::StringLiteral(v))) => path = Some(v),
                     _ => return Err(format!("resource '{}': expected path: \"/...\"", name)),
+                },
+                Some(Token::Identifier(k)) if k == "name" => match (self.next_token(), self.next_token()) {
+                    (Some(Token::Colon), Some(Token::Identifier(v))) => singular = Some(v),
+                    _ => return Err(format!("resource '{}': expected name: <Singular>", name)),
                 },
                 Some(Token::Identifier(k)) if k == "owner" => match (self.next_token(), self.next_token()) {
                     (Some(Token::Colon), Some(Token::Identifier(v))) => owner = Some(v),
@@ -118,7 +145,7 @@ impl Parser {
         if operations.is_empty() {
             return Err(format!("resource '{}' must declare at least one operation ({})", name, OPERATIONS.join(", ")));
         }
-        Ok(Ast::Resource(ResourceDeclaration { name, infra, path, owner, operations }))
+        Ok(Ast::Resource(ResourceDeclaration { name, infra, path, owner, singular, operations }))
     }
 
     /// After `type Name =`: `Omit<...>` / `Pick<...>` / `Partial<...>`.

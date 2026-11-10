@@ -16,6 +16,15 @@ pub enum {{ name }} {
     }
 }
 
+{% endfor %}{% for use_case_error in use_case_errors %}impl From<{{ use_case_error }}> for {{ name }} {
+    fn from(error: {{ use_case_error }}) -> Self {
+        match error {
+            {{ use_case_error }}::NotFound => {{ name }}::NotFound,
+            other => {{ name }}::StorageError(format!("{:?}", other)),
+        }
+    }
+}
+
 {% endfor %}/// Lets `?` propagate the `String` errors `s3`/`http_client` infras return.
 impl From<String> for {{ name }} {
     fn from(error: String) -> Self {

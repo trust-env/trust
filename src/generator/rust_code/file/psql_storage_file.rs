@@ -112,7 +112,12 @@ impl PsqlStorageFile {
         // Field types the patch struct names (chrono, Decimal, nested
         // types, enums) plus the entity and the transaction types.
         let imports = LocalImports::from_fields(&entity.fields, &entity.name);
-        let mut crate_items = vec![entity.name.clone(), "TrustTx".to_string(), "TrustTransactional".to_string()];
+        let mut crate_items = vec![
+            entity.name.clone(),
+            "Query".to_string(),
+            "TrustTx".to_string(),
+            "TrustTransactional".to_string(),
+        ];
         crate_items.extend(imports.types.iter().cloned());
         let uses = imports.external_use_statements() + &crate_use(&crate_items);
 

@@ -53,6 +53,9 @@ pub struct UseCaseBinding {
     /// Infra targets this use case calls, in declaration order — the
     /// constructor takes one storage argument per entry, in this order.
     pub infra_names: Vec<String>,
+    /// Use cases a `code {}` body runs — constructor arguments after the
+    /// storages; built before this one.
+    pub use_case_deps: Vec<String>,
 }
 
 pub struct AdapterBinding {
@@ -100,6 +103,8 @@ pub struct ScheduleJobRuntime {
     pub use_case: String,
     /// The user id runs act as.
     pub user: i64,
+    /// A literal input: (input type, JSON overlaid on its default).
+    pub input: Option<(String, String)>,
 }
 
 pub struct MainFile {
@@ -227,11 +232,12 @@ impl MainFile {
     }
 
     fn gen_use_case(use_case: &UseCaseBinding) -> String {
-        let args: Vec<String> = use_case
+        let mut args: Vec<String> = use_case
             .infra_names
             .iter()
             .map(|infra_name| format!("{}_storage", infra_name.to_snake_case()))
             .collect();
+        args.extend(use_case.use_case_deps.iter().map(|u| u.to_snake_case()));
 
         let mut context = Context::new();
         context.insert("field", &use_case.use_case_name.to_snake_case());
@@ -336,6 +342,13 @@ impl MainFile {
             lib_items.push("TrustCron".to_string());
             lib_items.push("run_scheduled_job".to_string());
         }
+        for job in schedule_jobs {
+            if let Some((input_type, _)) = &job.input {
+                if !lib_items.contains(input_type) {
+                    lib_items.push(input_type.clone());
+                }
+            }
+        }
         let lib_items: Vec<&str> = lib_items.iter().map(String::as_str).collect();
         let crate_ident = package_name.replace('-', "_");
 
@@ -374,6 +387,8 @@ impl MainFile {
             context.insert("tz_literal", &format!("{:?}", job.tz));
             context.insert("use_case", &job.use_case.to_snake_case());
             context.insert("user", &job.user);
+            context.insert("input_type", &job.input.as_ref().map(|(t, _)| t.clone()));
+            context.insert("input_json_literal", &job.input.as_ref().map(|(_, j)| format!("{:?}", j)));
             blocks.push(render("file/main/schedule_job.rs.tera", &context));
             task_vars.push(var);
         }

@@ -14,8 +14,17 @@
         tokio::spawn(run_scheduled_job({{ name_literal }}, cron, tz, move || {
             let use_case = use_case.clone();
             async move {
+{%- if input_type %}
+                // The declared fields over the input's defaults.
+                let mut input = serde_json::to_value({{ input_type }}::default()).map_err(|e| e.to_string())?;
+                let declared: serde_json::Value = serde_json::from_str({{ input_json_literal }}).map_err(|e| e.to_string())?;
+                if let (Some(input), Some(declared)) = (input.as_object_mut(), declared.as_object()) {
+                    input.extend(declared.clone());
+                }
+                let input: {{ input_type }} = serde_json::from_value(input).map_err(|e| e.to_string())?;
+{%- endif %}
                 use_case
-                    .execute({{ user }}, Default::default())
+                    .execute({{ user }}, {% if input_type %}input{% else %}Default::default(){% endif %})
                     .await
                     .map(|_| ())
                     .map_err(|error| format!("{:?}", error))

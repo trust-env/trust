@@ -143,6 +143,7 @@ fn declaration_name(ast: &Ast) -> Option<(&'static str, String)> {
         Ast::Adapter(a) => Some(("adapter", a.name.clone())),
         Ast::App(a) => Some(("app", a.name.clone())),
         Ast::Schedule(s) => Some(("schedule", s.name.clone())),
+        Ast::InfraSet(name, _) => Some(("infra", name.clone())),
         _ => None,
     }
 }

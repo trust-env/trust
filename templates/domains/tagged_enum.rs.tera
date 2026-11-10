@@ -1,0 +1,40 @@
+/// A tagged union: JSON `{"type": "<variant>", ...fields}`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type"{% if camel %}, rename_all_fields = "camelCase"{% endif %})]
+pub enum {{ name }} {
+{%- for v in variants %}
+    #[serde(rename = "{{ v.wire }}")]
+    {{ v.ident }}{% if v.fields %} {
+{%- for field in v.fields %}
+{%- if field.regex_fn %}
+        #[serde({% if field.regex_optional %}default, {% endif %}deserialize_with = "crate::{{ field.regex_fn }}{% if field.regex_optional %}_opt{% endif %}")]
+{%- endif %}
+        {{ field.name }}: {{ field.field_type }},
+{%- endfor %}
+    }{% endif %},
+{%- endfor %}
+}
+
+impl {{ name }} {
+    /// The variant, as written in the `type` field.
+    pub fn kind(&self) -> &'static str {
+        match self {
+{%- for v in variants %}
+            {{ name }}::{{ v.ident }}{% if v.fields %} { .. }{% endif %} => "{{ v.wire }}",
+{%- endfor %}
+        }
+    }
+}
+
+/// The first variant, every field at its default.
+impl Default for {{ name }} {
+    fn default() -> Self {
+{%- for v in variants %}{% if loop.first %}
+        {{ name }}::{{ v.ident }}{% if v.fields %} {
+{%- for field in v.fields %}
+            {{ field.name }}: Default::default(),
+{%- endfor %}
+        }{% endif %}
+{%- endif %}{% endfor %}
+    }
+}

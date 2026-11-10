@@ -210,6 +210,22 @@ identifier or a string literal); the Rust variant is its UpperCamelCase form
 `Display`/`FromStr` (`as_str()`, `ALL`), defaults to its first value, and is
 stored as `TEXT`. An unknown value in a request is a 422.
 
+#### Tagged enums
+Variants may carry fields; the enum is then a tagged union, `{"type":
+"<variant>", ...fields}` in JSON, stored as `JSONB`:
+
+```tr
+enum ActionPayload {
+    acceptInbox { inbox_id: Int  task_id: Int }
+    moveEvent   { event_id: Int  before: TimeRange  after: TimeRange }
+    reset
+}
+```
+
+Rust gets `ActionPayload::AcceptInbox { inbox_id, task_id }` (match on it),
+`kind()` (the wire name) and a `Default` (the first variant, fields at their
+defaults). With `json_case: "camel"` the fields are camelCase too.
+
 ### Nested structs in entities
 A field whose type is another declared struct is stored as `JSONB`.
 
@@ -430,7 +446,8 @@ infra PaymentApi {
 Generates `src/infrastructures/http_client/<infra>.rs` with a
 `{Infra}Client` (here `PaymentApiClient`) exposing
 `get_json`, `post_json`, `put_json`, `patch_json` and `delete_json` — each
-takes a path appended to `base_url`, sends the configured headers, and
+takes a path appended to `base_url` (an empty path is `base_url` itself, a
+full `https://...` URL is used as is), sends the configured headers, and
 returns `Result<T, String>` (non-2xx statuses and undecodable bodies are
 errors, with the response body in the message) — plus `get_text` (any text
 body: an ICS feed, HTML, CSV), `post_form` (`x-www-form-urlencoded`, e.g.
@@ -674,11 +691,27 @@ use_case CheckoutUseCase {
   with [`status`](#status) like any other error target.
 - `deps {}`: extra crates (`name: "version"`, or `"chrono-tz": "0.10"` for
   names with a dash) for the generated `Cargo.toml`.
+- `infra: [A, B]` lists several infras at once, and `infra_set DayData { A B
+  C }` (top level) names a group usable as `infra: DayData`.
+- `use_case: PlanWeekUseCase` (repeatable): another use case the body runs,
+  `self.plan_week_use_case.execute(user, input).await` — `?` converts its
+  error (`NotFound` stays `NotFound`). Use cases are built in dependency
+  order; a cycle is an error.
+- `module: "./capture.rs"` instead of `file:` makes the file a real Rust
+  module: it defines `pub async fn execute(deps: &impl CaptureUseCaseDeps,
+  user: i64, input: In) -> Result<Out, CaptureUseCaseError>` (plus helpers
+  and `#[cfg(test)]` tests, run by `cargo test` in the generated crate) and
+  reaches its infras through `deps.inbox_infra()`, `deps.plan_use_case()`.
+  Start it with `use crate::*;`.
 - `include: "./logic/shared.rs"` (repeatable): a Rust file copied once into
   the crate (`src/shared/`); its `pub` items are visible from every `code {}`
   body — for logic several use cases share (a priority score, a parser).
 - `?` works on every infra: storage errors and the `String` errors of
   `s3`/`http_client` convert into `StorageError`.
+- Storages also offer `query(Query::new().eq("user_id", user).gt("end_at",
+  from).lt("start_at", to).order_by("start_at"))` (`eq ne gt gte lt lte like
+  ilike contains is_in not_in order_by order_by_desc limit offset`; 1000 rows
+  by default) and `find_one_owned(id, "user_id", user)`.
 - The body (and every `include:` file) starts with a single glob, `use
   crate::*;`: every generated type plus `common::{Storage, StorageListQuery,
   StoragePredicate, StoragePredicateOperator, UseCase}`. Being a glob, it
@@ -969,7 +1002,8 @@ adapter Api { http { on: "..." auth: required resources { Tasks } routes { ... }
 | `delete` | `Delete{Entity}UseCase` (`delete`) | `DELETE /tasks/:id` |
 
 The use cases are ordinary ones: `mcp { tools }` and `schedule` can name
-them. Routes appear in every HTTP adapter listing the resource under
+them. `name: Event` sets the singular of generated names
+(`CreateEventUseCase`) when it differs from the entity's name. Routes appear in every HTTP adapter listing the resource under
 `resources {}`, with that adapter's default `auth`.
 
 ### Derived types
@@ -1048,8 +1082,10 @@ app Main: run { Api Jobs }
   time. When both day fields are restricted, either one matches.
 - `tz` (IANA name, UTC by default) applies per schedule or per line;
   daylight-saving changes are handled.
-- Each run calls `execute(user, Default::default())` — the input type's
-  defaults — as `user` (0 by default). A run never overlaps the next one of
+- Each run calls `execute(user, input)` as `user` (0 by default), with the
+  input type's defaults — or with literal fields over them:
+  `"30 7 * * *" => SendBriefUseCase { send: true label: "morning" }`
+  (field names are checked at compile time). A run never overlaps the next one of
   the same line. Results and errors are logged.
 
 ### `mcp`
