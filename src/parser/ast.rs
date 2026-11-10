@@ -702,4 +702,7 @@ pub enum Ast {
     Plugin(PluginAst),
     Schedule(ScheduleDeclaration),
     Config(ConfigDeclaration),
+    /// `include "./other.tr"` — every declaration of that file joins this
+    /// one. Resolved (and removed) by `crate::loader`.
+    Include(String),
 }

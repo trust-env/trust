@@ -8,10 +8,9 @@ cargo run -- <file.tr> [file2.tr ...] [flags...]
 ./target/release/trust <file.tr> [file2.tr ...] [flags...]
 ```
 
-You can pass more than one `.tr` file in one invocation — each is lexed,
-parsed, and compiled **independently** (in the same process, sharing only
-the loaded plugin set). There's no cross-file linking between separately
-passed files beyond what `import` already does.
+Several `.tr` files passed in one invocation form **one project**, exactly
+as if an entry file `include`d them all. A project usually has one entry
+file that `include`s its modules.
 
 Only the `--key=value` form is supported for value-carrying flags — there is
 no `--key value` (space-separated) form. Anything starting with `--` that
@@ -30,7 +29,7 @@ argument that doesn't start with `--` is treated as a `.tr` file path.
 | `--ai-base-url=<url>` | value | `https://api.anthropic.com` | Mainly useful for pointing at a local mock server in tests. |
 
 | `--out=<dir>` | value | `./out` | Where the project is generated. The directory is wiped first, so Trust refuses one that contains the working directory, or a non-empty one without a root `Cargo.toml`. |
-| `--vendor=<dir>` | value | none | Copies every private git dependency the output needs (`common`, `auth`, `user`, ... and theirs) from `<dir>/<crate>` into `<out>/vendor/` and rewrites the manifests to `path` dependencies. The output then builds with no SSH access (Docker, CI). |
+| `--vendor=<dir>` | value | none | Copies every private git dependency the output needs (`common`, `auth`, `user`, ... and theirs) from `<dir>/<crate>` — or, when missing there, from Cargo's git cache (`~/.cargo/git/checkouts`) — into `<out>/vendor/` and rewrites the manifests to `path` dependencies. The output then builds with no SSH access (Docker, CI). |
 | `--emit-ts=<file>` | value | none | Writes a typed TypeScript client: one declaration per type the HTTP routes use and one `<Adapter>Client` class per HTTP adapter. |
 | `--emit-openapi=<file>` | value | none | Writes an OpenAPI 3.1 document of every HTTP route. |
 | `--verbose` | boolean | off | Prints the token stream and the parsed AST to stderr. |
@@ -52,6 +51,9 @@ crate per app (named after that app's snake_cased name) and a root
 flat crate.
 
 ## stdout / stderr behavior
+
+Lex and parse errors point at the source: `modules/inbox/inbox.tr:12:18:
+message`, followed by the offending line and a caret.
 
 A successful run prints one line per output (`Generated ./out`, `Vendored
 ...`, `Wrote TypeScript client to ...`). Errors go to stderr as `Error

@@ -3,7 +3,6 @@
 use crate::generator::rust_code::{
     _trait::TraitImpl,
     RustCode,
-    include::Include,
     render::render,
     types::{RustType, Scope},
 };

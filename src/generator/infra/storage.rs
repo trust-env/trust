@@ -5,7 +5,7 @@ mod s3;
 use std::{fs::create_dir_all, path::PathBuf};
 
 use crate::{
-    generator::{CodeGen, CodeGenContext}, parser::{Ast, InfraService, StorageType},
+    generator::{CodeGen, CodeGenContext}, parser::{Ast, StorageType},
 };
 
 impl CodeGen {

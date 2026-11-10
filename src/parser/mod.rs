@@ -28,6 +28,9 @@ pub struct Parser {
     /// way the parser can tell "this identifier is a plugin construct"
     /// apart from an ordinary identifier.
     plugin_keywords: Vec<String>,
+    /// The furthest token index ever read — where a parse error is
+    /// reported, since alternatives backtrack before failing.
+    furthest: usize,
 }
 
 impl Parser {
@@ -37,6 +40,7 @@ impl Parser {
             current: 0,
             source_chars: Vec::new(),
             plugin_keywords: Vec::new(),
+            furthest: 0,
         }
     }
 
@@ -52,6 +56,9 @@ impl Parser {
 
     fn next_token(&mut self) -> Option<Token> {
         let token = self.tokens.get(self.current);
+        if self.current > self.furthest {
+            self.furthest = self.current;
+        }
         self.current += 1;
         token.map(|spanned| spanned.value.clone())
     }
@@ -66,5 +73,15 @@ impl Parser {
         } else {
             self.current = 0;
         }
+    }
+}
+
+impl Parser {
+    /// Char offset of the furthest token read, for error locations.
+    pub fn error_offset(&self) -> usize {
+        self.tokens
+            .get(self.furthest.min(self.tokens.len().saturating_sub(1)))
+            .map(|t| t.span.start)
+            .unwrap_or(0)
     }
 }

@@ -1,0 +1,27 @@
+
+/// A JSON request body. An empty body reads as `{}`, so an input whose
+/// fields are all optional (or that has none) needs no body at all.
+/// Malformed JSON answers 400, a body of the wrong shape 422.
+pub(crate) struct JsonBody<T>(pub T);
+
+impl<T, S> axum::extract::FromRequest<S> for JsonBody<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = (axum::http::StatusCode, String);
+
+    async fn from_request(request: axum::extract::Request, state: &S) -> Result<Self, Self::Rejection> {
+        let bytes = <axum::body::Bytes as axum::extract::FromRequest<S>>::from_request(request, state)
+            .await
+            .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?;
+        let body: &[u8] = if bytes.iter().all(u8::is_ascii_whitespace) { b"{}" } else { &bytes };
+        serde_json::from_slice(body).map(JsonBody).map_err(|e| {
+            let status = match e.classify() {
+                serde_json::error::Category::Data => axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                _ => axum::http::StatusCode::BAD_REQUEST,
+            };
+            (status, format!("Failed to deserialize the JSON body into the target type: {}", e))
+        })
+    }
+}
