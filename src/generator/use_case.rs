@@ -484,6 +484,8 @@ impl CodeGen {
                     raw_input: input_type.name == Self::RAW_REQUEST
                         && context.find_type(Self::RAW_REQUEST).is_none(),
                     input_serde: FieldSerde::of_fields(&input_type.fields),
+                    input_type: input_type.clone(),
+                    output_type: output_type.clone(),
                 },
             );
             return Ok(());
@@ -521,6 +523,8 @@ impl CodeGen {
                     requires_user: false,
                     raw_input: false,
                     input_serde: FieldSerde::of_fields(&input_type.fields),
+                    input_type: input_type.clone(),
+                    output_type: output_type.clone(),
                 },
             );
             return Ok(());
@@ -531,6 +535,16 @@ impl CodeGen {
                 .map_err(|e| format!("UseCase '{}': {}", use_case.name, e))?;
             let field_docs = |fields: Vec<(&str, &str)>| {
                 fields.into_iter().map(|(n, t)| (n.to_string(), t.to_string())).collect()
+            };
+            let rust_type = |name: String, fields: Vec<(&str, &str)>| {
+                RustType::generic(
+                    &name,
+                    vec![],
+                    fields
+                        .into_iter()
+                        .map(|(n, t)| RustField { name: n.to_string(), field_type: RustType::primitive(t) })
+                        .collect(),
+                )
             };
             context.register_use_case_io(
                 use_case.name.clone(),
@@ -545,6 +559,8 @@ impl CodeGen {
                     requires_user: false,
                     raw_input: false,
                     input_serde: Vec::new(),
+                    input_type: rust_type(format!("{}Input", use_case.name), BlobOperation::input_fields()),
+                    output_type: rust_type(format!("{}Output", use_case.name), operation.output_fields()),
                 },
             );
             return Ok(());
@@ -567,10 +583,27 @@ impl CodeGen {
                     output_entity: primary.entity_type.name.clone(),
                     output_fields: Self::field_docs(&primary.entity_type.fields),
                     output_is_list: is_list,
-                    output_wrapper_field: Some(wrapper_field),
+                    output_wrapper_field: Some(wrapper_field.clone()),
                     requires_user: shape.owner.is_some(),
                     raw_input: false,
                     input_serde: FieldSerde::of_fields(&shape.input_type.fields),
+                    input_type: RustType {
+                        name: format!("{}Input", use_case.name),
+                        ..shape.input_type.clone()
+                    },
+                    output_type: RustType::generic(
+                        &format!("{}Output", use_case.name),
+                        vec![],
+                        vec![RustField {
+                            name: wrapper_field.clone(),
+                            field_type: if is_list {
+                                RustType::generic("Vec", vec![primary.entity_type.clone()], vec![])
+                            } else {
+                                primary.entity_type.clone()
+                            },
+                        }],
+                    )
+                    .with_kind(crate::generator::rust_code::types::TypeKind::Struct),
                 },
             );
         }

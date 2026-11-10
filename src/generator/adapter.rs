@@ -13,6 +13,7 @@ use crate::{
             RustCode,
             file::{
                 grpc_adapter_file::{GrpcAdapterFile, GrpcRpcBinding},
+                mcp_adapter_file::{McpAdapterFile, McpAuth, McpToolBinding},
                 http_adapter_file::{HttpAdapterFile, HttpOptions, HttpRouteBinding, ResolvedAuth, ResolvedSecret},
             },
             service::Service,
@@ -20,7 +21,7 @@ use crate::{
     },
     parser::{
         AdapterService, AdapterType, AuthRequirement, GrpcAdapterService, GrpcRpc,
-        HttpAdapterService, HttpRoute,
+        HttpAdapterService, HttpRoute, McpAdapterService,
     },
 };
 
@@ -462,7 +463,89 @@ impl CodeGen {
                 self.create_grpc_service(context, adapter.name.clone(), &folder, proto_dir, grpc_data)?;
                 context.register_adapter_grpc_module(adapter.name.to_snake_case());
             }
+            AdapterType::Mcp(mcp_data) => {
+                self.create_mcp_service(context, adapter.name.clone(), &folder, &mcp_data)?;
+                context.register_adapter_mcp_module(adapter.name.to_snake_case());
+            }
         }
         Ok(())
+    }
+
+    /// Resolves an `mcp {}` adapter's tools (input type and JSON Schema of
+    /// each use case) and writes `src/adapters/mcp/<adapter>.rs`.
+    pub(super) fn mcp_adapter_file(
+        context: &CodeGenContext,
+        name: &str,
+        mcp: &McpAdapterService,
+    ) -> Result<McpAdapterFile, String> {
+        let mut tools = Vec::new();
+        for tool in &mcp.tools {
+            if !context.is_known_use_case(&tool.use_case) {
+                return Err(format!("mcp adapter '{}': tool '{}' uses unknown use_case '{}'", name, tool.name, tool.use_case));
+            }
+            let io = context
+                .find_use_case_io(&tool.use_case)
+                .ok_or_else(|| format!("mcp adapter '{}': use_case '{}' has no resolved input", name, tool.use_case))?;
+            if io.raw_input {
+                return Err(format!(
+                    "mcp adapter '{}': tool '{}' can't use '{}' — it takes a RawRequest",
+                    name, tool.name, tool.use_case
+                ));
+            }
+            if io.requires_user && mcp.auth.is_none() {
+                return Err(format!(
+                    "mcp adapter '{}': use_case '{}' is scoped to the calling user ('owner'), so the adapter must declare 'auth'",
+                    name, tool.use_case
+                ));
+            }
+            let schema = crate::generator::schema::json_schema(&io.input_type, context.json_camel());
+            tools.push(McpToolBinding {
+                name: tool.name.clone(),
+                description: tool.description.clone().unwrap_or_else(|| tool.use_case.clone()),
+                use_case_name: tool.use_case.clone(),
+                input_type_name: io.input_type_name.clone(),
+                schema: schema.to_string(),
+            });
+        }
+        let auth = match &mcp.auth {
+            None => McpAuth::None,
+            Some(AuthRequirement::Authenticated) => McpAuth::Jwt,
+            Some(AuthRequirement::Secret(secret)) => McpAuth::Secret {
+                value_expr: McpAdapterFile::secret_expr(&secret.secret),
+                header: secret.header.as_ref().map(|h| h.to_lowercase()),
+                user: secret.user,
+            },
+            Some(AuthRequirement::Permission(_)) => {
+                return Err(format!(
+                    "mcp adapter '{}': use 'auth: required' or 'auth {{ secret ... }}' (permission rows aren't supported)",
+                    name
+                ));
+            }
+        };
+        Ok(McpAdapterFile { name: name.to_string(), tools, auth, instructions: mcp.instructions.clone() })
+    }
+
+    fn create_mcp_service(
+        &self,
+        context: &mut CodeGenContext,
+        name: String,
+        folder: &PathBuf,
+        mcp: &McpAdapterService,
+    ) -> Result<(), String> {
+        if mcp.tools.is_empty() {
+            return Err(format!("mcp adapter '{}' must declare at least one tool", name));
+        }
+        let file = Self::mcp_adapter_file(context, &name, mcp)?;
+        context.require_git_dependency("common", "ssh://git@github.com/BH-World/common.git");
+        context.require_version_dependency("axum", "0.8");
+        context.require_version_dependency("serde_json", "1");
+        context.require_version_dependency("tracing", "0.1");
+        context.require_version_dependency_with_features("tower-http", "0.6", vec!["trace"]);
+        if matches!(file.auth, McpAuth::Jwt) {
+            context.require_version_dependency("jsonwebtoken", "9");
+        }
+        let mcp_folder = folder.join("mcp");
+        create_dir_all(&mcp_folder).map_err(|e| format!("Failed to create the mcp folder: {}", e))?;
+        file.write(&mcp_folder)
     }
 }

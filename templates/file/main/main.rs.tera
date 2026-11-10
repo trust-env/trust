@@ -33,6 +33,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 {{ infras }}
 {{ use_cases }}
+{%- if mcp_stdio %}
+    // `<binary> mcp`: serve the MCP tools over stdin/stdout (for clients
+    // that start the server themselves) instead of the network servers.
+    if std::env::args().nth(1).as_deref() == Some("mcp") {
+        let user: i64 = std::env::var("MCP_USER_ID").ok().and_then(|v| v.parse().ok()).unwrap_or({{ mcp_stdio.user }});
+        let server = std::sync::Arc::new({{ mcp_stdio.name }}::new({% for p in mcp_stdio.params %}{{ p }}.clone(){% if not loop.last %}, {% endif %}{% endfor %}));
+        return server.serve_stdio(user).await.map_err(Into::into);
+    }
+{% endif %}
 {% for block in blocks %}{{ block }}
 {% endfor %}{% for var in task_vars %}    {{ var }}.await??;
 {% endfor %}
@@ -44,7 +53,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let builder = tracing_subscriber::fmt().with_env_filter(filter);
+    // stderr: stdout is the protocol channel of `<binary> mcp`.
+    let builder = tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr);
     if std::env::var("LOG_FORMAT").is_ok_and(|format| format == "json") {
         builder.json().init();
     } else {

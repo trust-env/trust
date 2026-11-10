@@ -75,6 +75,11 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
                     use_case_names.insert(rpc.use_case.clone());
                 }
             }
+            AdapterType::Mcp(mcp) => {
+                for tool in &mcp.tools {
+                    use_case_names.insert(tool.use_case.clone());
+                }
+            }
         }
     }
 

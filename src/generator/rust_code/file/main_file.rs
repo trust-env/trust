@@ -65,6 +65,9 @@ pub struct AdapterBinding {
     pub requires_jwt: bool,
     /// The adapter's `cors:` template, scanned for `${VAR}`s in `--dev`.
     pub cors: Option<String>,
+    /// An `mcp {}` adapter: `<binary> mcp` serves it over stdio, acting as
+    /// this user (unless `MCP_USER_ID` says otherwise).
+    pub mcp_stdio_user: Option<i64>,
 }
 
 pub struct GrpcAdapterBinding {
@@ -375,7 +378,19 @@ impl MainFile {
             }
         }
 
+        // `<binary> mcp`: the first MCP adapter over stdio instead of servers.
+        let mcp_stdio = adapters.iter().find_map(|a| {
+            a.mcp_stdio_user.map(|user| {
+                serde_json::json!({
+                    "name": a.adapter_name,
+                    "params": a.use_cases.iter().map(|u| u.to_snake_case()).collect::<Vec<_>>(),
+                    "user": user,
+                })
+            })
+        });
+
         let mut context = Context::new();
+        context.insert("mcp_stdio", &mcp_stdio);
         context.insert("has_schedules", &!schedule_jobs.is_empty());
         context.insert("token_command", &adapters.iter().any(|a| a.requires_jwt));
         context.insert("lib_use", &use_statement(&crate_ident, &lib_items));

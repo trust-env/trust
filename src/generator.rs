@@ -5,6 +5,7 @@ pub mod import;
 pub mod infra;
 pub mod plugin;
 pub mod rust_code;
+pub mod schema;
 pub mod types;
 pub mod use_case;
 mod workspace;
@@ -65,6 +66,11 @@ pub struct UseCaseIo {
     pub raw_input: bool,
     /// Serde rules of the input fields that need one (see `FieldSerde`).
     pub input_serde: Vec<(String, FieldSerde)>,
+    /// The resolved input / output types (nested types included), for
+    /// MCP tool schemas and the TypeScript / OpenAPI emitters. The output
+    /// is the use case's own output (the `{UseCase}Output` wrapper for CRUD).
+    pub input_type: RustType,
+    pub output_type: RustType,
 }
 
 /// Serde decoding rules a generated struct field needs beyond its type:
@@ -139,6 +145,8 @@ pub struct CodeGenContext {
     use_case_modules: Vec<String>,
     adapter_http_modules: Vec<String>,
     adapter_grpc_modules: Vec<String>,
+    /// `mcp {}` adapters written under `src/adapters/mcp/`.
+    adapter_mcp_modules: Vec<String>,
     infra_entity_modules: Vec<String>,
     /// Module names (bare, no `.rs`) written under
     /// `src/infrastructures/storage/grpc_client/` — mirrors
@@ -210,6 +218,7 @@ impl CodeGenContext {
             use_case_modules: Vec::new(),
             adapter_http_modules: Vec::new(),
             adapter_grpc_modules: Vec::new(),
+            adapter_mcp_modules: Vec::new(),
             infra_entity_modules: Vec::new(),
             grpc_client_entity_modules: Vec::new(),
             s3_entity_modules: Vec::new(),
@@ -534,6 +543,12 @@ impl CodeGenContext {
     pub fn register_adapter_grpc_module(&mut self, name: String) {
         if !self.adapter_grpc_modules.contains(&name) {
             self.adapter_grpc_modules.push(name);
+        }
+    }
+
+    pub fn register_adapter_mcp_module(&mut self, name: String) {
+        if !self.adapter_mcp_modules.contains(&name) {
+            self.adapter_mcp_modules.push(name);
         }
     }
 
@@ -1078,6 +1093,13 @@ impl CodeGen {
                 .with_mods(context.adapter_grpc_modules.clone())
                 .write()?;
             adapter_mods.push("grpc".to_string());
+        }
+
+        if !context.adapter_mcp_modules.is_empty() {
+            ModFile::new(adapter_path.join("mcp.rs"))?
+                .with_mods(context.adapter_mcp_modules.clone())
+                .write()?;
+            adapter_mods.push("mcp".to_string());
         }
 
         ModFile::new(src_path.join("adapters.rs"))?

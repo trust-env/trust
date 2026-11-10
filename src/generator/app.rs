@@ -4,6 +4,7 @@ use crate::{
     generator::{
         CodeGen, CodeGenContext,
         rust_code::{
+            file::mcp_adapter_file::McpAuth,
             env_template,
             file::main_file::{
                 AdapterBinding, GrpcAdapterBinding, InfraBinding, InfraKind, LoadBalancerRuntime,
@@ -448,6 +449,56 @@ impl CodeGen {
                         requires_jwt: http_data.routes.iter().any(|r| r.auth.as_ref().is_some_and(|a| a.uses_jwt()))
                             || http_data.events.as_ref().is_some_and(|e| e.requires_user),
                         cors: http_data.cors.clone(),
+                        mcp_stdio_user: None,
+                    });
+                }
+                AdapterType::Mcp(mcp_data) => {
+                    let on = mcp_data.on.clone().ok_or_else(|| {
+                        format!(
+                            "Adapter '{}' must declare 'on' to be started by app:run",
+                            adapter_name
+                        )
+                    })?;
+                    let file = Self::mcp_adapter_file(context, adapter_name, mcp_data)?;
+                    let use_case_names = file.constructor_use_cases();
+                    for use_case_name in &use_case_names {
+                        if use_case_bindings.iter().any(|u| &u.use_case_name == use_case_name) {
+                            continue;
+                        }
+                        let infra_names = context.find_use_case_infra(use_case_name);
+                        if infra_names.is_empty() && !context.is_ai_use_case_without_infra(use_case_name) {
+                            return Err(format!(
+                                "UseCase '{}' has no known infra target (missing 'call')",
+                                use_case_name
+                            ));
+                        }
+                        for infra_name in infra_names {
+                            Self::register_infra_binding(
+                                context,
+                                &mut infra_bindings,
+                                infra_name,
+                                &format!("use_case '{}'", use_case_name),
+                            )?;
+                        }
+                        use_case_bindings.push(UseCaseBinding {
+                            use_case_name: use_case_name.clone(),
+                            infra_names: infra_names.to_vec(),
+                        });
+                    }
+                    // `<binary> mcp` (stdio) acts as the secret's user, or
+                    // `MCP_USER_ID`.
+                    let stdio_user = match &file.auth {
+                        McpAuth::Secret { user, .. } => *user,
+                        _ => 0,
+                    };
+                    adapter_bindings.push(AdapterBinding {
+                        adapter_name: adapter_name.clone(),
+                        on,
+                        use_cases: use_case_names,
+                        auth_infra_names: Vec::new(),
+                        requires_jwt: matches!(file.auth, McpAuth::Jwt),
+                        cors: None,
+                        mcp_stdio_user: Some(stdio_user),
                     });
                 }
                 AdapterType::Grpc(grpc_data) => {

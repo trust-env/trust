@@ -2,8 +2,8 @@ use crate::{
     lexer::{Keyword, Token},
     parser::{
         AdapterService, AdapterType, AllowedType, Ast, AuthRequirement, EventsEndpoint,
-        GrpcAdapterService, GrpcRpc, HttpAdapterService, HttpMethod, HttpRoute, Parser,
-        PermissionRequirement, SecretRequirement, StatusMapping,
+        GrpcAdapterService, GrpcRpc, HttpAdapterService, HttpMethod, HttpRoute, McpAdapterService,
+        McpTool, Parser, PermissionRequirement, SecretRequirement, StatusMapping,
     },
 };
 
@@ -553,6 +553,77 @@ impl Parser {
         Ok(GrpcAdapterService { rpcs, on })
     }
 
+    /// Parses `mcp { on: "..." auth ... instructions: "..." tools { ... } }`
+    /// (`mcp`, `tools`, `instructions`, `description` are contextual).
+    fn try_mcp_block(&mut self) -> Result<McpAdapterService, String> {
+        match (self.next_token(), self.next_token()) {
+            (Some(Token::Identifier(word)), Some(Token::OpenBrace)) if word == "mcp" => {}
+            _ => return Err("Expected 'mcp {' block".to_string()),
+        }
+        let mut service = McpAdapterService { on: None, auth: None, instructions: None, tools: Vec::new() };
+        loop {
+            match self.next_token() {
+                Some(Token::CloseBrace) => break,
+                Some(Token::Comma) => continue,
+                Some(Token::Keyword(Keyword::On)) => match (self.next_token(), self.next_token()) {
+                    (Some(Token::Colon), Some(Token::StringLiteral(address))) => service.on = Some(address),
+                    _ => return Err("Expected ': \"<address>\"' after 'on' in 'mcp'".to_string()),
+                },
+                Some(Token::Keyword(Keyword::Auth)) => {
+                    self.revert(1);
+                    service.auth = Some(self.try_auth_block()?);
+                }
+                Some(Token::Identifier(word)) if word == "instructions" => {
+                    match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::StringLiteral(text))) => service.instructions = Some(text),
+                        _ => return Err("Expected ': \"...\"' after 'instructions'".to_string()),
+                    }
+                }
+                Some(Token::Identifier(word)) if word == "tools" => {
+                    if self.next_token() != Some(Token::OpenBrace) {
+                        return Err("Expected '{' after 'tools'".to_string());
+                    }
+                    loop {
+                        let name = match self.next_token() {
+                            Some(Token::CloseBrace) => break,
+                            Some(Token::Comma) => continue,
+                            Some(Token::Identifier(name)) => name,
+                            Some(Token::Keyword(k)) => k.to_string(),
+                            other => return Err(format!("Expected a tool name in 'tools', got {:?}", other)),
+                        };
+                        if self.next_token() != Some(Token::OpenBrace) {
+                            return Err(format!("Expected '{{' after tool '{}'", name));
+                        }
+                        let mut use_case = None;
+                        let mut description = None;
+                        loop {
+                            match self.next_token() {
+                                Some(Token::CloseBrace) => break,
+                                Some(Token::Comma) => continue,
+                                Some(Token::Keyword(Keyword::UseCase)) => match (self.next_token(), self.next_token()) {
+                                    (Some(Token::Colon), Some(Token::Identifier(uc))) => use_case = Some(uc),
+                                    _ => return Err(format!("Expected ': <UseCase>' in tool '{}'", name)),
+                                },
+                                Some(Token::Identifier(k)) if k == "description" => match (self.next_token(), self.next_token()) {
+                                    (Some(Token::Colon), Some(Token::StringLiteral(text))) => description = Some(text),
+                                    _ => return Err(format!("Expected ': \"...\"' after 'description' in tool '{}'", name)),
+                                },
+                                other => return Err(format!("Unexpected {:?} in tool '{}' (expected use_case, description)", other, name)),
+                            }
+                        }
+                        let use_case = use_case.ok_or(format!("tool '{}' must declare 'use_case'", name))?;
+                        if service.tools.iter().any(|t| t.name == name) {
+                            return Err(format!("tool '{}' is declared twice", name));
+                        }
+                        service.tools.push(McpTool { name, use_case, description });
+                    }
+                }
+                other => return Err(format!("Unexpected {:?} in 'mcp' block (expected on, auth, instructions, tools)", other)),
+            }
+        }
+        Ok(service)
+    }
+
     pub(super) fn try_adapter_service(&mut self) -> Result<Ast, String> {
         match (
             self.next_token(),
@@ -577,13 +648,13 @@ impl Parser {
                 _ => {
                     self.revert(1);
                     let pos = self.current;
-                    let is_grpc = matches!(self.next_token(), Some(Token::Keyword(Keyword::Grpc)));
+                    let first = self.next_token();
                     self.reset(pos);
 
-                    let adapter_type = if is_grpc {
-                        AdapterType::Grpc(self.try_grpc_block()?)
-                    } else {
-                        AdapterType::Http(self.try_http_block()?)
+                    let adapter_type = match first {
+                        Some(Token::Keyword(Keyword::Grpc)) => AdapterType::Grpc(self.try_grpc_block()?),
+                        Some(Token::Identifier(word)) if word == "mcp" => AdapterType::Mcp(self.try_mcp_block()?),
+                        _ => AdapterType::Http(self.try_http_block()?),
                     };
 
                     match self.next_token() {

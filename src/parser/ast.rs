@@ -165,10 +165,34 @@ pub struct GrpcAdapterService {
     pub on: Option<String>,
 }
 
+/// One tool of an `mcp {}` adapter.
+#[derive(Debug, Clone)]
+pub struct McpTool {
+    /// Tool name the agent sees (`snake_case` recommended).
+    pub name: String,
+    pub use_case: String,
+    pub description: Option<String>,
+}
+
+/// `mcp { on: "..." auth ... instructions: "..." tools { name { use_case: X description: "..." } } }`:
+/// a Model Context Protocol server (Streamable HTTP at `POST /mcp`, or
+/// stdio with `<binary> mcp`) exposing each use case as a tool whose input
+/// schema comes from the use case's input type.
+#[derive(Debug, Clone)]
+pub struct McpAdapterService {
+    pub on: Option<String>,
+    /// `auth: required` (a JWT) or `auth { secret ... }`; none means user 0.
+    pub auth: Option<AuthRequirement>,
+    /// Text the client may show the model about how to use the tools.
+    pub instructions: Option<String>,
+    pub tools: Vec<McpTool>,
+}
+
 #[derive(Debug, Clone)]
 pub enum AdapterType {
     Http(HttpAdapterService),
     Grpc(GrpcAdapterService),
+    Mcp(McpAdapterService),
 }
 
 #[derive(Debug, Clone)]
