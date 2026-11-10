@@ -208,11 +208,12 @@ curl -X DELETE localhost:3000/notes/1
 Things worth knowing:
 
 - Responses wrap the entity in an object named after it (`{"note": ...}`,
-  `{"notes": [...]}` for lists).
-- `limit` and `offset` are **required** on list routes (`400` without
-  them); a page holds at most 1000 rows and is ordered by `id`.
-- `DELETE` on an id that doesn't exist currently answers `500`, not `404`
-  (see [limitations.md](limitations.md)).
+  `{"notes": [...]}` for lists) — `envelope: false` on the `http {}` block
+  returns the entity itself.
+- `limit` and `offset` are optional on list routes (100 and 0 by default);
+  a page holds at most 1000 rows and is ordered by `id` unless the use case
+  says `order_by:`.
+- `DELETE` / `PUT` on an id that doesn't exist answers `404`.
 - Open `http://localhost:3000/app` for the generated route documentation
   (`--dev` builds only).
 
