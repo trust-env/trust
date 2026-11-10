@@ -67,6 +67,13 @@ impl Parser {
                         _ => return Err("Expected ': \"<path>\"' after 'seed'".to_string()),
                     }
                 }
+                Some(Token::Identifier(k)) if k == "database" || k == "owner" => {
+                    let value = match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::Identifier(v))) => v,
+                        _ => return Err(format!("Expected ': <name>' after '{}'", k)),
+                    };
+                    if k == "database" { psql.database = Some(value) } else { psql.owner = Some(value) }
+                }
                 Some(Token::Identifier(k)) if k == "unique" || k == "index" || k == "dropped" => {
                     if self.next_token() != Some(Token::Colon) {
                         return Err(format!("Expected ':' after '{}'", k));

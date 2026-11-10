@@ -65,9 +65,15 @@ impl CodeGen {
         owner: Option<&str>,
     ) -> RustType {
         match call_kind {
-            CallKind::Create | CallKind::Update | CallKind::Upsert => {
+            CallKind::Update => {
                 let mut guessed = entity_type.clone();
                 guessed.fields.retain(|f| Some(f.name.as_str()) != owner);
+                guessed
+            }
+            // The database assigns the id of a new row: not an input.
+            CallKind::Create | CallKind::Upsert => {
+                let mut guessed = entity_type.clone();
+                guessed.fields.retain(|f| Some(f.name.as_str()) != owner && f.name != "id");
                 guessed
             }
             CallKind::Patch => {

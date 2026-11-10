@@ -1,5 +1,6 @@
 pub mod adapter;
 pub mod app;
+pub mod desugar;
 pub mod domains;
 mod emit;
 pub mod import;
@@ -194,6 +195,10 @@ pub struct CodeGenContext {
     /// Some HTTP adapter of this crate declares `events:`, so use cases
     /// with `notify` publish to `crate::trust_publish`.
     has_events: bool,
+    /// `database {}` declarations, by name.
+    databases: HashMap<String, crate::parser::DatabaseDeclaration>,
+    /// The `database:` each psql infra names.
+    psql_databases: HashMap<String, String>,
 }
 
 impl CodeGenContext {
@@ -236,7 +241,14 @@ impl CodeGenContext {
             shared_modules: Vec::new(),
             json_camel: false,
             has_events: false,
+            databases: HashMap::new(),
+            psql_databases: HashMap::new(),
         }
+    }
+
+    /// The `database {}` a psql infra uses, if it names one.
+    pub fn find_psql_database(&self, infra_name: &str) -> Option<&crate::parser::DatabaseDeclaration> {
+        self.psql_databases.get(infra_name).and_then(|name| self.databases.get(name))
     }
 
     pub fn json_camel(&self) -> bool {
@@ -710,7 +722,7 @@ impl CodeGen {
         loaded_plugins: &[LoadedPlugin],
     ) -> Result<(), String> {
         self.check_output_dir(&path)?;
-        let asts = std::mem::take(&mut self.asts); // moves Vec out, leaves empty Vec behind
+        let asts = desugar::desugar(std::mem::take(&mut self.asts))?;
         remove_dir_all(path.clone())
             .map_err(|e| format!("Error when removing the folder: {}", e))?;
         create_dir_all(&path)
@@ -762,6 +774,9 @@ impl CodeGen {
                         context.register_infra_entity(infra.name.clone(), psql.entity.clone());
                         if !psql.unique.is_empty() {
                             context.psql_unique_keys.push(infra.name.clone());
+                        }
+                        if let Some(database) = &psql.database {
+                            context.psql_databases.insert(infra.name.clone(), database.clone());
                         }
                         if !psql.references.is_empty() {
                             context.psql_foreign_keys.push(infra.name.clone());
@@ -892,8 +907,16 @@ impl CodeGen {
                         context.register_use_case_errors(use_case.name.clone(), errors);
                     }
                 }
+                Ast::Database(database) => {
+                    context.databases.insert(database.name.clone(), database.clone());
+                }
                 Ast::Config(config) => {
-                    context.json_camel = config.json_case.as_deref() == Some("camel");
+                    if config.json_case.is_some() {
+                        context.json_camel = config.json_case.as_deref() == Some("camel");
+                    }
+                    for (name, version) in &config.deps {
+                        context.require_version_dependency(name, version);
+                    }
                 }
                 Ast::Adapter(adapter) => {
                     // `auth { infra ... }` looks permission rows up by
@@ -1003,7 +1026,7 @@ impl CodeGen {
                 ),
                 Ast::TypeDecl(t) => self.gen_domain(&mut context, t, domain_path.clone()),
                 // Generated with the app that runs them.
-                Ast::App(_) | Ast::Schedule(_) | Ast::Config(_) | Ast::Include(_) => Ok(()),
+                Ast::App(_) | Ast::Schedule(_) | Ast::Config(_) | Ast::Include(_) | Ast::Database(_) | Ast::Resource(_) => Ok(()),
                 Ast::Plugin(plugin_ast) => self.generate_plugin(
                     &mut context,
                     plugin_ast,

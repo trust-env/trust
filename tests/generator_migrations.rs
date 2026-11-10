@@ -66,7 +66,7 @@ fn every_psql_entity_gets_a_create_table_migration() {
 #[test]
 fn main_applies_the_migration_right_after_connecting() {
     let main = generate(&sticker_tr(None)).read("main/src/main.rs");
-    let connect = main.find("SQLConnector::connect").expect("connect");
+    let connect = main.find("trust_connect(&mut db_pools").expect("connect");
     let migrate = main
         .find(r#"include_str!("../migrations/stickers.sql")"#)
         .unwrap_or_else(|| panic!("migration not applied:\n{main}"));

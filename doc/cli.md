@@ -29,7 +29,7 @@ argument that doesn't start with `--` is treated as a `.tr` file path.
 | `--ai-base-url=<url>` | value | `https://api.anthropic.com` | Mainly useful for pointing at a local mock server in tests. |
 
 | `--out=<dir>` | value | `./out` | Where the project is generated. The directory is wiped first, so Trust refuses one that contains the working directory, or a non-empty one without a root `Cargo.toml`. |
-| `--vendor=<dir>` | value | none | Copies every private git dependency the output needs (`common`, `auth`, `user`, ... and theirs) from `<dir>/<crate>` — or, when missing there, from Cargo's git cache (`~/.cargo/git/checkouts`) — into `<out>/vendor/` and rewrites the manifests to `path` dependencies. The output then builds with no SSH access (Docker, CI). |
+| `--vendor[=<dir>]` | value | none | Copies every private git dependency the output needs (`common`, `auth`, `user`, ... and theirs) from `<dir>/<crate>` — or, when missing there, from Cargo's git cache (`~/.cargo/git/checkouts`) — into `<out>/vendor/` and rewrites the manifests to `path` dependencies. The output then builds with no SSH access (Docker, CI). A bare `--vendor` takes everything from Cargo's git cache. |
 | `--emit-ts=<file>` | value | none | Writes a typed TypeScript client: one declaration per type the HTTP routes use and one `<Adapter>Client` class per HTTP adapter. |
 | `--emit-openapi=<file>` | value | none | Writes an OpenAPI 3.1 document of every HTTP route. |
 | `--verbose` | boolean | off | Prints the token stream and the parsed AST to stderr. |

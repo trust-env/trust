@@ -157,7 +157,7 @@ impl CodeGen {
         let requires_user = route.auth.as_ref().is_some_and(|a| a.uses_jwt());
         let secret = match &route.auth {
             Some(AuthRequirement::Secret(secret)) => Some(ResolvedSecret {
-                value_expr: crate::generator::rust_code::env_template::to_rust_expr(&secret.secret),
+                value_expr: crate::generator::rust_code::env_template::to_rust_expr_lenient(&secret.secret),
                 header: secret.header.as_ref().map(|h| h.to_lowercase()),
                 user: secret.user,
             }),

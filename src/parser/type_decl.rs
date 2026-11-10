@@ -92,7 +92,7 @@ impl Parser {
         }
     }
 
-    fn try_type_decl_body(&mut self) -> Result<(Vec<StructField>, Option<String>), String> {
+    pub(super) fn try_type_decl_body(&mut self) -> Result<(Vec<StructField>, Option<String>), String> {
         let mut fields = Vec::new();
         let mut export = None;
         let pos = self.current;
@@ -191,10 +191,15 @@ impl Parser {
                 Some(Token::Keyword(Keyword::Type)),
                 Some(Token::Identifier(name)),
                 Some(Token::Equal),
-            ) => Ok(TypeDecl(TypeDeclaration::TypeAlias(TypeAlias {
-                name: name.clone(),
-                aliased_type: self.try_type()?,
-            }))),
+            ) => {
+                if let Some(derived) = self.try_derived_declaration(&name)? {
+                    return Ok(derived);
+                }
+                Ok(TypeDecl(TypeDeclaration::TypeAlias(TypeAlias {
+                    name: name.clone(),
+                    aliased_type: self.try_type()?,
+                })))
+            }
             (
                 Some(Token::Keyword(Keyword::Type)),
                 Some(Token::Identifier(name)),

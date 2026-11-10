@@ -1,8 +1,16 @@
-    let {{ db_var }}_db_url = std::env::var({{ env_var_literal }}).expect("{{ env_var }} environment variable not set");
-    // Connections this infra may hold open at once (default {{ default_pool_size }}).
-    let {{ db_var }}_db_pool_size: u32 = match std::env::var({{ pool_env_var_literal }}) {
+{%- if database_url_expr %}
+    let {{ db_var }}_db = trust_connect(&mut db_pools, {{ database_url_expr }}, {{ database_pool }}).await?;
+{%- else %}
+    // {{ env_var }}, or the shared DATABASE_URL.
+    let {{ db_var }}_db_url = std::env::var({{ env_var_literal }})
+        .or_else(|_| std::env::var("DATABASE_URL"))
+        .map_err(|_| "{{ env_var }} or DATABASE_URL must be set")?;
+    // Connections this infra's pool may hold open (default {{ default_pool_size }}); infras
+    // on the same database share one pool.
+    let {{ db_var }}_db_pool_size: u32 = match std::env::var({{ pool_env_var_literal }}).or_else(|_| std::env::var("DATABASE_POOL_SIZE")) {
         Ok(value) => value.parse().map_err(|e| format!("{{ pool_env_var }} must be a positive integer: {}", e))?,
         Err(_) => {{ default_pool_size }},
     };
-    let {{ db_var }}_db = SQLConnector::connect_with_pool_size(&{{ db_var }}_db_url, {{ db_var }}_db_pool_size).await?;
+    let {{ db_var }}_db = trust_connect(&mut db_pools, {{ db_var }}_db_url, {{ db_var }}_db_pool_size).await?;
+{%- endif %}
 {{ migrations }}    let {{ entity_var }}_storage = Psql{{ entity }}Storage::new({{ db_var }}_db.clone());

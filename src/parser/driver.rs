@@ -19,6 +19,8 @@ impl Parser {
             Some(Token::Identifier(word)) if word == "enum" => self.try_enum_declaration(),
             Some(Token::Identifier(word)) if word == "schedule" => self.try_schedule_declaration(),
             Some(Token::Identifier(word)) if word == "config" => self.try_config_declaration(),
+            Some(Token::Identifier(word)) if word == "database" => self.try_database_declaration(),
+            Some(Token::Identifier(word)) if word == "resource" => self.try_resource_declaration(),
             Some(Token::Identifier(word)) if word == "include" => {
                 let start = self.current;
                 self.next_token();
@@ -46,13 +48,17 @@ impl Parser {
                         e.export.get_or_insert_with(|| e.name.clone());
                         Ast::TypeDecl(TypeDeclaration::Enum(e))
                     }
+                    Ast::TypeDecl(TypeDeclaration::Derived(mut d)) => {
+                        d.export.get_or_insert_with(|| d.name.clone());
+                        Ast::TypeDecl(TypeDeclaration::Derived(d))
+                    }
                     other => other,
                 })
             }
             Some(Token::Identifier(word)) if self.plugin_keywords.contains(&word) => {
                 self.try_plugin_construct()
             }
-            _ => Err("Expected a top-level declaration (type, enum, infra, use_case, adapter, app, schedule, config, import, include)".to_string()),
+            _ => Err("Expected a top-level declaration (type, enum, infra, use_case, adapter, app, schedule, config, database, resource, import, include)".to_string()),
         }
     }
 

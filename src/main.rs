@@ -128,7 +128,9 @@ fn main() {
     }
 
     if let Some(vendor_dir) = flags.get("vendor") {
-        match trust::vendor::vendor_dependencies(&out_dir, &PathBuf::from(vendor_dir)) {
+        // Bare `--vendor`: every crate from Cargo's git cache.
+        let vendor_dir = if vendor_dir == "true" { PathBuf::from("/nonexistent") } else { PathBuf::from(vendor_dir) };
+        match trust::vendor::vendor_dependencies(&out_dir, &vendor_dir) {
             Ok(vendored) if !vendored.is_empty() => {
                 println!("Vendored {} into {}", vendored.join(", "), out_dir.join("vendor").display());
             }

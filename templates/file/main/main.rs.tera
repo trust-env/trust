@@ -31,6 +31,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 {%- endif %}
 
+{%- if has_psql %}
+    let mut db_pools: std::collections::HashMap<String, SQLConnector> = std::collections::HashMap::new();
+{%- endif %}
 {{ infras }}
 {{ use_cases }}
 {%- if mcp_stdio %}
@@ -61,3 +64,19 @@ fn init_logging() {
         builder.init();
     }
 }
+{%- if has_psql %}
+
+/// One pool per database URL, shared by every infra using it.
+async fn trust_connect(
+    pools: &mut std::collections::HashMap<String, SQLConnector>,
+    url: String,
+    pool_size: u32,
+) -> Result<SQLConnector, Box<dyn std::error::Error>> {
+    if let Some(db) = pools.get(&url) {
+        return Ok(db.clone());
+    }
+    let db = SQLConnector::connect_with_pool_size(&url, pool_size).await?;
+    pools.insert(url, db.clone());
+    Ok(db)
+}
+{%- endif %}

@@ -3,7 +3,7 @@ use crate::{
         CodeGen, CodeGenContext,
         rust_code::types::{RustField, RustType, TypeKind},
     },
-    parser::{AllowedType, EnumDeclaration, StructDeclaration, TypeDeclaration},
+    parser::{AllowedType, DerivedType, EnumDeclaration, StructDeclaration, TypeDeclaration},
 };
 use heck::ToUpperCamelCase;
 
@@ -131,6 +131,63 @@ impl CodeGen {
             TypeDeclaration::Struct(s) => self.resolve_struct_declaration(context, s),
             TypeDeclaration::TypeAlias(a) => self.resolve_type_alias_declaration(context, a),
             TypeDeclaration::Enum(e) => Ok(Self::resolve_enum_declaration(e)),
+            TypeDeclaration::Derived(d) => {
+                let mut t = self.resolve_derived(context, &d.base, &d.name)?;
+                t.name = d.name.clone();
+                for field in &d.extra {
+                    if t.fields.iter().any(|f| f.name == field.name) {
+                        return Err(format!("type '{}' adds field '{}', which it already has", d.name, field.name));
+                    }
+                    let field_type = self.resolve_type_reference(context, &field.field_type)?;
+                    t.add_field(RustField { name: field.name.clone(), field_type });
+                }
+                Ok(t)
+            }
+        }
+    }
+
+    /// The struct an `Omit` / `Pick` / `Partial` expression stands for.
+    fn resolve_derived(
+        &self,
+        context: &mut CodeGenContext,
+        derived: &DerivedType,
+        declared: &str,
+    ) -> Result<RustType, String> {
+        let check = |t: &RustType, fields: &[String]| -> Result<(), String> {
+            for field in fields {
+                if !t.fields.iter().any(|f| &f.name == field) {
+                    return Err(format!("type '{}': '{}' has no field '{}'", declared, t.name, field));
+                }
+            }
+            Ok(())
+        };
+        match derived {
+            DerivedType::Named(name) => match context.find_type(name) {
+                Some(t) if t.kind == TypeKind::Struct => Ok(t.clone()),
+                Some(_) => Err(format!("type '{}': '{}' is not a struct", declared, name)),
+                None => Err(format!("Undefined type reference: {}", name)),
+            },
+            DerivedType::Omit(base, fields) => {
+                let mut t = self.resolve_derived(context, base, declared)?;
+                check(&t, fields)?;
+                t.fields.retain(|f| !fields.contains(&f.name));
+                Ok(t)
+            }
+            DerivedType::Pick(base, fields) => {
+                let mut t = self.resolve_derived(context, base, declared)?;
+                check(&t, fields)?;
+                t.fields.retain(|f| fields.contains(&f.name));
+                Ok(t)
+            }
+            DerivedType::Partial(base) => {
+                let mut t = self.resolve_derived(context, base, declared)?;
+                for field in &mut t.fields {
+                    if !field.field_type.is_option() {
+                        field.field_type = RustType::generic("Option", vec![field.field_type.clone()], vec![]);
+                    }
+                }
+                Ok(t)
+            }
         }
     }
 

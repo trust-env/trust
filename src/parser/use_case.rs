@@ -346,7 +346,7 @@ impl Parser {
 
     /// Parses `order_by: field [asc|desc], field [asc|desc] ...` after the
     /// `order_by` word.
-    fn try_order_by(&mut self) -> Result<Vec<OrderBy>, String> {
+    pub(super) fn try_order_by(&mut self) -> Result<Vec<OrderBy>, String> {
         if self.next_token() != Some(Token::Colon) {
             self.revert(1);
             return Err("Expected ':' after 'order_by'".to_string());
@@ -511,7 +511,7 @@ impl Parser {
     }
 
     /// Parses `filters { <field>: input.<input_field> ... }`.
-    fn try_filters_block(&mut self) -> Result<Vec<FilterMapping>, String> {
+    pub(super) fn try_filters_block(&mut self) -> Result<Vec<FilterMapping>, String> {
         match (self.next_token(), self.next_token()) {
             (Some(Token::Keyword(Keyword::Filters)), Some(Token::OpenBrace)) => {}
             _ => {
