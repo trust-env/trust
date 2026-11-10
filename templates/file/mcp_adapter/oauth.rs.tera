@@ -1,0 +1,244 @@
+
+// ---------------------------------------------------------------------------
+// OAuth 2.1 for remote MCP clients (e.g. claude.ai connectors): this server
+// is both the protected resource and a single-user authorization server.
+// Signing in takes the configured password and acts as user {{ oauth_user }}.
+// Clients register dynamically (RFC 7591) and must use PKCE (S256).
+// Access tokens are the same HS256 JWTs as `auth: required` (JWT_SECRET,
+// 1 h); refresh tokens (30 days) use a key derived from it, so they are
+// never accepted as access tokens.
+// ---------------------------------------------------------------------------
+
+const ACCESS_TOKEN_SECONDS: u64 = 3600;
+const REFRESH_TOKEN_SECONDS: u64 = 30 * 86_400;
+
+struct PendingCode {
+    redirect_uri: String,
+    code_challenge: String,
+    expires_at: std::time::Instant,
+}
+
+static PENDING_CODES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, PendingCode>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn oauth_public_url() -> String {
+    let url: String = {{ public_url_expr }};
+    url.trim_end_matches('/').to_string()
+}
+
+fn oauth_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+fn oauth_jwt_secret() -> Result<String, Response> {
+    std::env::var("JWT_SECRET").map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "JWT_SECRET not configured").into_response())
+}
+
+fn oauth_tokens(user: i64) -> Result<Value, Response> {
+    let secret = oauth_jwt_secret()?;
+    let now = oauth_now();
+    let sign = |claims: Value, key: String| {
+        jsonwebtoken::encode(&jsonwebtoken::Header::default(), &claims, &jsonwebtoken::EncodingKey::from_secret(key.as_bytes()))
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "token signing failed").into_response())
+    };
+    let access = sign(json!({ "sub": user.to_string(), "user_id": user, "exp": now + ACCESS_TOKEN_SECONDS }), secret.clone())?;
+    let refresh = sign(json!({ "sub": user.to_string(), "user_id": user, "exp": now + REFRESH_TOKEN_SECONDS }), format!("{}:refresh", secret))?;
+    Ok(json!({
+        "access_token": access,
+        "token_type": "Bearer",
+        "expires_in": ACCESS_TOKEN_SECONDS,
+        "refresh_token": refresh,
+    }))
+}
+
+fn oauth_error(error: &str, description: &str) -> Response {
+    (StatusCode::BAD_REQUEST, Json(json!({ "error": error, "error_description": description }))).into_response()
+}
+
+fn html_escape(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
+}
+
+fn url_encode(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            other => format!("%{:02X}", other),
+        })
+        .collect()
+}
+
+/// Redirect targets: https, or a local http address (for desktop clients).
+fn allowed_redirect(uri: &str) -> bool {
+    uri.starts_with("https://") || uri.starts_with("http://localhost") || uri.starts_with("http://127.0.0.1")
+}
+
+async fn oauth_protected_resource() -> Json<Value> {
+    let base = oauth_public_url();
+    Json(json!({
+        "resource": format!("{}/mcp", base),
+        "authorization_servers": [base],
+        "bearer_methods_supported": ["header"],
+    }))
+}
+
+async fn oauth_authorization_server() -> Json<Value> {
+    let base = oauth_public_url();
+    Json(json!({
+        "issuer": base,
+        "authorization_endpoint": format!("{}/oauth/authorize", base),
+        "token_endpoint": format!("{}/oauth/token", base),
+        "registration_endpoint": format!("{}/oauth/register", base),
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+    }))
+}
+
+async fn oauth_register(Json(request): Json<Value>) -> Response {
+    let redirect_uris = request.get("redirect_uris").cloned().unwrap_or(json!([]));
+    let all_allowed = redirect_uris
+        .as_array()
+        .is_some_and(|uris| !uris.is_empty() && uris.iter().all(|u| u.as_str().is_some_and(allowed_redirect)));
+    if !all_allowed {
+        return oauth_error("invalid_redirect_uri", "redirect_uris must be https (or a local http address)");
+    }
+    (
+        StatusCode::CREATED,
+        Json(json!({
+            "client_id": uuid::Uuid::new_v4().to_string(),
+            "client_id_issued_at": oauth_now(),
+            "redirect_uris": redirect_uris,
+            "client_name": request.get("client_name").cloned().unwrap_or(Value::Null),
+            "token_endpoint_auth_method": "none",
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+        })),
+    )
+        .into_response()
+}
+
+fn oauth_login_page(params: &std::collections::HashMap<String, String>, error: Option<&str>) -> Response {
+    let hidden: String = ["client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "response_type", "scope"]
+        .iter()
+        .filter_map(|key| {
+            params
+                .get(*key)
+                .map(|value| format!(r#"<input type="hidden" name="{}" value="{}">"#, key, html_escape(value)))
+        })
+        .collect();
+    let error = error.map(|e| format!(r#"<p class="error">{}</p>"#, html_escape(e))).unwrap_or_default();
+    let mut page = String::from(
+        r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ name }}: sign in</title><style>body { font-family: system-ui, sans-serif; max-width: 22rem; margin: 4rem auto; padding: 0 1rem } input[type=password], button { width: 100%; padding: .6rem; margin-top: .6rem; box-sizing: border-box } .error { color: #b00 }</style></head><body><h1>{{ name }}</h1><p>An application asks to use your tools.</p>"#,
+    );
+    page.push_str(&error);
+    page.push_str(r#"<form method="post" action="/oauth/authorize">"#);
+    page.push_str(&hidden);
+    page.push_str(r#"<input type="password" name="password" placeholder="Password" autofocus required><button type="submit">Allow</button></form></body></html>"#);
+    axum::response::Html(page).into_response()
+}
+
+async fn oauth_authorize_page(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if params.get("response_type").map(String::as_str) != Some("code") {
+        return oauth_error("unsupported_response_type", "response_type must be code");
+    }
+    if params.get("code_challenge_method").map(String::as_str) != Some("S256") || !params.contains_key("code_challenge") {
+        return oauth_error("invalid_request", "PKCE with S256 is required");
+    }
+    if !params.get("redirect_uri").is_some_and(|u| allowed_redirect(u)) {
+        return oauth_error("invalid_request", "invalid redirect_uri");
+    }
+    oauth_login_page(&params, None)
+}
+
+async fn oauth_authorize(
+    axum::extract::Form(params): axum::extract::Form<std::collections::HashMap<String, String>>,
+) -> Response {
+    let expected: String = {{ password_expr }};
+    let provided = params.get("password").cloned().unwrap_or_default();
+    let matches = !expected.is_empty()
+        && provided.len() == expected.len()
+        && provided.bytes().zip(expected.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0;
+    if !matches {
+        return oauth_login_page(&params, Some("Wrong password."));
+    }
+    let (Some(redirect_uri), Some(code_challenge)) = (params.get("redirect_uri"), params.get("code_challenge")) else {
+        return oauth_error("invalid_request", "missing redirect_uri or code_challenge");
+    };
+    if !allowed_redirect(redirect_uri) {
+        return oauth_error("invalid_request", "invalid redirect_uri");
+    }
+    let code = uuid::Uuid::new_v4().to_string();
+    if let Ok(mut codes) = PENDING_CODES.lock() {
+        codes.retain(|_, pending| pending.expires_at > std::time::Instant::now());
+        codes.insert(
+            code.clone(),
+            PendingCode {
+                redirect_uri: redirect_uri.clone(),
+                code_challenge: code_challenge.clone(),
+                expires_at: std::time::Instant::now() + std::time::Duration::from_secs(300),
+            },
+        );
+    }
+    let separator = if redirect_uri.contains('?') { '&' } else { '?' };
+    let mut location = format!("{}{}code={}", redirect_uri, separator, url_encode(&code));
+    if let Some(state) = params.get("state") {
+        location.push_str(&format!("&state={}", url_encode(state)));
+    }
+    axum::response::Redirect::to(&location).into_response()
+}
+
+async fn oauth_token(
+    axum::extract::Form(params): axum::extract::Form<std::collections::HashMap<String, String>>,
+) -> Response {
+    match params.get("grant_type").map(String::as_str) {
+        Some("authorization_code") => {
+            let code = params.get("code").cloned().unwrap_or_default();
+            let pending = PENDING_CODES.lock().ok().and_then(|mut codes| codes.remove(&code));
+            let Some(pending) = pending.filter(|p| p.expires_at > std::time::Instant::now()) else {
+                return oauth_error("invalid_grant", "unknown or expired code");
+            };
+            if params.get("redirect_uri").is_some_and(|uri| uri != &pending.redirect_uri) {
+                return oauth_error("invalid_grant", "redirect_uri mismatch");
+            }
+            use base64::Engine as _;
+            use sha2::Digest as _;
+            let verifier = params.get("code_verifier").cloned().unwrap_or_default();
+            let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(verifier.as_bytes()));
+            if challenge != pending.code_challenge {
+                return oauth_error("invalid_grant", "PKCE verification failed");
+            }
+            match oauth_tokens({{ oauth_user }}) {
+                Ok(tokens) => Json(tokens).into_response(),
+                Err(response) => response,
+            }
+        }
+        Some("refresh_token") => {
+            #[derive(serde::Deserialize)]
+            struct Claims {
+                user_id: i64,
+            }
+            let secret = match oauth_jwt_secret() {
+                Ok(secret) => secret,
+                Err(response) => return response,
+            };
+            let token = params.get("refresh_token").cloned().unwrap_or_default();
+            let claims = jsonwebtoken::decode::<Claims>(
+                &token,
+                &jsonwebtoken::DecodingKey::from_secret(format!("{}:refresh", secret).as_bytes()),
+                &jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256),
+            );
+            match claims {
+                Ok(data) => match oauth_tokens(data.claims.user_id) {
+                    Ok(tokens) => Json(tokens).into_response(),
+                    Err(response) => response,
+                },
+                Err(_) => oauth_error("invalid_grant", "invalid refresh_token"),
+            }
+        }
+        _ => oauth_error("unsupported_grant_type", "grant_type must be authorization_code or refresh_token"),
+    }
+}

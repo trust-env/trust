@@ -33,10 +33,28 @@ pub enum McpAuth {
     },
 }
 
+/// One `resources {}` entry, resolved against its use case.
+pub struct McpResourceBinding {
+    pub name: String,
+    pub uri: String,
+    pub description: String,
+    pub use_case_name: String,
+    pub input_type_name: String,
+}
+
+/// `oauth {}` settings, as Rust expressions.
+pub struct McpOAuthBinding {
+    pub public_url_expr: String,
+    pub password_expr: String,
+    pub user: i64,
+}
+
 pub struct McpAdapterFile {
     pub name: String,
     pub tools: Vec<McpToolBinding>,
+    pub resources: Vec<McpResourceBinding>,
     pub auth: McpAuth,
+    pub oauth: Option<McpOAuthBinding>,
     pub instructions: Option<String>,
 }
 
@@ -59,10 +77,15 @@ impl McpAdapterFile {
     /// Distinct use cases, in first-tool order, each with its generic param.
     fn use_cases(&self) -> Vec<(String, String)> {
         let mut seen: Vec<(String, String)> = Vec::new();
-        for tool in &self.tools {
-            if !seen.iter().any(|(uc, _)| uc == &tool.use_case_name) {
+        let names = self
+            .tools
+            .iter()
+            .map(|t| &t.use_case_name)
+            .chain(self.resources.iter().map(|r| &r.use_case_name));
+        for name in names {
+            if !seen.iter().any(|(uc, _)| uc == name) {
                 let param = format!("C{}", seen.len());
-                seen.push((tool.use_case_name.clone(), param));
+                seen.push((name.clone(), param));
             }
         }
         seen
@@ -85,11 +108,30 @@ impl McpAdapterFile {
         for (uc, _) in &use_cases {
             crate_items.push(format!("{}Trait", uc));
         }
-        for tool in &self.tools {
-            if !crate_items.contains(&tool.input_type_name) {
-                crate_items.push(tool.input_type_name.clone());
+        for input in self.tools.iter().map(|t| &t.input_type_name).chain(self.resources.iter().map(|r| &r.input_type_name)) {
+            if !crate_items.contains(input) {
+                crate_items.push(input.clone());
             }
         }
+        #[derive(Serialize)]
+        struct ResourceView {
+            uri_literal: String,
+            name_literal: String,
+            description_literal: String,
+            input: String,
+            field: String,
+        }
+        let resources: Vec<ResourceView> = self
+            .resources
+            .iter()
+            .map(|r| ResourceView {
+                uri_literal: format!("{:?}", r.uri),
+                name_literal: format!("{:?}", r.name),
+                description_literal: format!("{:?}", r.description),
+                input: r.input_type_name.clone(),
+                field: r.use_case_name.to_snake_case(),
+            })
+            .collect();
 
         let tools: Vec<ToolView> = self
             .tools
@@ -116,6 +158,13 @@ impl McpAdapterFile {
                 .collect::<Vec<_>>(),
         );
         context.insert("tools", &tools);
+        context.insert("resources", &resources);
+        context.insert("oauth", &self.oauth.is_some());
+        if let Some(oauth) = &self.oauth {
+            context.insert("public_url_expr", &oauth.public_url_expr);
+            context.insert("password_expr", &oauth.password_expr);
+            context.insert("oauth_user", &oauth.user);
+        }
         context.insert("crate_use", &crate_use(&crate_items));
         context.insert("instructions_literal", &self.instructions.as_ref().map(|i| format!("{:?}", i)));
         match &self.auth {

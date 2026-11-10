@@ -16,4 +16,4 @@ impl{{ generics }} {{ name }}Deps for {{ name }}{{ generics }}
 }
 
 /// The body, from its `module:` file (`<this file's name>/logic.rs`).
-pub mod logic;
+mod logic;

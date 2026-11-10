@@ -1112,7 +1112,22 @@ adapter Agent {
   ... }`; without auth, tools run as user 0 and `owner` use cases are
   refused.
 - Tool results come back as text and `structuredContent`; a use case error
-  is a result with `isError: true`. `RawRequest` use cases can't be tools.
+  is a result with `isError: true` and a readable text (`MissingField: title
+  est obligatoire`, `NotFound`). `RawRequest` use cases can't be tools.
+- `resources { goals { use_case: ListGoalsUseCase uri: "world://goals"
+  description: "..." } }` — read-only context: `resources/read` runs the use
+  case with its default input and returns its output as JSON.
+- `oauth { public_url: "${MCP_PUBLIC_URL}" password: "${MCP_OAUTH_PASSWORD}"
+  user: 1 }` — for remote clients such as claude.ai custom connectors: the
+  server becomes an OAuth 2.1 protected resource *and* a single-user
+  authorization server (`/.well-known/oauth-protected-resource`,
+  `/.well-known/oauth-authorization-server`, dynamic registration at
+  `/oauth/register`, a password page at `/oauth/authorize`, PKCE S256, refresh
+  tokens at `/oauth/token`). A 401 carries `WWW-Authenticate: Bearer
+  resource_metadata=...`. Access tokens are the usual JWTs (`JWT_SECRET`, 1
+  h); refresh tokens last 30 days and are signed with a derived key, so they
+  are not access tokens. `public_url` must be the URL clients reach (behind
+  the reverse proxy).
 
 ### `grpc`
 Declares gRPC adapter configuration.

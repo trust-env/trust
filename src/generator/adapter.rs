@@ -13,7 +13,7 @@ use crate::{
             RustCode,
             file::{
                 grpc_adapter_file::{GrpcAdapterFile, GrpcRpcBinding},
-                mcp_adapter_file::{McpAdapterFile, McpAuth, McpToolBinding},
+                mcp_adapter_file::{McpAdapterFile, McpAuth, McpOAuthBinding, McpResourceBinding, McpToolBinding},
                 http_adapter_file::{HttpAdapterFile, HttpOptions, HttpRouteBinding, ResolvedAuth, ResolvedSecret},
             },
             service::Service,
@@ -494,7 +494,7 @@ impl CodeGen {
                     name, tool.name, tool.use_case
                 ));
             }
-            if io.requires_user && mcp.auth.is_none() {
+            if io.requires_user && mcp.auth.is_none() && mcp.oauth.is_none() {
                 return Err(format!(
                     "mcp adapter '{}': use_case '{}' is scoped to the calling user ('owner'), so the adapter must declare 'auth'",
                     name, tool.use_case
@@ -524,7 +524,49 @@ impl CodeGen {
                 ));
             }
         };
-        Ok(McpAdapterFile { name: name.to_string(), tools, auth, instructions: mcp.instructions.clone() })
+        let mut resources = Vec::new();
+        for resource in &mcp.resources {
+            if !context.is_known_use_case(&resource.use_case) {
+                return Err(format!(
+                    "mcp adapter '{}': resource '{}' uses unknown use_case '{}'",
+                    name, resource.name, resource.use_case
+                ));
+            }
+            let io = context
+                .find_use_case_io(&resource.use_case)
+                .ok_or_else(|| format!("mcp adapter '{}': use_case '{}' has no resolved input", name, resource.use_case))?;
+            if io.raw_input {
+                return Err(format!("mcp adapter '{}': resource '{}' can't use a RawRequest use case", name, resource.name));
+            }
+            if io.requires_user && mcp.auth.is_none() && mcp.oauth.is_none() {
+                return Err(format!(
+                    "mcp adapter '{}': use_case '{}' is scoped to the calling user ('owner'), so the adapter must declare 'auth'",
+                    name, resource.use_case
+                ));
+            }
+            resources.push(McpResourceBinding {
+                name: resource.name.clone(),
+                uri: resource.uri.clone(),
+                description: resource.description.clone().unwrap_or_else(|| resource.use_case.clone()),
+                use_case_name: resource.use_case.clone(),
+                input_type_name: io.input_type_name.clone(),
+            });
+        }
+        let oauth = mcp.oauth.as_ref().map(|oauth| McpOAuthBinding {
+            public_url_expr: crate::generator::rust_code::env_template::to_rust_expr_lenient(&oauth.public_url),
+            password_expr: crate::generator::rust_code::env_template::to_rust_expr_lenient(&oauth.password),
+            user: oauth.user,
+        });
+        // OAuth tokens are JWTs: validate them like `auth: required`.
+        let auth = if oauth.is_some() && matches!(auth, McpAuth::None) { McpAuth::Jwt } else { auth };
+        Ok(McpAdapterFile {
+            name: name.to_string(),
+            tools,
+            resources,
+            auth,
+            oauth,
+            instructions: mcp.instructions.clone(),
+        })
     }
 
     fn create_mcp_service(
@@ -545,6 +587,12 @@ impl CodeGen {
         context.require_version_dependency_with_features("tower-http", "0.6", vec!["trace"]);
         if matches!(file.auth, McpAuth::Jwt) {
             context.require_version_dependency("jsonwebtoken", "9");
+        }
+        if file.oauth.is_some() {
+            context.require_version_dependency_with_features("uuid", "1", vec!["v4"]);
+            context.require_version_dependency("sha2", "0.10");
+            context.require_version_dependency("base64", "0.22");
+            context.require_version_dependency_with_features("serde", "1", vec!["derive"]);
         }
         let mcp_folder = folder.join("mcp");
         create_dir_all(&mcp_folder).map_err(|e| format!("Failed to create the mcp folder: {}", e))?;

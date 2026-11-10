@@ -51,7 +51,7 @@ where
             {{ t.name_literal }} => match serde_json::from_value::<{{ t.input }}>(arguments) {
                 Ok(input) => match self.{{ t.field }}.execute(user, input).await {
                     Ok(output) => serde_json::to_value(&output).map_err(|e| e.to_string()),
-                    Err(error) => Err(format!("{:?}", error)),
+                    Err(error) => Err(describe_error(format!("{:?}", error))),
                 },
                 Err(error) => Err(format!("invalid arguments: {}", error)),
             },
@@ -71,6 +71,31 @@ where
         }
     }
 
+{%- if resources %}
+    /// `resources/read`: runs the resource's use case with its default
+    /// input and returns the output as JSON text.
+    async fn read_resource(&self, user: i64, uri: &str) -> Result<Value, Value> {
+        let _ = user;
+        let output: Result<Value, String> = match uri {
+{%- for r in resources %}
+            {{ r.uri_literal }} => match self.{{ r.field }}.execute(user, {{ r.input }}::default()).await {
+                Ok(output) => serde_json::to_value(&output).map_err(|e| e.to_string()),
+                Err(error) => Err(describe_error(format!("{:?}", error))),
+            },
+{%- endfor %}
+            _ => return Err(json!({ "code": -32002, "message": format!("resource not found: {}", uri) })),
+        };
+        match output {
+            Ok(value) => Ok(json!({ "contents": [{
+                "uri": uri,
+                "mimeType": "application/json",
+                "text": serde_json::to_string_pretty(&value).unwrap_or_default(),
+            }] })),
+            Err(message) => Err(json!({ "code": -32603, "message": message })),
+        }
+    }
+{%- endif %}
+
     /// Handles one JSON-RPC message; `None` for notifications.
     pub async fn handle(&self, user: i64, message: Value) -> Option<Value> {
         let id = message.get("id").cloned()?;
@@ -84,9 +109,9 @@ where
                     .find(|v| **v == requested)
                     .copied()
                     .unwrap_or(PROTOCOL_VERSIONS[0]);
-                let mut result = json!({
+                let {% if instructions_literal %}mut {% endif %}result = json!({
                     "protocolVersion": version,
-                    "capabilities": { "tools": { "listChanged": false } },
+                    "capabilities": { "tools": { "listChanged": false }{% if resources %}, "resources": { "listChanged": false }{% endif %} },
                     "serverInfo": { "name": {{ server_name_literal }}, "version": env!("CARGO_PKG_VERSION") },
                 });
 {%- if instructions_literal %}
@@ -96,6 +121,20 @@ where
             }
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": Self::tools() })),
+            "resources/list" => Ok(json!({ "resources": [
+{%- for r in resources %}
+                { "uri": {{ r.uri_literal }}, "name": {{ r.name_literal }}, "description": {{ r.description_literal }}, "mimeType": "application/json" },
+{%- endfor %}
+            ] })),
+            "resources/templates/list" => Ok(json!({ "resourceTemplates": [] })),
+            "resources/read" => {
+                let uri = params.get("uri").and_then(Value::as_str).unwrap_or_default().to_string();
+{%- if resources %}
+                self.read_resource(user, &uri).await
+{%- else %}
+                Err(json!({ "code": -32002, "message": format!("resource not found: {}", uri) }))
+{%- endif %}
+            }
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
                 let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
@@ -140,7 +179,7 @@ where
 
     /// The user a request acts as, from its credentials.
     fn authenticate(headers: &HeaderMap) -> Result<i64, (StatusCode, &'static str)> {
-{%- if auth == "jwt" %}
+{%- if auth == "jwt" or oauth %}
         #[derive(serde::Deserialize)]
         struct Claims {
             user_id: i64,
@@ -190,7 +229,16 @@ where
 {{ where_clause }}{
     let user = match {{ name }}::<{{ generics }}>::authenticate(&headers) {
         Ok(user) => user,
+{%- if oauth %}
+        // Tells OAuth clients where to find the authorization server.
+        Err((status, message)) => {
+            let metadata = format!("{}/.well-known/oauth-protected-resource", oauth_public_url());
+            let challenge = format!(r#"Bearer resource_metadata="{}""#, metadata);
+            return (status, [(axum::http::header::WWW_AUTHENTICATE, challenge)], message).into_response();
+        }
+{%- else %}
         Err(rejection) => return rejection.into_response(),
+{%- endif %}
     };
     let replies: Vec<Value> = match body {
         Value::Array(messages) => {
@@ -217,7 +265,30 @@ where
         Router::new()
             // No server-initiated stream: GET is not offered (405).
             .route("/mcp", post(mcp_post::<{{ generics }}>))
+{%- if oauth %}
+            .route("/.well-known/oauth-protected-resource", axum::routing::get(oauth_protected_resource))
+            .route("/.well-known/oauth-protected-resource/mcp", axum::routing::get(oauth_protected_resource))
+            .route("/.well-known/oauth-authorization-server", axum::routing::get(oauth_authorization_server))
+            .route("/oauth/register", post(oauth_register))
+            .route("/oauth/authorize", axum::routing::get(oauth_authorize_page).post(oauth_authorize))
+            .route("/oauth/token", post(oauth_token))
+{%- endif %}
             .with_state(self)
             .layer(tower_http::trace::TraceLayer::new_for_http())
     }
 }
+
+/// `Variant("message")` (a use case error's Debug form) as `Variant: message`.
+fn describe_error(debug: String) -> String {
+    if let Some((variant, rest)) = debug.split_once('(') {
+        if let Some(inner) = rest.strip_suffix(')') {
+            if let Ok(message) = serde_json::from_str::<String>(inner) {
+                return format!("{}: {}", variant, message);
+            }
+        }
+    }
+    debug
+}
+{%- if oauth %}
+{% include "file/mcp_adapter/oauth.rs.tera" %}
+{%- endif %}
