@@ -148,6 +148,25 @@ fn main() {
         eprintln!("Parsed ASTs: {:#?}", asts);
     }
 
+    for (flag, kind) in [("emit-ts", "TypeScript client"), ("emit-openapi", "OpenAPI document")] {
+        let Some(target) = flags.get(flag) else { continue };
+        let all_asts: Vec<Ast> = asts.iter().flatten().cloned().collect();
+        let generator = CodeGen::new(Vec::new());
+        let title = files.first().map(String::as_str).unwrap_or("api");
+        let content = if flag == "emit-ts" {
+            generator.emit_typescript(&all_asts)
+        } else {
+            generator.emit_openapi(&all_asts, title)
+        };
+        match content.and_then(|c| std::fs::write(target, c).map_err(|e| e.to_string())) {
+            Ok(()) => println!("Wrote {} to {}", kind, target),
+            Err(e) => {
+                eprintln!("Error occurred while writing the {}: {}", kind, e);
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(vendor_dir) = flags.get("vendor") {
         match trust::vendor::vendor_dependencies(&out_dir, &PathBuf::from(vendor_dir)) {
             Ok(vendored) if !vendored.is_empty() => {

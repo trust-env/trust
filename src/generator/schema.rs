@@ -79,7 +79,10 @@ pub fn ts_type(t: &RustType) -> String {
         return t.name.clone();
     }
     match t.name.as_str() {
-        "Option" => format!("{} | null", t.templates.first().map(ts_type).unwrap_or_else(|| "unknown".into())),
+        "Option" => {
+            let inner = t.templates.first().map(ts_type).unwrap_or_else(|| "unknown".into());
+            if inner.ends_with(" | null") { inner } else { format!("{} | null", inner) }
+        }
         "Vec" => {
             let inner = t.templates.first().map(ts_type).unwrap_or_else(|| "unknown".into());
             if inner.contains(' ') { format!("Array<{}>", inner) } else { format!("{}[]", inner) }

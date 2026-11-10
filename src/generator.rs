@@ -1,6 +1,7 @@
 pub mod adapter;
 pub mod app;
 pub mod domains;
+mod emit;
 pub mod import;
 pub mod infra;
 pub mod plugin;
