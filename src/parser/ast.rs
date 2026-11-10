@@ -198,6 +198,31 @@ pub struct McpAdapterService {
     /// Text the client may show the model about how to use the tools.
     pub instructions: Option<String>,
     pub tools: Vec<McpTool>,
+    /// Read-only context the client can load (`resources/read`).
+    pub resources: Vec<McpResource>,
+    /// `oauth { ... }` — an OAuth 2.1 authorization server for remote
+    /// clients (claude.ai connectors); tokens are JWTs like `auth: required`.
+    pub oauth: Option<McpOAuth>,
+}
+
+/// One `resources { name { use_case: X uri: "world://goals" description: "..." } }` entry.
+#[derive(Debug, Clone)]
+pub struct McpResource {
+    pub name: String,
+    pub use_case: String,
+    pub uri: String,
+    pub description: Option<String>,
+}
+
+/// `oauth { public_url: "${MCP_PUBLIC_URL}" password: "${MCP_OAUTH_PASSWORD}" user: 1 }`:
+/// a single-user authorization server (the password form signs in as
+/// `user`), with dynamic client registration and PKCE.
+#[derive(Debug, Clone)]
+pub struct McpOAuth {
+    /// The server's public base URL (`https://...`), for the metadata.
+    pub public_url: String,
+    pub password: String,
+    pub user: i64,
 }
 
 #[derive(Debug, Clone)]

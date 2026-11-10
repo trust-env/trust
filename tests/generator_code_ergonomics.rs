@@ -54,7 +54,7 @@ fn module_files_are_real_modules_with_a_deps_trait() {
     assert!(plan.contains("logic::execute(self, user, input).await"), "{plan}");
     assert!(plan.contains("pub trait PlanUseCaseDeps {"), "{plan}");
     assert!(plan.contains("fn task_infra(&self) -> &(impl TaskStorage + TrustTransactional);"), "{plan}");
-    assert!(plan.contains("pub mod logic;"), "{plan}");
+    assert!(plan.contains("\nmod logic;"), "{plan}");
     let logic = p.read("main/src/applications/plan_use_case/logic.rs");
     assert!(logic.contains("pub async fn execute(deps: &impl PlanUseCaseDeps"), "{logic}");
 }

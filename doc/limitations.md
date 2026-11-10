@@ -191,8 +191,10 @@
 
 ## MCP Adapter
 
-- Tools only (no MCP resources, prompts or server-initiated notifications);
-  `GET /mcp` (a server-to-client stream) is not offered.
+- Tools and resources (no prompts, resource templates or server-initiated
+  notifications); `GET /mcp` (a server-to-client stream) is not offered.
+- `oauth {}` is single-user: one password signs in as one user. Pending
+  authorization codes live in memory (a restart drops sign-ins in progress).
 - `<binary> mcp` serves the first `mcp {}` adapter of the app over stdio.
 - The HTTP transport doesn't check the `Origin` header: bind it to
   `127.0.0.1` or put it behind auth.

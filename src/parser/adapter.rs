@@ -3,7 +3,7 @@ use crate::{
     parser::{
         AdapterService, AdapterType, AllowedType, Ast, AuthRequirement, EventsEndpoint,
         GrpcAdapterService, GrpcRpc, HttpAdapterService, HttpMethod, HttpRoute, McpAdapterService,
-        McpTool, Parser, PermissionRequirement, SecretRequirement, StatusMapping,
+        McpOAuth, McpResource, McpTool, Parser, PermissionRequirement, SecretRequirement, StatusMapping,
     },
 };
 
@@ -600,7 +600,14 @@ impl Parser {
             (Some(Token::Identifier(word)), Some(Token::OpenBrace)) if word == "mcp" => {}
             _ => return Err("Expected 'mcp {' block".to_string()),
         }
-        let mut service = McpAdapterService { on: None, auth: None, instructions: None, tools: Vec::new() };
+        let mut service = McpAdapterService {
+            on: None,
+            auth: None,
+            instructions: None,
+            tools: Vec::new(),
+            resources: Vec::new(),
+            oauth: None,
+        };
         loop {
             match self.next_token() {
                 Some(Token::CloseBrace) => break,
@@ -612,6 +619,77 @@ impl Parser {
                 Some(Token::Keyword(Keyword::Auth)) => {
                     self.revert(1);
                     service.auth = Some(self.try_auth_block()?);
+                }
+                Some(Token::Identifier(word)) if word == "resources" => {
+                    if self.next_token() != Some(Token::OpenBrace) {
+                        return Err("Expected '{' after 'resources'".to_string());
+                    }
+                    loop {
+                        let name = match self.next_token() {
+                            Some(Token::CloseBrace) => break,
+                            Some(Token::Comma) => continue,
+                            Some(Token::Identifier(name)) => name,
+                            other => return Err(format!("Expected a resource name, got {:?}", other)),
+                        };
+                        if self.next_token() != Some(Token::OpenBrace) {
+                            return Err(format!("Expected '{{' after resource '{}'", name));
+                        }
+                        let (mut use_case, mut uri, mut description) = (None, None, None);
+                        loop {
+                            match self.next_token() {
+                                Some(Token::CloseBrace) => break,
+                                Some(Token::Comma) => continue,
+                                Some(Token::Keyword(Keyword::UseCase)) => match (self.next_token(), self.next_token()) {
+                                    (Some(Token::Colon), Some(Token::Identifier(uc))) => use_case = Some(uc),
+                                    _ => return Err(format!("Expected ': <UseCase>' in resource '{}'", name)),
+                                },
+                                Some(Token::Identifier(k)) if k == "uri" || k == "description" => {
+                                    match (self.next_token(), self.next_token()) {
+                                        (Some(Token::Colon), Some(Token::StringLiteral(v))) => {
+                                            if k == "uri" { uri = Some(v) } else { description = Some(v) }
+                                        }
+                                        _ => return Err(format!("Expected ': \"...\"' after '{}' in resource '{}'", k, name)),
+                                    }
+                                }
+                                other => return Err(format!("Unexpected {:?} in resource '{}' (expected use_case, uri, description)", other, name)),
+                            }
+                        }
+                        let use_case = use_case.ok_or(format!("resource '{}' must declare 'use_case'", name))?;
+                        let uri = uri.ok_or(format!("resource '{}' must declare 'uri'", name))?;
+                        service.resources.push(McpResource { name, use_case, uri, description });
+                    }
+                }
+                Some(Token::Identifier(word)) if word == "oauth" => {
+                    if self.next_token() != Some(Token::OpenBrace) {
+                        return Err("Expected '{' after 'oauth'".to_string());
+                    }
+                    let (mut public_url, mut password, mut user) = (None, None, 0);
+                    loop {
+                        match self.next_token() {
+                            Some(Token::CloseBrace) => break,
+                            Some(Token::Comma) => continue,
+                            Some(Token::Identifier(k)) if k == "public_url" || k == "password" => {
+                                match (self.next_token(), self.next_token()) {
+                                    (Some(Token::Colon), Some(Token::StringLiteral(v))) => {
+                                        if k == "public_url" { public_url = Some(v) } else { password = Some(v) }
+                                    }
+                                    _ => return Err(format!("Expected ': \"...\"' after '{}' in 'oauth'", k)),
+                                }
+                            }
+                            Some(Token::Identifier(k)) if k == "user" => match (self.next_token(), self.next_token()) {
+                                (Some(Token::Colon), Some(Token::Identifier(v))) if v.parse::<i64>().is_ok() => {
+                                    user = v.parse().unwrap_or(0)
+                                }
+                                _ => return Err("Expected ': <user id>' after 'user' in 'oauth'".to_string()),
+                            },
+                            other => return Err(format!("Unexpected {:?} in 'oauth' (expected public_url, password, user)", other)),
+                        }
+                    }
+                    service.oauth = Some(McpOAuth {
+                        public_url: public_url.ok_or("'oauth' must declare 'public_url'")?,
+                        password: password.ok_or("'oauth' must declare 'password'")?,
+                        user,
+                    });
                 }
                 Some(Token::Identifier(word)) if word == "instructions" => {
                     match (self.next_token(), self.next_token()) {

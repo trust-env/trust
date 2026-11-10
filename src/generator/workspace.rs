@@ -79,6 +79,9 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
                 for tool in &mcp.tools {
                     use_case_names.insert(tool.use_case.clone());
                 }
+                for resource in &mcp.resources {
+                    use_case_names.insert(resource.use_case.clone());
+                }
             }
         }
     }
