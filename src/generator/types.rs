@@ -130,6 +130,20 @@ impl CodeGen {
         match t {
             TypeDeclaration::Struct(s) => self.resolve_struct_declaration(context, s),
             TypeDeclaration::TypeAlias(a) => self.resolve_type_alias_declaration(context, a),
+            TypeDeclaration::Enum(e) if e.is_tagged() => {
+                let mut variants = Vec::new();
+                for (wire, fields) in e.variants.iter().zip(&e.fields) {
+                    let mut resolved = Vec::new();
+                    for field in fields {
+                        resolved.push(RustField {
+                            name: field.name.clone(),
+                            field_type: self.resolve_type_reference(context, &field.field_type)?,
+                        });
+                    }
+                    variants.push((wire.clone(), resolved));
+                }
+                Ok(RustType::primitive(&e.name).with_kind(TypeKind::TaggedEnum(variants)))
+            }
             TypeDeclaration::Enum(e) => Ok(Self::resolve_enum_declaration(e)),
             TypeDeclaration::Derived(d) => {
                 let mut t = self.resolve_derived(context, &d.base, &d.name)?;

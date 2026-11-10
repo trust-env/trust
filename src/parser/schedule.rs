@@ -87,7 +87,17 @@ impl Parser {
                         Some(Token::Identifier(use_case)) => use_case,
                         _ => return fail(self, format!("Expected a use case name after \"{}\" =>", cron)),
                     };
-                    let mut job = ScheduleJob { cron, use_case, tz: None };
+                    let mut job = ScheduleJob { cron, use_case, tz: None, input: None };
+                    let pos = self.current;
+                    if self.next_token() == Some(Token::OpenBrace) {
+                        self.revert(1);
+                        match self.try_json_literal() {
+                            Ok(value) => job.input = Some(value),
+                            Err(e) => return fail(self, e),
+                        }
+                    } else {
+                        self.reset(pos);
+                    }
                     let pos = self.current;
                     match self.next_token() {
                         Some(Token::Identifier(word)) if word == "tz" => match self.try_tz_value() {
@@ -118,6 +128,69 @@ impl Parser {
             return Err(format!("schedule '{}' must declare at least one job", schedule.name));
         }
         Ok(Ast::Schedule(schedule))
+    }
+}
+
+impl Parser {
+    /// A JSON value written in Trust syntax: `{ key: value ... }` (commas
+    /// optional), `[a, b]`, `"text"`, numbers, `true` / `false` / `null`.
+    pub(super) fn try_json_literal(&mut self) -> Result<serde_json::Value, String> {
+        match self.next_token() {
+            Some(Token::OpenBrace) => {
+                let mut map = serde_json::Map::new();
+                loop {
+                    let key = match self.next_token() {
+                        Some(Token::CloseBrace) => break,
+                        Some(Token::Comma) => continue,
+                        Some(Token::Identifier(k)) | Some(Token::StringLiteral(k)) => k,
+                        Some(Token::Keyword(k)) => k.to_string(),
+                        other => return Err(format!("Expected a field name, got {:?}", other)),
+                    };
+                    if self.next_token() != Some(Token::Colon) {
+                        return Err(format!("Expected ':' after '{}'", key));
+                    }
+                    let value = self.try_json_literal()?;
+                    map.insert(key, value);
+                }
+                Ok(serde_json::Value::Object(map))
+            }
+            Some(Token::OpenBracket) => {
+                let mut items = Vec::new();
+                loop {
+                    let pos = self.current;
+                    match self.next_token() {
+                        Some(Token::CloseBracket) => break,
+                        Some(Token::Comma) => continue,
+                        _ => {
+                            self.reset(pos);
+                            items.push(self.try_json_literal()?);
+                        }
+                    }
+                }
+                Ok(serde_json::Value::Array(items))
+            }
+            Some(Token::StringLiteral(text)) => Ok(serde_json::Value::String(text)),
+            Some(Token::Identifier(word)) => match word.as_str() {
+                "true" => Ok(serde_json::Value::Bool(true)),
+                "false" => Ok(serde_json::Value::Bool(false)),
+                "null" => Ok(serde_json::Value::Null),
+                number => {
+                    let integer = number
+                        .parse::<i64>()
+                        .map_err(|_| format!("'{}' is not a value (quote text: \"{}\")", number, number))?;
+                    // `1.5` lexes as `1`, `.`, `5`.
+                    let pos = self.current;
+                    if let (Some(Token::Dot), Some(Token::Identifier(fraction))) = (self.next_token(), self.next_token()) {
+                        if let Ok(float) = format!("{}.{}", integer, fraction).parse::<f64>() {
+                            return Ok(serde_json::json!(float));
+                        }
+                    }
+                    self.reset(pos);
+                    Ok(serde_json::Value::from(integer))
+                }
+            },
+            other => Err(format!("Expected a value, got {:?}", other)),
+        }
     }
 }
 

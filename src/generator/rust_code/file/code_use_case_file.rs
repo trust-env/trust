@@ -25,6 +25,12 @@ pub enum CodeDependency {
         infra_name: String,
         type_name: String,
     },
+    /// `use_case: X` — another use case, generic over its `{X}Trait`.
+    UseCase {
+        name: String,
+        input: String,
+        output: String,
+    },
 }
 
 impl CodeDependency {
@@ -32,6 +38,7 @@ impl CodeDependency {
         match self {
             CodeDependency::Storage { infra_name, .. }
             | CodeDependency::Concrete { infra_name, .. } => infra_name.to_snake_case(),
+            CodeDependency::UseCase { name, .. } => name.to_snake_case(),
         }
     }
 }
@@ -51,6 +58,9 @@ pub struct CodeUseCaseFile {
     pub transaction: bool,
     /// Announce successful runs to `events:` streams.
     pub publish: bool,
+    /// `module:` — `body` is a whole module (`applications/<name>/logic.rs`)
+    /// and `execute` calls its `execute(self, user, input)`.
+    pub module: bool,
 }
 
 impl CodeUseCaseFile {
@@ -64,7 +74,8 @@ impl CodeUseCaseFile {
 
     /// `S0, S1, ...` for each storage dependency, in declaration order.
     fn generic_params(&self) -> Vec<(String, Vec<String>)> {
-        self.dependencies
+        let mut params: Vec<(String, Vec<String>)> = self
+            .dependencies
             .iter()
             .filter_map(|d| match d {
                 CodeDependency::Storage { storage_trait, transactional, .. } => {
@@ -74,11 +85,24 @@ impl CodeUseCaseFile {
                     }
                     Some(bounds)
                 }
-                CodeDependency::Concrete { .. } => None,
+                _ => None,
             })
             .enumerate()
             .map(|(i, bounds)| (format!("S{}", i), bounds))
-            .collect()
+            .collect();
+        params.extend(
+            self.dependencies
+                .iter()
+                .filter_map(|d| match d {
+                    CodeDependency::UseCase { name, .. } => {
+                        Some(vec![format!("{}Trait", name), "Clone".to_string(), "Send".to_string(), "Sync".to_string()])
+                    }
+                    _ => None,
+                })
+                .enumerate()
+                .map(|(i, bounds)| (format!("U{}", i), bounds)),
+        );
+        params
     }
 
     fn generics(&self) -> String {
@@ -99,10 +123,21 @@ impl CodeUseCaseFile {
                 }
             }
         }
+        // `?` on another use case's result: its NotFound stays NotFound,
+        // anything else becomes StorageError.
+        let use_case_errors: Vec<String> = self
+            .dependencies
+            .iter()
+            .filter_map(|d| match d {
+                CodeDependency::UseCase { name, .. } => Some(format!("{}Error", name)),
+                _ => None,
+            })
+            .collect();
         let mut context = Context::new();
         context.insert("name", &self.error_name());
         context.insert("variants", &self.error_variants);
         context.insert("storage_errors", &storage_errors);
+        context.insert("use_case_errors", &use_case_errors);
         render("file/code_use_case/error.rs.tera", &context)
     }
 
@@ -114,6 +149,7 @@ impl CodeUseCaseFile {
         }
 
         let mut generic_index = 0;
+        let mut use_case_index = 0;
         let fields: Vec<FieldView> = self
             .dependencies
             .iter()
@@ -124,6 +160,10 @@ impl CodeUseCaseFile {
                         format!("S{}", generic_index - 1)
                     }
                     CodeDependency::Concrete { type_name, .. } => type_name.clone(),
+                    CodeDependency::UseCase { .. } => {
+                        use_case_index += 1;
+                        format!("U{}", use_case_index - 1)
+                    }
                 };
                 FieldView {
                     field: d.field(),
@@ -156,7 +196,49 @@ impl CodeUseCaseFile {
 
     /// The hand-written body, preceded by a use of `user` so an
     /// owner-agnostic body doesn't trigger an unused-variable warning.
+    /// `pub trait {Name}Deps` — what a `module:` file's `execute` reaches
+    /// through `deps`, one accessor per infra / use case.
+    fn gen_deps_trait(&self) -> String {
+        #[derive(Serialize)]
+        struct AccessorView {
+            field: String,
+            /// The accessor's return type.
+            returns: String,
+        }
+        let mut storage_index = 0;
+        let mut use_case_index = 0;
+        let generic_params = self.generic_params();
+        let accessors: Vec<AccessorView> = self
+            .dependencies
+            .iter()
+            .map(|d| {
+                let returns = match d {
+                    CodeDependency::Storage { .. } => {
+                        storage_index += 1;
+                        let (_, bounds) = &generic_params[storage_index - 1];
+                        format!("&(impl {})", bounds.join(" + "))
+                    }
+                    CodeDependency::Concrete { type_name, .. } => format!("&{}", type_name),
+                    CodeDependency::UseCase { name, .. } => {
+                        use_case_index += 1;
+                        format!("&(impl {}Trait + Clone + Send + Sync)", name)
+                    }
+                };
+                AccessorView { field: d.field(), returns }
+            })
+            .collect();
+        let mut context = Context::new();
+        context.insert("name", &self.name);
+        context.insert("generics", &self.generics());
+        context.insert("where_clause", &self.where_clause());
+        context.insert("accessors", &accessors);
+        render("file/code_use_case/deps_trait.rs.tera", &context)
+    }
+
     fn indented_body(&self) -> String {
+        if self.module {
+            return indented_body(&["logic::execute(self, user, input).await"]);
+        }
         let mut lines = vec!["let _ = (user, &input);"];
         lines.extend(
             self.body
@@ -209,6 +291,16 @@ impl CodeUseCaseFile {
         code.push_str(&self.gen_trait());
         code.push_str(&self.gen_struct());
         code.push_str(&self.gen_impl());
+        if self.module {
+            code.push_str(&self.gen_deps_trait());
+            let dir = folder.join(self.name.to_snake_case());
+            std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create {:?}: {}", dir, e))?;
+            let mut context = Context::new();
+            context.insert("file", &self.source_file);
+            context.insert("source", &self.body);
+            std::fs::write(dir.join("logic.rs"), render("file/code_use_case/module.rs.tera", &context))
+                .map_err(|e| format!("Failed to write the module of {}: {}", self.name, e))?;
+        }
 
         let path = folder.join(format!("{}.rs", self.name.to_snake_case()));
         File::create(&path)

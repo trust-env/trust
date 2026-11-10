@@ -4,8 +4,7 @@ use trust::{
     ai::AiConfig,
     generator::CodeGen,
     generator::rust_code::render::register_plugin_templates,
-    lexer::{Lexer, Spanned, Token},
-    parser::{Ast, Parser},
+    parser::Ast,
     plugin::{LoadedPlugin, load_plugin},
 };
 

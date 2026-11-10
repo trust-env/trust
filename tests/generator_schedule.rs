@@ -47,7 +47,7 @@ fn schedule_jobs_are_spawned_with_compiled_cron_masks() {
     assert!(cargo.contains("tracing = \"0.1\""), "{cargo}");
 
     // Scheduled runs build their input with Default::default().
-    let uc = p.read("main/src/applications/list_ticks_use_case.rs");
+    assert!(uc.contains("#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]"), "{uc}");
     assert!(uc.contains("#[derive(Debug, Clone, Default, serde::Deserialize)]"), "{uc}");
 }
 

@@ -9,7 +9,7 @@ pub enum Scope {
     Private,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustField {
     pub name: String,
     pub field_type: RustType,
@@ -27,9 +27,11 @@ pub enum TypeKind {
     Regex(String),
     /// A declared struct (`type X { ... }`).
     Struct,
+    /// An enum whose variants carry fields: `(wire name, fields)`.
+    TaggedEnum(Vec<(String, Vec<RustField>)>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustType {
     pub scope: Scope,
     pub name: String,
@@ -92,7 +94,7 @@ impl RustType {
     /// lists and declared structs (`Json` itself binds natively).
     pub fn is_json_wrapped(&self) -> bool {
         let t = self.unwrap_option();
-        t.name == "Vec" || t.kind == TypeKind::Struct
+        t.name == "Vec" || t.kind == TypeKind::Struct || matches!(t.kind, TypeKind::TaggedEnum(_))
     }
 
     /// The `Regex<...>` pattern of this field (or of its `Option` inner).

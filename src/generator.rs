@@ -199,6 +199,8 @@ pub struct CodeGenContext {
     databases: HashMap<String, crate::parser::DatabaseDeclaration>,
     /// The `database:` each psql infra names.
     psql_databases: HashMap<String, String>,
+    /// Use cases each `code {}` use case runs (`code { use_case: X }`).
+    use_case_deps: HashMap<String, Vec<String>>,
 }
 
 impl CodeGenContext {
@@ -243,7 +245,12 @@ impl CodeGenContext {
             has_events: false,
             databases: HashMap::new(),
             psql_databases: HashMap::new(),
+            use_case_deps: HashMap::new(),
         }
+    }
+
+    pub fn find_use_case_deps(&self, use_case: &str) -> &[String] {
+        self.use_case_deps.get(use_case).map(Vec::as_slice).unwrap_or(&[])
     }
 
     /// The `database {}` a psql infra uses, if it names one.
@@ -883,11 +890,14 @@ impl CodeGen {
                         context.register_use_case_infra(use_case.name.clone(), blob.target.clone());
                     }
                     if let Some(code) = &use_case.code {
+                        if !code.use_cases.is_empty() {
+                            context.use_case_deps.insert(use_case.name.clone(), code.use_cases.clone());
+                        }
                         for infra_name in &code.infras {
                             context
                                 .register_use_case_infra(use_case.name.clone(), infra_name.clone());
                         }
-                        if code.infras.is_empty() {
+                        if code.infras.is_empty() && code.use_cases.is_empty() {
                             // Same "constructed with no arguments" wiring
                             // `ai {}` use cases without an infra get.
                             context.register_ai_use_case_without_infra(use_case.name.clone());
@@ -1026,7 +1036,7 @@ impl CodeGen {
                 ),
                 Ast::TypeDecl(t) => self.gen_domain(&mut context, t, domain_path.clone()),
                 // Generated with the app that runs them.
-                Ast::App(_) | Ast::Schedule(_) | Ast::Config(_) | Ast::Include(_) | Ast::Database(_) | Ast::Resource(_) => Ok(()),
+                Ast::App(_) | Ast::Schedule(_) | Ast::Config(_) | Ast::Include(_) | Ast::Database(_) | Ast::Resource(_) | Ast::InfraSet(..) => Ok(()),
                 Ast::Plugin(plugin_ast) => self.generate_plugin(
                     &mut context,
                     plugin_ast,
@@ -1171,6 +1181,15 @@ impl CodeGen {
             )
             .map_err(|e| format!("Failed to write the events module: {}", e))?;
             lib_mods.push("trust_events".to_string());
+        }
+        // Typed list queries, named by every storage trait.
+        if !context.infra_entity_modules.is_empty() || !context.grpc_client_entity_modules.is_empty() {
+            std::fs::write(
+                src_path.join("trust_query.rs"),
+                crate::generator::rust_code::render::render("file/query/query.rs.tera", &tera::Context::new()),
+            )
+            .map_err(|e| format!("Failed to write the query module: {}", e))?;
+            lib_mods.push("trust_query".to_string());
         }
         // A `schedule {}` run by this app's binary needs the cron runtime.
         if asts.iter().any(|ast| matches!(ast, Ast::Schedule(_))) {

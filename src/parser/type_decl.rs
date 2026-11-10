@@ -139,6 +139,22 @@ impl Parser {
     /// `enum Name { a b c }` (commas optional) — `enum` is contextual,
     /// not a reserved keyword. Variants are identifiers or string literals
     /// (for wire values that aren't valid identifiers, e.g. `"in-progress"`).
+    /// `{ a: Int b: String }` after an enum variant (none: a plain value).
+    fn try_variant_fields(&mut self, start: usize) -> Result<Vec<StructField>, String> {
+        let pos = self.current;
+        if self.next_token() != Some(Token::OpenBrace) {
+            self.reset(pos);
+            return Ok(Vec::new());
+        }
+        match self.try_type_decl_body() {
+            Ok((fields, _)) => Ok(fields),
+            Err(e) => {
+                self.reset(start);
+                Err(e)
+            }
+        }
+    }
+
     pub(super) fn try_enum_declaration(&mut self) -> Result<Ast, String> {
         let pos = self.current;
         match (self.next_token(), self.next_token(), self.next_token()) {
@@ -146,6 +162,7 @@ impl Parser {
                 if kw == "enum" =>
             {
                 let mut variants: Vec<String> = Vec::new();
+                let mut fields: Vec<Vec<StructField>> = Vec::new();
                 let mut export = None;
                 loop {
                     match self.next_token() {
@@ -163,9 +180,13 @@ impl Parser {
                                 self.reset(pos);
                                 return Err(format!("enum '{}' declares '{}' twice", name, v));
                             }
-                            variants.push(v)
+                            variants.push(v);
+                            fields.push(self.try_variant_fields(pos)?);
                         }
-                        Some(Token::Keyword(k)) => variants.push(k.to_string()),
+                        Some(Token::Keyword(k)) => {
+                            variants.push(k.to_string());
+                            fields.push(self.try_variant_fields(pos)?);
+                        }
                         _ => {
                             self.reset(pos);
                             return Err(format!("Failed to parse enum '{}'", name));
@@ -176,7 +197,7 @@ impl Parser {
                     self.reset(pos);
                     return Err(format!("enum '{}' must declare at least one variant", name));
                 }
-                Ok(TypeDecl(TypeDeclaration::Enum(EnumDeclaration { name, variants, export })))
+                Ok(TypeDecl(TypeDeclaration::Enum(EnumDeclaration { name, variants, fields, export })))
             }
             _ => {
                 self.reset(pos);

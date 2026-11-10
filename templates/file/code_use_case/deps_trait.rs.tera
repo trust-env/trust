@@ -1,0 +1,19 @@
+
+/// What `logic::execute` reaches through `deps`.
+pub trait {{ name }}Deps {
+{%- for a in accessors %}
+    fn {{ a.field }}(&self) -> {{ a.returns }};
+{%- endfor %}
+}
+
+impl{{ generics }} {{ name }}Deps for {{ name }}{{ generics }}
+{{ where_clause }}{
+{%- for a in accessors %}
+    fn {{ a.field }}(&self) -> {{ a.returns }} {
+        &self.{{ a.field }}
+    }
+{%- endfor %}
+}
+
+/// The body, from its `module:` file (`<this file's name>/logic.rs`).
+pub mod logic;

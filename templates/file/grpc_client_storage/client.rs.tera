@@ -32,7 +32,9 @@ pub struct {{ entity }}Patch {
 pub trait {{ entity }}Storage: Storage<{{ entity }}, {{ error_name }}> + Send + Sync {
     fn update_one_owned(&self, id: EntityId, owner_field: &'static str, owner: i64, data: {{ entity }}) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error_name }}>> + Send;
     fn delete_owned(&self, id: EntityId, owner_field: &'static str, owner: i64) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error_name }}>> + Send;
-    fn list_sorted(&self, query: StorageListQuery, order_by: &'static [(&'static str, bool)]) -> impl std::future::Future<Output = Result<Vec<{{ entity }}>, {{ error_name }}>> + Send;
+    fn list_sorted(&self, query: StorageListQuery, order_by: &[(&'static str, bool)]) -> impl std::future::Future<Output = Result<Vec<{{ entity }}>, {{ error_name }}>> + Send;
+    fn query(&self, query: crate::Query) -> impl std::future::Future<Output = Result<Vec<{{ entity }}>, {{ error_name }}>> + Send;
+    fn find_one_owned(&self, id: EntityId, owner_field: &'static str, owner: i64) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error_name }}>> + Send;
     fn upsert_one(&self, data: {{ entity }}, owner: Option<&'static str>) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error_name }}>> + Send;
     fn patch_one(&self, id: EntityId, owner: Option<(&'static str, i64)>, patch: {{ entity }}Patch) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error_name }}>> + Send;
 }
@@ -48,8 +50,17 @@ impl {{ entity }}Storage for {{ struct_name }} {
         Err({{ error_name }}::DatabaseError("delete is not supported by this grpc_client infra".to_string()))
     }
 
-    async fn list_sorted(&self, _query: StorageListQuery, _order_by: &'static [(&'static str, bool)]) -> Result<Vec<{{ entity }}>, {{ error_name }}> {
+    async fn list_sorted(&self, _query: StorageListQuery, _order_by: &[(&'static str, bool)]) -> Result<Vec<{{ entity }}>, {{ error_name }}> {
         Err({{ error_name }}::DatabaseError("list is not supported by this grpc_client infra".to_string()))
+    }
+
+    async fn query(&self, _query: crate::Query) -> Result<Vec<{{ entity }}>, {{ error_name }}> {
+        Err({{ error_name }}::DatabaseError("list is not supported by this grpc_client infra".to_string()))
+    }
+
+    async fn find_one_owned(&self, id: EntityId, _owner_field: &'static str, _owner: i64) -> Result<Option<{{ entity }}>, {{ error_name }}> {
+        let _ = id;
+        Err({{ error_name }}::DatabaseError("find_one_owned is not supported by this grpc_client infra".to_string()))
     }
 
     async fn upsert_one(&self, _data: {{ entity }}, _owner: Option<&'static str>) -> Result<Option<{{ entity }}>, {{ error_name }}> {

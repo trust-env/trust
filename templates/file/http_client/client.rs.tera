@@ -37,8 +37,16 @@ impl {{ name }} {
         })
     }
 
+    /// `base_url` + `path`; an empty path is `base_url` itself, and a full
+    /// `http(s)://` URL is used as is (a published calendar link, say).
     fn url(&self, path: &str) -> String {
-        format!("{}/{}", self.base_url, path.trim_start_matches('/'))
+        if path.starts_with("http://") || path.starts_with("https://") {
+            path.to_string()
+        } else if path.is_empty() {
+            self.base_url.clone()
+        } else {
+            format!("{}/{}", self.base_url, path.trim_start_matches('/'))
+        }
     }
 
     /// A request to `base_url` + `path` with the configured headers, for

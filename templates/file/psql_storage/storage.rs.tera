@@ -41,7 +41,11 @@ pub trait {{ trait_name }}: Storage<{{ entity }}, {{ error }}> + Send + Sync {
     /// `Ok(None)` when no such row exists for that owner.
     fn delete_owned(&self, id: EntityId, owner_field: &'static str, owner: i64) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error }}>> + Send;
     /// `list` sorted by `(column, descending)` pairs; `id` breaks ties.
-    fn list_sorted(&self, query: StorageListQuery, order_by: &'static [(&'static str, bool)]) -> impl std::future::Future<Output = Result<Vec<{{ entity }}>, {{ error }}>> + Send;
+    fn list_sorted(&self, query: StorageListQuery, order_by: &[(&'static str, bool)]) -> impl std::future::Future<Output = Result<Vec<{{ entity }}>, {{ error }}>> + Send;
+    /// The rows matching a `Query` (filters, sort, page).
+    fn query(&self, query: Query) -> impl std::future::Future<Output = Result<Vec<{{ entity }}>, {{ error }}>> + Send;
+    /// `find_one` restricted to the row whose `owner_field` equals `owner`.
+    fn find_one_owned(&self, id: EntityId, owner_field: &'static str, owner: i64) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error }}>> + Send;
     /// Inserts `data`, or updates the row with the same unique key. With
     /// `owner`, an existing row owned by someone else is left untouched
     /// (`Ok(None)`).
@@ -218,7 +222,27 @@ impl {{ trait_name }} for {{ struct_name }} {
     /// $1::BIGINT`) — never the column itself (`col::text = $1`), which
     /// would defeat every index on it. Column names (filters and sort) are
     /// checked against the entity's columns before reaching the SQL text.
-    async fn list_sorted(&self, query: StorageListQuery, order_by: &'static [(&'static str, bool)]) -> Result<Vec<{{ entity }}>, {{ error }}> {
+    async fn query(&self, query: Query) -> Result<Vec<{{ entity }}>, {{ error }}> {
+        self.list_sorted(query.to_list_query(), &query.order_by).await
+    }
+
+    async fn find_one_owned(&self, id: EntityId, owner_field: &'static str, owner: i64) -> Result<Option<{{ entity }}>, {{ error }}> {
+{%- if owner_columns %}
+        let sql: &'static str = match owner_field {
+{%- for o in owner_columns %}
+            "{{ o }}" => "SELECT {{ all_columns | join(sep=", ") }} FROM {{ table }} WHERE {{ id_field }} = $1 AND {{ o }} = $2",
+{%- endfor %}
+            other => return Err({{ error }}::ConversionError(format!("'{}' is not an owner column of {{ table }}", other))),
+        };
+        let query = sqlx::query_as::<_, {{ entity }}>(sql).bind(id).bind(owner);
+        run!(self, query, fetch_optional).map_err({{ error }}::from)
+{%- else %}
+        let _ = (id, owner);
+        Err({{ error }}::ConversionError(format!("'{}' is not an owner column of {{ table }}", owner_field)))
+{%- endif %}
+    }
+
+    async fn list_sorted(&self, query: StorageListQuery, order_by: &[(&'static str, bool)]) -> Result<Vec<{{ entity }}>, {{ error }}> {
         use std::fmt::Write as _;
 
         // Hard ceiling on one page, whatever the caller asks for.

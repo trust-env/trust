@@ -843,6 +843,21 @@ impl CodeGen {
             }
         }
 
+        for dependency in &code.use_cases {
+            if dependency == &use_case.name {
+                return Err(format!("UseCase '{}': 'code' can't run itself", use_case.name));
+            }
+            if !context.is_known_use_case(dependency) {
+                return Err(format!("UseCase '{}': 'code' runs unknown use_case '{}'", use_case.name, dependency));
+            }
+            let io = context.find_use_case_io(dependency);
+            dependencies.push(CodeDependency::UseCase {
+                name: dependency.clone(),
+                input: io.map(|io| io.input_type_name.clone()).unwrap_or_default(),
+                output: io.map(|io| io.output_type_name.clone()).unwrap_or_default(),
+            });
+        }
+
         if use_case.transaction {
             if !dependencies.iter().any(|d| matches!(d, CodeDependency::Storage { transactional: true, .. })) {
                 return Err(format!(
@@ -904,6 +919,7 @@ impl CodeGen {
             error_variants: code.errors.clone(),
             transaction: use_case.transaction,
             publish: context.has_events() && use_case.notifies(),
+            module: code.module,
         }
         .write(&folder)?;
         context.register_use_case_module(use_case.name.to_snake_case());

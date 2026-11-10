@@ -395,7 +395,12 @@ impl Parser {
             match self.next_token() {
                 Some(Token::CloseBrace) => break,
                 Some(Token::Comma) => continue,
-                Some(Token::Identifier(k)) if k == "file" => {
+                Some(Token::Identifier(k)) if k == "file" || k == "module" => {
+                    if file.is_some() {
+                        self.reset(pos);
+                        return Err("'code' block declares both 'file' and 'module'".to_string());
+                    }
+                    spec.module = k == "module";
                     match (self.next_token(), self.next_token()) {
                         (Some(Token::Colon), Some(Token::StringLiteral(path))) => file = Some(path),
                         _ => {
@@ -403,6 +408,15 @@ impl Parser {
                             return Err(
                                 "Expected ': \"<path>\"' after 'file' in 'code' block".to_string()
                             );
+                        }
+                    }
+                }
+                Some(Token::Keyword(Keyword::UseCase)) => {
+                    match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::Identifier(name))) => spec.use_cases.push(name),
+                        _ => {
+                            self.reset(pos);
+                            return Err("Expected ': <UseCase>' after 'use_case' in 'code' block".to_string());
                         }
                     }
                 }
@@ -422,6 +436,18 @@ impl Parser {
                         (Some(Token::Colon), Some(Token::Identifier(name))) => {
                             spec.infras.push(name)
                         }
+                        // `infra: [A, B, C]`
+                        (Some(Token::Colon), Some(Token::OpenBracket)) => loop {
+                            match self.next_token() {
+                                Some(Token::CloseBracket) => break,
+                                Some(Token::Comma) => continue,
+                                Some(Token::Identifier(name)) => spec.infras.push(name),
+                                _ => {
+                                    self.reset(pos);
+                                    return Err("Expected infra names in 'infra: [...]'".to_string());
+                                }
+                            }
+                        },
                         _ => {
                             self.reset(pos);
                             return Err(
@@ -505,7 +531,7 @@ impl Parser {
             }
             None => {
                 self.reset(pos);
-                Err("'code' block must declare 'file'".to_string())
+                Err("'code' block must declare 'file' or 'module'".to_string())
             }
         }
     }

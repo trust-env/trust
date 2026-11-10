@@ -21,6 +21,7 @@ impl Parser {
             Some(Token::Identifier(word)) if word == "config" => self.try_config_declaration(),
             Some(Token::Identifier(word)) if word == "database" => self.try_database_declaration(),
             Some(Token::Identifier(word)) if word == "resource" => self.try_resource_declaration(),
+            Some(Token::Identifier(word)) if word == "infra_set" => self.try_infra_set(),
             Some(Token::Identifier(word)) if word == "include" => {
                 let start = self.current;
                 self.next_token();
