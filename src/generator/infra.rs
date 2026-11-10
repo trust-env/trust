@@ -2,22 +2,16 @@ mod storage;
 
 use heck::ToSnakeCase;
 
-use std::{
-    fs::File,
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use crate::{
     generator::{
         CodeGen, CodeGenContext,
-        rust_code::{RustCode, service::Service},
+        rust_code::service::Service,
     },
     parser::{
         Ast, InfraService,
         InfraServiceType::{HttpClient, Storage},
-        PsqlInfraService,
-        StorageType::Psql,
     },
 };
 

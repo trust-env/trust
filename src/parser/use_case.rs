@@ -468,7 +468,8 @@ impl Parser {
                         match self.next_token() {
                             Some(Token::CloseBrace) => break,
                             Some(Token::Comma) => continue,
-                            Some(Token::Identifier(name)) => {
+                            // `chrono-tz` isn't an identifier: quote it.
+                            Some(Token::Identifier(name)) | Some(Token::StringLiteral(name)) => {
                                 match (self.next_token(), self.next_token()) {
                                     (Some(Token::Colon), Some(Token::StringLiteral(version))) => {
                                         spec.deps.push((name, version))

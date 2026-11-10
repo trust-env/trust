@@ -11,11 +11,10 @@ pub mod types;
 pub mod use_case;
 mod workspace;
 
-pub use infra::*;
 
 use std::{
     collections::HashMap,
-    fs::{File, create_dir, create_dir_all, remove_dir_all},
+    fs::{create_dir_all, remove_dir_all},
     path::PathBuf,
 };
 
@@ -1004,7 +1003,7 @@ impl CodeGen {
                 ),
                 Ast::TypeDecl(t) => self.gen_domain(&mut context, t, domain_path.clone()),
                 // Generated with the app that runs them.
-                Ast::App(_) | Ast::Schedule(_) | Ast::Config(_) => Ok(()),
+                Ast::App(_) | Ast::Schedule(_) | Ast::Config(_) | Ast::Include(_) => Ok(()),
                 Ast::Plugin(plugin_ast) => self.generate_plugin(
                     &mut context,
                     plugin_ast,
@@ -1161,6 +1160,14 @@ impl CodeGen {
             )
             .map_err(|e| format!("Failed to write the scheduler: {}", e))?;
             lib_mods.push("trust_schedule".to_string());
+        }
+        if asts.iter().any(|ast| matches!(ast, Ast::UseCase(u) if u.code.is_some())) {
+            std::fs::write(
+                src_path.join("trust_prelude.rs"),
+                crate::generator::rust_code::render::render("file/code_use_case/prelude.rs.tera", &tera::Context::new()),
+            )
+            .map_err(|e| format!("Failed to write the code prelude: {}", e))?;
+            lib_mods.push("trust_prelude".to_string());
         }
         if !context.shared_modules.is_empty() {
             ModFile::new(src_path.join("shared.rs"))?

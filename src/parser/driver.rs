@@ -1,6 +1,6 @@
 use crate::{
     lexer::{Keyword, Spanned, Token},
-    parser::{Ast, Parser},
+    parser::{Ast, Parser, TypeDeclaration},
 };
 
 impl Parser {
@@ -19,10 +19,40 @@ impl Parser {
             Some(Token::Identifier(word)) if word == "enum" => self.try_enum_declaration(),
             Some(Token::Identifier(word)) if word == "schedule" => self.try_schedule_declaration(),
             Some(Token::Identifier(word)) if word == "config" => self.try_config_declaration(),
+            Some(Token::Identifier(word)) if word == "include" => {
+                let start = self.current;
+                self.next_token();
+                match self.next_token() {
+                    Some(Token::StringLiteral(path)) => Ok(Ast::Include(path)),
+                    _ => {
+                        self.reset(start);
+                        Err("Expected a quoted path after 'include'".to_string())
+                    }
+                }
+            }
+            // `export type X { ... }` / `export enum E { ... }`: the
+            // declaration is importable under its own name. On other
+            // declarations `export` changes nothing (with `include`, every
+            // declaration is visible anyway).
+            Some(Token::Keyword(Keyword::Export)) => {
+                self.next_token();
+                let ast = self.try_ast()?;
+                Ok(match ast {
+                    Ast::TypeDecl(TypeDeclaration::Struct(mut s)) => {
+                        s.export.get_or_insert_with(|| s.name.clone());
+                        Ast::TypeDecl(TypeDeclaration::Struct(s))
+                    }
+                    Ast::TypeDecl(TypeDeclaration::Enum(mut e)) => {
+                        e.export.get_or_insert_with(|| e.name.clone());
+                        Ast::TypeDecl(TypeDeclaration::Enum(e))
+                    }
+                    other => other,
+                })
+            }
             Some(Token::Identifier(word)) if self.plugin_keywords.contains(&word) => {
                 self.try_plugin_construct()
             }
-            _ => Err("Expected a top-level declaration (type, enum, infra, use_case, adapter, app, schedule, config, import)".to_string()),
+            _ => Err("Expected a top-level declaration (type, enum, infra, use_case, adapter, app, schedule, config, import, include)".to_string()),
         }
     }
 

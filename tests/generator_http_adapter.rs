@@ -154,7 +154,8 @@ fn non_get_routes_still_read_their_body_from_json() {
     ));
 
     let route = project.read("src/adapters/http/http_adapter/create_task_use_case_post.rs");
-    assert!(route.contains("Json(input): Json<CreateTaskUseCaseInput>,"));
+    // JsonBody: JSON like axum's Json, but an empty body reads as `{}`.
+    assert!(route.contains("JsonBody(input): JsonBody<CreateTaskUseCaseInput>,"), "{route}");
     assert!(!route.contains("extract::Query"));
 }
 

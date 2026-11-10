@@ -372,6 +372,9 @@ impl HttpAdapterFile {
         if self.cors.is_some() {
             code.push_str(&render("file/http_adapter/cors.rs.tera", &Context::new()));
         }
+        if self.has_json_body_route() {
+            code.push_str(&render("file/http_adapter/json_body.rs.tera", &Context::new()));
+        }
         if let Some(events) = &self.options.events {
             let mut context = Context::new();
             context.insert("requires_user", &events.requires_user);
@@ -501,7 +504,14 @@ impl HttpAdapterFile {
         } else {
             code.push_str(&common_use(&["HttpError", "HttpResult"]));
         }
-        code.push_str(&use_statement("super", &[&self.name]));
+        let uses_json_body = !route.raw_input
+            && route.method != HttpMethod::Get
+            && !matches!(Self::input_extraction(route), InputExtraction::PathOnly);
+        if uses_json_body {
+            code.push_str(&use_statement("super", &[&self.name, "JsonBody"]));
+        } else {
+            code.push_str(&use_statement("super", &[&self.name]));
+        }
 
         let local = Self::local_struct_imports(route);
         code.push_str(&local.external_use_statements());
@@ -601,7 +611,16 @@ impl HttpAdapterFile {
     /// `limit`/`offset`/`filters {}` fields in a JSON body would be
     /// unreachable from any standard client, not just an awkward API shape.
     fn body_extractor(route: &HttpRouteBinding) -> &'static str {
-        if route.method == HttpMethod::Get { "Query" } else { "Json" }
+        if route.method == HttpMethod::Get { "Query" } else { "JsonBody" }
+    }
+
+    /// Some route decodes a JSON body (through `JsonBody`).
+    fn has_json_body_route(&self) -> bool {
+        self.routes.iter().any(|r| {
+            !r.raw_input
+                && r.method != HttpMethod::Get
+                && !matches!(Self::input_extraction(r), InputExtraction::PathOnly)
+        })
     }
 
     fn route_file_content(&self, route: &HttpRouteBinding) -> String {

@@ -1,6 +1,7 @@
 // `execute`'s body below is copied verbatim from {{ file }} — edit it there.
-#[allow(unused_imports)]
-use common::{Storage, StorageListQuery, StoragePredicate, StoragePredicateOperator, UseCase};
+// Prelude (a glob, so your own `use` lines may repeat any of it): every
+// generated type plus common's Storage, StorageListQuery,
+// StoragePredicate, StoragePredicateOperator and UseCase.
 #[allow(unused_imports)]
 use crate::*;
 

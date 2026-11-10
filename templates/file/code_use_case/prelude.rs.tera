@@ -1,0 +1,3 @@
+//! What every `code {}` body and `include:` file sees through `use crate::*`
+//! besides the generated types.
+pub use common::{Storage, StorageListQuery, StoragePredicate, StoragePredicateOperator, UseCase};

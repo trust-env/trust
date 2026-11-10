@@ -181,8 +181,6 @@
 
 - The output directory is fully deleted and recreated on every run — there
   is no incremental generation and no way to preserve hand-edits.
-- Several `.tr` files passed in one invocation are compiled one after the
-  other into the same output directory: the last one wins.
 
 ## Schedules
 

@@ -2,8 +2,7 @@ use std::path::PathBuf;
 
 use crate::{
     generator::{CodeGen, CodeGenContext, rust_code::types::RustType},
-    lexer::Lexer,
-    parser::{Ast, ImportDeclaration, ImportItem, ModuleKind, Parser, TypeDeclaration},
+    parser::{Ast, ImportDeclaration, ImportItem, ModuleKind, TypeDeclaration},
 };
 
 impl CodeGen {
@@ -21,10 +20,8 @@ impl CodeGen {
                 return Err(format!("Git imports are not supported yet: {}", url));
             }
         };
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read imported module {:?}: {}", path, e))?;
-
-        Parser::new(Lexer::new(&content).run()?).run()
+        crate::loader::load_project(path, &[])
+            .map_err(|e| format!("Failed to load imported module {:?}: {}", path, e))
     }
 
     fn find_exported_type<'a>(
@@ -46,12 +43,34 @@ impl CodeGen {
     /// idempotent.
     pub(super) fn resolve_import_types(
         &self,
-        context: &mut CodeGenContext,
+        _context: &mut CodeGenContext,
         import: &ImportDeclaration,
     ) -> Result<Vec<RustType>, String> {
         let module_asts = Self::load_module_asts(&import.module)?;
-        let mut types = Vec::new();
 
+        // The module's types resolve against the module itself (and what it
+        // imports), not against the importing file.
+        let mut module_context = CodeGenContext::new();
+        for ast in &module_asts {
+            if let Ast::Import(nested) = ast {
+                for t in self.resolve_import_types(&mut module_context, nested)? {
+                    module_context.add_type(t);
+                }
+            }
+        }
+        let decls: Vec<&TypeDeclaration> = module_asts
+            .iter()
+            .filter_map(|ast| match ast {
+                Ast::TypeDecl(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        self.resolve_type_declarations(&mut module_context, &decls)
+            .map_err(|e| format!("in imported module {:?}: {}", import.module, e))?;
+
+        // The requested types, plus every type they mention (generated too,
+        // under their own names).
+        let mut types: Vec<RustType> = Vec::new();
         for name in Self::requested_import_names(&import.items) {
             let t_decl = Self::find_exported_type(&module_asts, name).ok_or_else(|| {
                 format!(
@@ -59,10 +78,21 @@ impl CodeGen {
                     name, import.module
                 )
             })?;
-
-            let mut rust_type = self.resolve_type_declaration(context, t_decl)?;
+            let mut rust_type = module_context
+                .find_type(t_decl.name())
+                .cloned()
+                .ok_or_else(|| format!("type '{}' not resolved in {:?}", t_decl.name(), import.module))?;
+            let mut mentioned = Vec::new();
+            crate::generator::schema::collect_named_types(&rust_type, &mut mentioned);
             rust_type.name = name.to_string();
-            types.push(rust_type);
+            if !types.iter().any(|t| t.name == rust_type.name) {
+                types.push(rust_type);
+            }
+            for dependency in mentioned.into_iter().skip(1) {
+                if !types.iter().any(|t| t.name == dependency.name) {
+                    types.push(dependency);
+                }
+            }
         }
         Ok(types)
     }

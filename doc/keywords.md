@@ -9,6 +9,8 @@ usage see [cli.md](cli.md).
 
 These apply across the whole language and aren't tied to one keyword:
 
+- **Projects span files.** `include "./x.tr"` and file-relative paths; see
+  [`include`](#include).
 - **`//` line comments.** Everything from `//` to the end of the line is
   ignored (outside string literals). There is no `#` or `/* */` form.
 - **Contextual words.** Newer constructs (`enum`, `schedule`, `config`,
@@ -57,6 +59,9 @@ on separate lines with no commas is equally valid. Every field becomes a
 
 ### `export`
 Marks a struct declaration as importable by name from another `.tr` module.
+Either as a prefix — `export type Task { ... }`, `export enum Domain { ... }` —
+or inside the body (`export Task`). On other declarations the prefix is
+accepted and changes nothing (use `include` to share them).
 Has **zero** effect on the type's own generated code (same derives, same
 visibility) — it only changes whether another file's `import` can find it.
 
@@ -68,6 +73,27 @@ type PublicUser {
 }
 ```
 
+### `include`
+Makes every declaration of another `.tr` file part of this project — types,
+enums, infras, use cases, adapters, schedules, apps:
+
+```tr
+config { json_case: "camel" }
+
+include "./modules/tasks/tasks.tr"
+include "./modules/inbox/inbox.tr"
+include "./adapters/api.tr"
+```
+
+Includes are transitive, a file included twice counts once, and two
+declarations with the same name are an error naming both `file:line`.
+
+### Paths
+Every path a `.tr` file writes — `include`, `import`, `code { file include }`,
+`psql { seed }` — is relative to **that file**, so a module can say
+`file: "./capture.rs"`. (A path that only exists relative to the working
+directory still works, for projects written before this rule.)
+
 ### `import`
 Imports exported items from another module.
 
@@ -76,7 +102,9 @@ import PublicUser from "./shared.tr"
 import { User, Role } from "./shared.tr"
 ```
 
-Only local path imports (`"./shared.tr"`) actually work end to end.
+Only local path imports (`"./shared.tr"`) actually work end to end. An
+imported type resolves against its own module, and the types it mentions
+(an enum, a nested struct) are generated with it.
 `import X from "git@github.com:org/repo.git"` **parses** successfully but
 codegen hard-errors with "Git imports are not supported yet" the moment it
 tries to resolve one — despite this exact form appearing in the top-level
@@ -644,16 +672,17 @@ use_case CheckoutUseCase {
 - `errors {}`: extra `Variant(String)` members of `{Name}Error`, next to the
   always-present `NotFound` and `StorageError(String)`. Routes map them
   with [`status`](#status) like any other error target.
-- `deps {}`: extra crates (`name: "version"`) for the generated
-  `Cargo.toml`.
+- `deps {}`: extra crates (`name: "version"`, or `"chrono-tz": "0.10"` for
+  names with a dash) for the generated `Cargo.toml`.
 - `include: "./logic/shared.rs"` (repeatable): a Rust file copied once into
   the crate (`src/shared/`); its `pub` items are visible from every `code {}`
   body — for logic several use cases share (a priority score, a parser).
 - `?` works on every infra: storage errors and the `String` errors of
   `s3`/`http_client` convert into `StorageError`.
-- The body sees `common::{Storage, StorageListQuery, StoragePredicate,
-  StoragePredicateOperator, UseCase}` and every generated type
-  (`use crate::*`). Apps containing a `code` use case keep **all** declared
+- The body (and every `include:` file) starts with a single glob, `use
+  crate::*;`: every generated type plus `common::{Storage, StorageListQuery,
+  StoragePredicate, StoragePredicateOperator, UseCase}`. Being a glob, it
+  never clashes with your own `use` lines. Apps containing a `code` use case keep **all** declared
   types, since the body may name any of them.
 
 ### `RawRequest`
@@ -905,6 +934,9 @@ adapter Api {
   `notify`. With `auth: required`, the JWT comes from the `Authorization`
   header or an `access_token` query parameter (a browser `EventSource`
   can't set headers) and only the caller's own events are sent.
+- Non-GET routes read a JSON body; an empty body reads as `{}` (inputs with
+  no required field need no body). Malformed JSON is a 400, a body of the
+  wrong shape a 422.
 - Every HTTP adapter answers `GET /health` (`{"status":"ok"}`) unless a route
   uses that path, and logs each request.
 

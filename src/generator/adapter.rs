@@ -231,6 +231,8 @@ impl CodeGen {
 
         context.require_git_dependency("common", "ssh://git@github.com/BH-World/common.git");
         context.require_version_dependency("axum", "0.8");
+        // `JsonBody` decodes request bodies itself.
+        context.require_version_dependency("serde_json", "1");
 
         let http_folder_path = folder.join("http");
         create_dir_all(&http_folder_path).map_err(|e| {

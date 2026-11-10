@@ -91,57 +91,17 @@ fn main() {
     }
     let verbose = flags.contains_key("verbose");
     let out_dir = PathBuf::from(flags.get("out").map(String::as_str).unwrap_or("./out"));
-    let files_content = files
-        .iter()
-        .map(|file| match std::fs::read_to_string(file) {
-            Ok(content) => content,
-            Err(e) => {
-                eprintln!("Error occurred while reading '{}': {}", file, e);
-                std::process::exit(1);
-            }
-        })
-        .collect::<Vec<String>>();
-    let mut lexers = files_content.iter().map(Lexer::new).collect::<Vec<Lexer>>();
-    let tokens = match lexers
-        .iter_mut()
-        .map(|lexer| lexer.run())
-        .collect::<Result<Vec<Vec<Spanned<Token>>>, String>>()
-    {
-        Ok(tokens) => tokens,
-        Err(e) => {
-            eprintln!("Error occurred while lexing: {}", e);
-            std::process::exit(1);
-        }
-    };
-    if verbose {
-        eprintln!("Tokens: {:#?}", tokens);
-    }
-    let mut parsers = tokens
-        .into_iter()
-        .zip(files_content.iter())
-        .map(|(token_list, content)| Parser::new(token_list).with_source(content).with_plugin_keywords(plugin_keywords.clone()))
-        .collect::<Vec<Parser>>();
-    let mut asts = match parsers
-        .iter_mut()
-        .map(|parser| parser.run())
-        .collect::<Result<Vec<Vec<Ast>>, String>>()
-    {
+    let entries: Vec<PathBuf> = files.iter().map(PathBuf::from).collect();
+    let asts = match trust::loader::load_projects(&entries, &plugin_keywords) {
         Ok(asts) => asts,
         Err(e) => {
-            eprintln!("Error occurred while parsing: {}", e);
+            eprintln!("error: {}", e);
             std::process::exit(1);
         }
     };
-    match asts
-        .iter_mut()
-        .map(|a| CodeGen::new(a.clone()).run_with_plugins(out_dir.clone(), dev_mode, &ai_config, &loaded_plugins))
-        .collect::<Result<Vec<()>, String>>()
-    {
-        Ok(_) => (),
-        Err(e) => {
-            eprintln!("Error occurred while generating code: {}", e);
-            std::process::exit(1);
-        }
+    if let Err(e) = CodeGen::new(asts.clone()).run_with_plugins(out_dir.clone(), dev_mode, &ai_config, &loaded_plugins) {
+        eprintln!("Error occurred while generating code: {}", e);
+        std::process::exit(1);
     }
 
     if verbose {
@@ -150,7 +110,7 @@ fn main() {
 
     for (flag, kind) in [("emit-ts", "TypeScript client"), ("emit-openapi", "OpenAPI document")] {
         let Some(target) = flags.get(flag) else { continue };
-        let all_asts: Vec<Ast> = asts.iter().flatten().cloned().collect();
+        let all_asts: Vec<Ast> = asts.clone();
         let generator = CodeGen::new(Vec::new());
         let title = files.first().map(String::as_str).unwrap_or("api");
         let content = if flag == "emit-ts" {

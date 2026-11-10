@@ -89,6 +89,39 @@ fn rewrite_git_dependencies(
     out
 }
 
+/// The most recent checkout of git crate `name` in Cargo's cache
+/// (`$CARGO_HOME/git/checkouts/<name>-<hash>/<rev>/`) — where a crate that
+/// was ever built over SSH (e.g. `user`, pulled in by `auth`) still lives.
+fn default_cargo_home() -> Option<PathBuf> {
+    std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cargo")))
+}
+
+fn cargo_git_checkout(cargo_home: Option<&Path>, name: &str) -> Option<PathBuf> {
+    let cargo_home = cargo_home?;
+    let prefix = format!("{}-", name);
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for repo in fs::read_dir(cargo_home.join("git").join("checkouts")).ok()?.flatten() {
+        let repo_name = repo.file_name().to_string_lossy().to_string();
+        let Some(hash) = repo_name.strip_prefix(&prefix) else { continue };
+        if hash.contains('-') {
+            continue;
+        }
+        for rev in fs::read_dir(repo.path()).into_iter().flatten().flatten() {
+            let manifest = rev.path().join("Cargo.toml");
+            let declares_name = fs::read_to_string(&manifest)
+                .is_ok_and(|m| m.contains(&format!("name = \"{}\"", name)));
+            if declares_name {
+                let modified = fs::metadata(&manifest).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+                candidates.push((modified, rev.path()));
+            }
+        }
+    }
+    candidates.sort();
+    candidates.pop().map(|(_, path)| path)
+}
+
 fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
     fs::create_dir_all(to).map_err(|e| format!("Failed to create {}: {}", to.display(), e))?;
     let entries = fs::read_dir(from).map_err(|e| format!("Failed to read {}: {}", from.display(), e))?;
@@ -132,6 +165,16 @@ fn generated_manifests(out: &Path) -> Vec<PathBuf> {
 /// copy in `vendor_dir` into `out/vendor/`, and patches the root manifest
 /// to use those copies. Returns the vendored crate names, sorted.
 pub fn vendor_dependencies(out: &Path, vendor_dir: &Path) -> Result<Vec<String>, String> {
+    vendor_dependencies_from(out, vendor_dir, default_cargo_home())
+}
+
+/// `vendor_dependencies`, looking up missing crates in `cargo_home`'s git
+/// cache (none when `None`).
+pub fn vendor_dependencies_from(
+    out: &Path,
+    vendor_dir: &Path,
+    cargo_home: Option<PathBuf>,
+) -> Result<Vec<String>, String> {
     if !vendor_dir.is_dir() {
         return Err(format!("--vendor directory '{}' does not exist", vendor_dir.display()));
     }
@@ -150,11 +193,15 @@ pub fn vendor_dependencies(out: &Path, vendor_dir: &Path) -> Result<Vec<String>,
         if vendored.contains_key(&dep.name) || missing.contains(&dep.name) {
             continue;
         }
-        let source = vendor_dir.join(&dep.name);
-        if !source.join("Cargo.toml").is_file() {
+        let local = vendor_dir.join(&dep.name);
+        let source = if local.join("Cargo.toml").is_file() {
+            local
+        } else if let Some(cached) = cargo_git_checkout(cargo_home.as_deref(), &dep.name) {
+            cached
+        } else {
             missing.push(dep.name);
             continue;
-        }
+        };
         let target = out.join("vendor").join(&dep.name);
         copy_dir(&source, &target)?;
         let manifest = fs::read_to_string(target.join("Cargo.toml"))
@@ -166,7 +213,7 @@ pub fn vendor_dependencies(out: &Path, vendor_dir: &Path) -> Result<Vec<String>,
     if !missing.is_empty() {
         missing.sort();
         return Err(format!(
-            "--vendor: no local copy of {} in '{}' (expected <dir>/<crate>/Cargo.toml)",
+            "--vendor: no local copy of {} in '{}' (expected <dir>/<crate>/Cargo.toml) nor in Cargo's git cache",
             missing.join(", "),
             vendor_dir.display()
         ));
@@ -259,7 +306,7 @@ tokio = "1"
         write(&local.join("auth/target/big"), "skip me");
         write(&local.join("common/Cargo.toml"), "[dependencies]\n");
 
-        let vendored = vendor_dependencies(&out, &local).unwrap();
+        let vendored = vendor_dependencies_from(&out, &local, None).unwrap();
 
         assert_eq!(vendored, vec!["auth".to_string(), "common".to_string()]);
         assert!(out.join("vendor/auth/src/lib.rs").is_file());
@@ -282,7 +329,7 @@ tokio = "1"
             "[dependencies]\ncommon = { git = \"ssh://x/common.git\" }\n",
         );
         fs::create_dir_all(tmp.path().join("mod")).unwrap();
-        let err = vendor_dependencies(&out, &tmp.path().join("mod")).unwrap_err();
+        let err = vendor_dependencies_from(&out, &tmp.path().join("mod"), None).unwrap_err();
         assert!(err.contains("no local copy of common"), "{}", err);
     }
 }
