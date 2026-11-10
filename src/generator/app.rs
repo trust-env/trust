@@ -4,14 +4,18 @@ use crate::{
     generator::{
         CodeGen, CodeGenContext,
         rust_code::{
+            file::mcp_adapter_file::McpAuth,
             env_template,
             file::main_file::{
                 AdapterBinding, GrpcAdapterBinding, InfraBinding, InfraKind, LoadBalancerRuntime,
-                MainFile, UseCaseBinding,
+                MainFile, ScheduleJobRuntime, UseCaseBinding,
             },
         },
     },
-    parser::{AdapterType, AllowedType, AppService, Ast, GrpcAdapterService, HttpAdapterService},
+    parser::{
+        AdapterType, AllowedType, AppService, Ast, GrpcAdapterService, HttpAdapterService,
+        ScheduleDeclaration,
+    },
 };
 
 impl CodeGen {
@@ -28,6 +32,9 @@ impl CodeGen {
             let port = *next_port;
             *next_port += 1;
             port.to_string()
+        } else if upper.contains("CORS") || upper.contains("ORIGIN") {
+            // Vite's dev server — the usual browser frontend during development.
+            "http://localhost:5173".to_string()
         } else if upper.contains("HOST") {
             "0.0.0.0".to_string()
         } else {
@@ -45,46 +52,70 @@ impl CodeGen {
         grpc_adapters: &[GrpcAdapterBinding],
         load_balancers: &[LoadBalancerRuntime],
     ) -> Result<(), String> {
-        let mut lines = Vec::new();
+        #[derive(serde::Serialize)]
+        struct EnvEntry {
+            name: String,
+            value: String,
+        }
+        let mut entries: Vec<EnvEntry> = Vec::new();
+        let push = |entries: &mut Vec<EnvEntry>, name: String, value: String| {
+            if !entries.iter().any(|e| e.name == name) {
+                entries.push(EnvEntry { name, value });
+            }
+        };
         let mut next_port: u16 = 3000;
 
         for infra in infras {
             match &infra.kind {
-                InfraKind::Psql => {
-                    let var = MainFile::db_url_env_var(&infra.infra_name);
-                    lines.push(format!(
-                        "{}=postgres://postgres:postgres@localhost:5432/{}",
-                        var,
-                        infra.entity_name.to_lowercase()
-                    ));
+                InfraKind::Psql { .. } => {
+                    push(
+                        &mut entries,
+                        MainFile::db_url_env_var(&infra.infra_name),
+                        format!(
+                            "postgres://postgres:postgres@localhost:5432/{}",
+                            infra.entity_name.to_lowercase()
+                        ),
+                    );
+                    push(
+                        &mut entries,
+                        MainFile::db_pool_size_env_var(&infra.infra_name),
+                        crate::generator::rust_code::file::main_file::DEFAULT_DB_POOL_SIZE.to_string(),
+                    );
                 }
                 InfraKind::S3 { .. } => {
                     let (endpoint_var, access_key_var, secret_key_var) =
                         MainFile::s3_env_vars(&infra.infra_name);
-                    lines.push(format!("{}=http://localhost:9000", endpoint_var));
-                    lines.push(format!("{}=minioadmin", access_key_var));
-                    lines.push(format!("{}=minioadmin", secret_key_var));
+                    push(&mut entries, endpoint_var, "http://localhost:9000".to_string());
+                    push(&mut entries, access_key_var, "minioadmin".to_string());
+                    push(&mut entries, secret_key_var, "minioadmin".to_string());
                 }
                 // `grpc_client` infras connect to a static address baked
                 // directly into the generated code, not an env-var-driven
                 // URL — nothing to scaffold here for them.
                 InfraKind::GrpcClient { .. } => {}
+                InfraKind::HttpClient { base_url, headers } => {
+                    let templates = std::iter::once(base_url).chain(headers.iter().map(|(_, v)| v));
+                    for var in templates.flat_map(|t| env_template::extract_vars(t)) {
+                        push(&mut entries, var, "changeme".to_string());
+                    }
+                }
             }
         }
 
         let ons: Vec<&str> = adapters
             .iter()
             .map(|a| a.on.as_str())
+            .chain(adapters.iter().filter_map(|a| a.cors.as_deref()))
             .chain(grpc_adapters.iter().map(|a| a.on.as_str()))
             .chain(load_balancers.iter().map(|lb| lb.on.as_str()))
             .collect();
         for on in ons {
             for var in env_template::extract_vars(on) {
-                if lines.iter().any(|l| l.starts_with(&format!("{}=", var))) {
+                if entries.iter().any(|e| e.name == var) {
                     continue;
                 }
                 let default = Self::default_for_env_var(&var, &mut next_port);
-                lines.push(format!("{}={}", var, default));
+                push(&mut entries, var, default);
             }
         }
 
@@ -92,12 +123,14 @@ impl CodeGen {
         // an `auth {}` requirement. A `load_balancer {}` never has its own
         // auth bindings now — it doesn't construct any adapter locally — so
         // only bare adapters are checked.
-        let has_auth = adapters.iter().any(|a| !a.auth_infra_names.is_empty());
+        let has_auth = adapters.iter().any(|a| a.requires_jwt);
         if has_auth {
-            lines.push("JWT_SECRET=changeme".to_string());
+            entries.push(EnvEntry { name: "JWT_SECRET".to_string(), value: "changeme".to_string() });
         }
 
-        let content = lines.join("\n") + "\n";
+        let mut context = tera::Context::new();
+        context.insert("entries", &entries);
+        let content = crate::generator::rust_code::render::render("env/dotenv.tera", &context);
         std::fs::write(project_root.join(".env"), content)
             .map_err(|e| format!("Failed to write .env: {}", e))
     }
@@ -113,12 +146,28 @@ impl CodeGen {
         if infra_bindings.iter().any(|i| i.infra_name == infra_name) {
             return Ok(());
         }
+        if let Some(cfg) = context.find_http_client_infra(infra_name) {
+            infra_bindings.push(InfraBinding {
+                infra_name: infra_name.to_string(),
+                entity_name: infra_name.to_string(),
+                kind: InfraKind::HttpClient {
+                    base_url: cfg.base_url.clone(),
+                    headers: cfg.headers.clone(),
+                },
+            });
+            return Ok(());
+        }
         let entity = if context.is_blob_infra(infra_name) {
             context.find_blob_infra_entity(infra_name)
         } else {
             context.find_infra_entity(infra_name)
         }
-        .ok_or_else(|| format!("Unknown infra '{}' referenced by {}", infra_name, referenced_by))?;
+        .ok_or_else(|| {
+            format!(
+                "Unknown infra '{}' referenced by {}",
+                infra_name, referenced_by
+            )
+        })?;
         let entity_name = match entity {
             AllowedType::DefinedType(name) => name.clone(),
             _ => {
@@ -133,15 +182,33 @@ impl CodeGen {
             InfraKind::S3 { bucket }
         } else {
             match context.find_infra_target_address(infra_name) {
-                Some(address) => InfraKind::GrpcClient { target_address: address.to_string() },
-                None => InfraKind::Psql,
+                Some(address) => InfraKind::GrpcClient {
+                    target_address: address.to_string(),
+                },
+                None => InfraKind::Psql {
+                    seed: context.has_psql_seed(infra_name),
+                    foreign_keys: context.has_psql_foreign_keys(infra_name),
+                },
             }
         };
+        let is_psql = matches!(kind, InfraKind::Psql { .. });
         infra_bindings.push(InfraBinding {
             infra_name: infra_name.to_string(),
             entity_name,
             kind,
         });
+        // A foreign key needs the referenced table: connect (and migrate)
+        // that infra too.
+        if is_psql {
+            for referenced in context.find_psql_references(infra_name).to_vec() {
+                Self::register_infra_binding(
+                    context,
+                    infra_bindings,
+                    &referenced,
+                    &format!("infra '{}''s references", infra_name),
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -169,9 +236,9 @@ impl CodeGen {
         // determines the adapter's generated constructor params.
         let mut auth_infra_names: Vec<String> = Vec::new();
         for route in &http_data.routes {
-            if let Some(auth) = &route.auth {
-                if !auth_infra_names.contains(&auth.infra) {
-                    auth_infra_names.push(auth.infra.clone());
+            if let Some(infra) = route.auth.as_ref().and_then(|a| a.permission_infra()) {
+                if !auth_infra_names.iter().any(|n| n == infra) {
+                    auth_infra_names.push(infra.to_string());
                 }
             }
         }
@@ -261,6 +328,71 @@ impl CodeGen {
         Ok(use_case_names)
     }
 
+    fn find_schedule<'a>(asts: &'a [Ast], name: &str) -> Option<&'a ScheduleDeclaration> {
+        asts.iter().find_map(|ast| match ast {
+            Ast::Schedule(s) if s.name == name => Some(s),
+            _ => None,
+        })
+    }
+
+    /// Checks a `schedule {}` (cron syntax, time zones, use cases) and
+    /// registers the use cases it runs, like an adapter's routes.
+    fn collect_schedule_bindings(
+        context: &CodeGenContext,
+        schedule: &ScheduleDeclaration,
+        infra_bindings: &mut Vec<InfraBinding>,
+        use_case_bindings: &mut Vec<UseCaseBinding>,
+        jobs: &mut Vec<ScheduleJobRuntime>,
+    ) -> Result<(), String> {
+        for job in &schedule.jobs {
+            let cron = crate::cron::parse(&job.cron)
+                .map_err(|e| format!("schedule '{}': {}", schedule.name, e))?;
+            let tz = job.tz.clone().or_else(|| schedule.tz.clone()).unwrap_or_else(|| "UTC".to_string());
+            tz.parse::<chrono_tz::Tz>().map_err(|_| {
+                format!("schedule '{}': unknown time zone '{}' (use an IANA name such as \"Europe/Paris\")", schedule.name, tz)
+            })?;
+            if !context.is_known_use_case(&job.use_case) {
+                return Err(format!("schedule '{}' runs unknown use_case '{}'", schedule.name, job.use_case));
+            }
+            if context.find_use_case_io(&job.use_case).is_some_and(|io| io.raw_input) {
+                return Err(format!(
+                    "schedule '{}': use_case '{}' takes a RawRequest, which a schedule can't provide",
+                    schedule.name, job.use_case
+                ));
+            }
+            if !use_case_bindings.iter().any(|u| u.use_case_name == job.use_case) {
+                let infra_names = context.find_use_case_infra(&job.use_case);
+                if infra_names.is_empty() && !context.is_ai_use_case_without_infra(&job.use_case) {
+                    return Err(format!(
+                        "UseCase '{}' has no known infra target (missing 'call')",
+                        job.use_case
+                    ));
+                }
+                for infra_name in infra_names {
+                    Self::register_infra_binding(
+                        context,
+                        infra_bindings,
+                        infra_name,
+                        &format!("use_case '{}'", job.use_case),
+                    )?;
+                }
+                use_case_bindings.push(UseCaseBinding {
+                    use_case_name: job.use_case.clone(),
+                    infra_names: infra_names.to_vec(),
+                });
+            }
+            jobs.push(ScheduleJobRuntime {
+                name: format!("{}.{}", schedule.name, job.use_case),
+                cron_text: job.cron.clone(),
+                cron,
+                tz,
+                use_case: job.use_case.clone(),
+                user: schedule.user,
+            });
+        }
+        Ok(())
+    }
+
     pub(super) fn generate_app(
         &mut self,
         context: &mut CodeGenContext,
@@ -277,10 +409,20 @@ impl CodeGen {
         let mut grpc_adapter_bindings: Vec<GrpcAdapterBinding> = Vec::new();
         let mut load_balancer_bindings: Vec<LoadBalancerRuntime> = Vec::new();
 
+        let mut schedule_jobs: Vec<ScheduleJobRuntime> = Vec::new();
         for adapter_name in &app.adapters {
-            let adapter = Self::find_adapter(asts, adapter_name).ok_or_else(|| {
-                format!("app:run references unknown adapter '{}'", adapter_name)
-            })?;
+            if let Some(schedule) = Self::find_schedule(asts, adapter_name) {
+                Self::collect_schedule_bindings(
+                    context,
+                    schedule,
+                    &mut infra_bindings,
+                    &mut use_case_bindings,
+                    &mut schedule_jobs,
+                )?;
+                continue;
+            }
+            let adapter = Self::find_adapter(asts, adapter_name)
+                .ok_or_else(|| format!("app:run references unknown adapter or schedule '{}'", adapter_name))?;
 
             match &adapter.adapter_type {
                 AdapterType::Http(http_data) => {
@@ -304,6 +446,59 @@ impl CodeGen {
                         on,
                         use_cases: use_case_names,
                         auth_infra_names,
+                        requires_jwt: http_data.routes.iter().any(|r| r.auth.as_ref().is_some_and(|a| a.uses_jwt()))
+                            || http_data.events.as_ref().is_some_and(|e| e.requires_user),
+                        cors: http_data.cors.clone(),
+                        mcp_stdio_user: None,
+                    });
+                }
+                AdapterType::Mcp(mcp_data) => {
+                    let on = mcp_data.on.clone().ok_or_else(|| {
+                        format!(
+                            "Adapter '{}' must declare 'on' to be started by app:run",
+                            adapter_name
+                        )
+                    })?;
+                    let file = Self::mcp_adapter_file(context, adapter_name, mcp_data)?;
+                    let use_case_names = file.constructor_use_cases();
+                    for use_case_name in &use_case_names {
+                        if use_case_bindings.iter().any(|u| &u.use_case_name == use_case_name) {
+                            continue;
+                        }
+                        let infra_names = context.find_use_case_infra(use_case_name);
+                        if infra_names.is_empty() && !context.is_ai_use_case_without_infra(use_case_name) {
+                            return Err(format!(
+                                "UseCase '{}' has no known infra target (missing 'call')",
+                                use_case_name
+                            ));
+                        }
+                        for infra_name in infra_names {
+                            Self::register_infra_binding(
+                                context,
+                                &mut infra_bindings,
+                                infra_name,
+                                &format!("use_case '{}'", use_case_name),
+                            )?;
+                        }
+                        use_case_bindings.push(UseCaseBinding {
+                            use_case_name: use_case_name.clone(),
+                            infra_names: infra_names.to_vec(),
+                        });
+                    }
+                    // `<binary> mcp` (stdio) acts as the secret's user, or
+                    // `MCP_USER_ID`.
+                    let stdio_user = match &file.auth {
+                        McpAuth::Secret { user, .. } => *user,
+                        _ => 0,
+                    };
+                    adapter_bindings.push(AdapterBinding {
+                        adapter_name: adapter_name.clone(),
+                        on,
+                        use_cases: use_case_names,
+                        auth_infra_names: Vec::new(),
+                        requires_jwt: matches!(file.auth, McpAuth::Jwt),
+                        cors: None,
+                        mcp_stdio_user: Some(stdio_user),
                     });
                 }
                 AdapterType::Grpc(grpc_data) => {
@@ -346,12 +541,30 @@ impl CodeGen {
         context.require_git_dependency("common", "ssh://git@github.com/BH-World/common.git");
         context.require_version_dependency_with_features("tokio", "1", vec!["full"]);
         context.require_version_dependency("dotenvy", "0.15");
+        // Structured logs: `RUST_LOG` filters, `LOG_FORMAT=json` for JSON lines.
+        context.require_version_dependency("tracing", "0.1");
+        context.require_version_dependency_with_features(
+            "tracing-subscriber",
+            "0.3",
+            vec!["env-filter", "json"],
+        );
+        // `<binary> token <user_id> [days]` mints long-lived service tokens.
+        if adapter_bindings.iter().any(|a| a.requires_jwt) {
+            context.require_version_dependency("jsonwebtoken", "9");
+            context.require_version_dependency("serde_json", "1");
+        }
+        if !schedule_jobs.is_empty() {
+            context.require_version_dependency_with_features("chrono", "0.4", vec!["serde"]);
+            context.require_version_dependency("chrono-tz", "0.10");
+            context.require_version_dependency("tracing", "0.1");
+        }
         if !load_balancer_bindings.is_empty() {
             // The proxy file itself (`templates/file/load_balancer.rs`)
             // uses `axum` directly to expose its own router, independent
             // of whether this app also declares a bare `http {}` adapter.
             context.require_version_dependency("axum", "0.8");
-            context.require_version_dependency("reqwest", "0.12");
+            // `stream`: request/response bodies are piped, not buffered.
+            context.require_version_dependency_with_features("reqwest", "0.12", vec!["stream"]);
         }
 
         MainFile::new(src_path.join("main.rs"))?.write(
@@ -361,6 +574,7 @@ impl CodeGen {
             &adapter_bindings,
             &grpc_adapter_bindings,
             &load_balancer_bindings,
+            &schedule_jobs,
         )?;
 
         if dev_mode {

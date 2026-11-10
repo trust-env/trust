@@ -1,10 +1,12 @@
 pub mod adapter;
 pub mod app;
 pub mod domains;
+mod emit;
 pub mod import;
 pub mod infra;
 pub mod plugin;
 pub mod rust_code;
+pub mod schema;
 pub mod types;
 pub mod use_case;
 mod workspace;
@@ -57,6 +59,53 @@ pub struct UseCaseIo {
     /// no wrapper: their output type's fields are `output_fields` exactly,
     /// so this is `None`.
     pub output_wrapper_field: Option<String>,
+    /// The use case reads the caller's id (`owner:`), so every route
+    /// exposing it must declare `auth` — without it, handlers pass user 0.
+    pub requires_user: bool,
+    /// The input is the built-in `RawRequest` (raw body + headers) rather
+    /// than a JSON/query-decoded struct.
+    pub raw_input: bool,
+    /// Serde rules of the input fields that need one (see `FieldSerde`).
+    pub input_serde: Vec<(String, FieldSerde)>,
+    /// The resolved input / output types (nested types included), for
+    /// MCP tool schemas and the TypeScript / OpenAPI emitters. The output
+    /// is the use case's own output (the `{UseCase}Output` wrapper for CRUD).
+    pub input_type: RustType,
+    pub output_type: RustType,
+}
+
+/// Serde decoding rules a generated struct field needs beyond its type:
+/// a `Regex<...>` validator or the double-`Option` decoding of a patch of
+/// a nullable column. Carried to every struct that redeclares the field
+/// (e.g. the per-route path/body halves of a split HTTP input).
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct FieldSerde {
+    pub regex_fn: Option<String>,
+    pub regex_optional: bool,
+    pub double_option: bool,
+}
+
+impl FieldSerde {
+    pub fn of(t: &RustType) -> Self {
+        FieldSerde {
+            regex_fn: t.regex_pattern().map(crate::generator::domains::regex_fn_name),
+            regex_optional: t.is_option(),
+            double_option: t.is_option() && t.unwrap_option().is_option(),
+        }
+    }
+
+    pub fn is_plain(&self) -> bool {
+        self.regex_fn.is_none() && !self.double_option
+    }
+
+    /// Non-plain rules of `fields`, by field name.
+    pub fn of_fields(fields: &[crate::generator::rust_code::types::RustField]) -> Vec<(String, FieldSerde)> {
+        fields
+            .iter()
+            .map(|f| (f.name.clone(), FieldSerde::of(&f.field_type)))
+            .filter(|(_, s)| !s.is_plain())
+            .collect()
+    }
 }
 
 pub struct CodeGenContext {
@@ -85,6 +134,11 @@ pub struct CodeGenContext {
     ai_use_cases_without_infra: Vec<String>,
     use_case_infra: HashMap<String, Vec<String>>,
     use_case_errors: HashMap<String, Vec<ErrorMapping>>,
+    /// Infra names whose `psql {}` block declares a `seed:` file.
+    psql_seeded_infras: Vec<String>,
+    /// Column sets each `psql` infra's generated code filters on, by infra
+    /// name — rendered as `CREATE INDEX` statements in its migration.
+    psql_indexes: HashMap<String, Vec<Vec<String>>>,
     use_case_io: HashMap<String, UseCaseIo>,
     dependencies: HashMap<String, Dependency>,
     build_dependencies: HashMap<String, Dependency>,
@@ -92,6 +146,8 @@ pub struct CodeGenContext {
     use_case_modules: Vec<String>,
     adapter_http_modules: Vec<String>,
     adapter_grpc_modules: Vec<String>,
+    /// `mcp {}` adapters written under `src/adapters/mcp/`.
+    adapter_mcp_modules: Vec<String>,
     infra_entity_modules: Vec<String>,
     /// Module names (bare, no `.rs`) written under
     /// `src/infrastructures/storage/grpc_client/` — mirrors
@@ -103,6 +159,10 @@ pub struct CodeGenContext {
     /// `src/infrastructures/storage/s3/` — same opt-in pattern as
     /// `grpc_client_entity_modules`.
     s3_entity_modules: Vec<String>,
+    /// `http_client {}` infras, by infra name.
+    http_client_infras: HashMap<String, crate::parser::HttpClientInfraService>,
+    /// Module names written under `src/infrastructures/http_client/`.
+    http_client_modules: Vec<String>,
     /// Module names (bare, no `.rs`) written under `src/plugins/` by
     /// `generate_plugin` — derived from each plugin codegen call's own
     /// `output_file`, which need not match the owning plugin's `name`.
@@ -110,6 +170,31 @@ pub struct CodeGenContext {
     /// `.proto` file paths written by every gRPC adapter — collected here
     /// so a single aggregate `build.rs` can compile all of them.
     grpc_proto_paths: Vec<PathBuf>,
+    /// Distinct `Regex<...>` patterns used by generated structs, rendered
+    /// into `src/domains/trust_validation.rs`.
+    regex_patterns: Vec<String>,
+    /// Whether this crate has at least one `psql` infra (so `sqlx` is a
+    /// dependency).
+    has_psql: bool,
+    /// `storage/psql/trust_tx.rs` was written for this crate.
+    transaction_module: bool,
+    /// psql infras whose migrations include `<table>.fk.sql`.
+    psql_foreign_keys: Vec<String>,
+    /// The infras each psql infra's foreign keys point to.
+    psql_references: HashMap<String, Vec<String>>,
+    /// psql infras declaring at least one `unique: [...]` key.
+    psql_unique_keys: Vec<String>,
+    /// Some generated input has an `Option<Option<T>>` field (a patch of a
+    /// nullable column), decoded by `crate::trust_double_option`.
+    needs_double_option: bool,
+    /// `code { include }` modules written under `src/shared/`: (module,
+    /// source path).
+    shared_modules: Vec<(String, String)>,
+    /// `config { json_case: "camel" }`.
+    json_camel: bool,
+    /// Some HTTP adapter of this crate declares `events:`, so use cases
+    /// with `notify` publish to `crate::trust_publish`.
+    has_events: bool,
 }
 
 impl CodeGenContext {
@@ -125,6 +210,8 @@ impl CodeGenContext {
             ai_use_cases_without_infra: Vec::new(),
             use_case_infra: HashMap::new(),
             use_case_errors: HashMap::new(),
+            psql_seeded_infras: Vec::new(),
+            psql_indexes: HashMap::new(),
             use_case_io: HashMap::new(),
             dependencies: HashMap::new(),
             build_dependencies: HashMap::new(),
@@ -132,12 +219,87 @@ impl CodeGenContext {
             use_case_modules: Vec::new(),
             adapter_http_modules: Vec::new(),
             adapter_grpc_modules: Vec::new(),
+            adapter_mcp_modules: Vec::new(),
             infra_entity_modules: Vec::new(),
             grpc_client_entity_modules: Vec::new(),
             s3_entity_modules: Vec::new(),
+            http_client_infras: HashMap::new(),
+            http_client_modules: Vec::new(),
             plugin_modules: Vec::new(),
             grpc_proto_paths: Vec::new(),
+            regex_patterns: Vec::new(),
+            has_psql: false,
+            transaction_module: false,
+            psql_foreign_keys: Vec::new(),
+            psql_references: HashMap::new(),
+            psql_unique_keys: Vec::new(),
+            needs_double_option: false,
+            shared_modules: Vec::new(),
+            json_camel: false,
+            has_events: false,
         }
+    }
+
+    pub fn json_camel(&self) -> bool {
+        self.json_camel
+    }
+
+    pub fn has_events(&self) -> bool {
+        self.has_events
+    }
+
+    pub fn find_shared_module(&self, module: &str) -> Option<&str> {
+        self.shared_modules.iter().find(|(m, _)| m == module).map(|(_, p)| p.as_str())
+    }
+
+    pub fn register_shared_module(&mut self, module: String, source: String) {
+        if self.find_shared_module(&module).is_none() {
+            self.shared_modules.push((module, source));
+        }
+    }
+
+    pub fn has_psql_unique_key(&self, infra_name: &str) -> bool {
+        self.psql_unique_keys.iter().any(|n| n == infra_name)
+    }
+
+    pub fn require_double_option(&mut self) {
+        self.needs_double_option = true;
+    }
+
+    pub fn needs_double_option(&self) -> bool {
+        self.needs_double_option
+    }
+
+    pub fn find_psql_references(&self, infra_name: &str) -> &[String] {
+        self.psql_references.get(infra_name).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn has_transaction_module(&self) -> bool {
+        self.transaction_module
+    }
+
+    pub fn mark_transaction_module(&mut self) {
+        self.transaction_module = true;
+    }
+
+    pub fn has_psql_foreign_keys(&self, infra_name: &str) -> bool {
+        self.psql_foreign_keys.iter().any(|n| n == infra_name)
+    }
+
+    /// Records a `Regex<...>` pattern and returns its validator's name.
+    pub fn register_regex(&mut self, pattern: &str) -> String {
+        if !self.regex_patterns.iter().any(|p| p == pattern) {
+            self.regex_patterns.push(pattern.to_string());
+        }
+        crate::generator::domains::regex_fn_name(pattern)
+    }
+
+    pub fn regex_patterns(&self) -> &[String] {
+        &self.regex_patterns
+    }
+
+    pub fn has_psql(&self) -> bool {
+        self.has_psql
     }
 
     /// Records a `src/plugins/<module>.rs` file written by `generate_plugin`,
@@ -154,6 +316,53 @@ impl CodeGenContext {
 
     pub fn find_type(&self, name: &str) -> Option<&RustType> {
         self.types.iter().find(|t| t.name == name)
+    }
+
+    pub fn register_http_client_infra(
+        &mut self,
+        infra_name: String,
+        cfg: crate::parser::HttpClientInfraService,
+    ) {
+        self.http_client_infras.insert(infra_name, cfg);
+    }
+
+    pub fn find_http_client_infra(
+        &self,
+        infra_name: &str,
+    ) -> Option<&crate::parser::HttpClientInfraService> {
+        self.http_client_infras.get(infra_name)
+    }
+
+    pub fn register_http_client_module(&mut self, name: String) {
+        if !self.http_client_modules.contains(&name) {
+            self.http_client_modules.push(name);
+        }
+    }
+
+    pub fn register_psql_seed(&mut self, infra_name: String) {
+        if !self.psql_seeded_infras.contains(&infra_name) {
+            self.psql_seeded_infras.push(infra_name);
+        }
+    }
+
+    pub fn has_psql_seed(&self, infra_name: &str) -> bool {
+        self.psql_seeded_infras.iter().any(|n| n == infra_name)
+    }
+
+    /// Records that some generated query filters `infra_name`'s table on
+    /// exactly `columns` (equality predicates), so its migration indexes them.
+    pub fn register_psql_index(&mut self, infra_name: String, columns: Vec<String>) {
+        if columns.is_empty() {
+            return;
+        }
+        let indexes = self.psql_indexes.entry(infra_name).or_default();
+        if !indexes.contains(&columns) {
+            indexes.push(columns);
+        }
+    }
+
+    pub fn find_psql_indexes(&self, infra_name: &str) -> &[Vec<String>] {
+        self.psql_indexes.get(infra_name).map(Vec::as_slice).unwrap_or(&[])
     }
 
     pub fn register_infra_entity(&mut self, infra_name: String, entity: AllowedType) {
@@ -276,14 +485,26 @@ impl CodeGenContext {
         version: &str,
         features: Vec<&str>,
     ) {
-        match self.dependencies.entry(name.to_string()).or_insert_with(|| {
-            Dependency::VersionWithFeatures(version.to_string(), Vec::new())
-        }) {
+        match self
+            .dependencies
+            .entry(name.to_string())
+            .or_insert_with(|| Dependency::VersionWithFeatures(version.to_string(), Vec::new()))
+        {
             Dependency::VersionWithFeatures(_, existing) => {
                 for feature in features {
                     if !existing.iter().any(|f| f == feature) {
                         existing.push(feature.to_string());
                     }
+                }
+            }
+            // Already required without features (e.g. `reqwest` by a load
+            // balancer) — keep its version, add the features.
+            dependency @ Dependency::Version(_) => {
+                if let Dependency::Version(existing_version) = dependency {
+                    *dependency = Dependency::VersionWithFeatures(
+                        existing_version.clone(),
+                        features.into_iter().map(str::to_string).collect(),
+                    );
                 }
             }
             _ => {}
@@ -323,6 +544,12 @@ impl CodeGenContext {
     pub fn register_adapter_grpc_module(&mut self, name: String) {
         if !self.adapter_grpc_modules.contains(&name) {
             self.adapter_grpc_modules.push(name);
+        }
+    }
+
+    pub fn register_adapter_mcp_module(&mut self, name: String) {
+        if !self.adapter_mcp_modules.contains(&name) {
+            self.adapter_mcp_modules.push(name);
         }
     }
 
@@ -441,7 +668,30 @@ impl CodeGen {
         ast
     }
 
+    /// The output directory is wiped before every run, so refuse anything
+    /// that doesn't look like earlier Trust output: the working directory
+    /// itself (or one of its parents), or a non-empty directory without a
+    /// root `Cargo.toml`.
     fn check_output_dir(&self, path: &PathBuf) -> Result<(), String> {
+        if let (Ok(cwd), Ok(target)) = (std::env::current_dir(), path.canonicalize()) {
+            if cwd.starts_with(&target) {
+                return Err(format!(
+                    "Refusing to use '{}' as the output directory: it contains the working directory and would be deleted",
+                    path.display()
+                ));
+            }
+        }
+        if path.is_dir() {
+            let non_empty = std::fs::read_dir(path)
+                .map(|mut entries| entries.next().is_some())
+                .unwrap_or(false);
+            if non_empty && !path.join("Cargo.toml").is_file() {
+                return Err(format!(
+                    "Refusing to overwrite '{}': it is not empty and doesn't look like Trust output (no Cargo.toml)",
+                    path.display()
+                ));
+            }
+        }
         if !path.exists() {
             std::fs::create_dir_all(path)
                 .map_err(|e| format!("Failed to create output directory: {}", e))?;
@@ -509,18 +759,87 @@ impl CodeGen {
             match ast {
                 Ast::Infra(infra) => match &infra.service_type {
                     Storage(Psql(psql)) => {
+                        context.has_psql = true;
                         context.register_infra_entity(infra.name.clone(), psql.entity.clone());
+                        if !psql.unique.is_empty() {
+                            context.psql_unique_keys.push(infra.name.clone());
+                        }
+                        if !psql.references.is_empty() {
+                            context.psql_foreign_keys.push(infra.name.clone());
+                            context.psql_references.insert(
+                                infra.name.clone(),
+                                psql.references.iter().map(|r| r.infra.clone()).collect(),
+                            );
+                        }
+                        // Declared indexes, plus one per foreign key column.
+                        for index in &psql.indexes {
+                            context.register_psql_index(infra.name.clone(), index.clone());
+                        }
+                        for reference in &psql.references {
+                            context.register_psql_index(infra.name.clone(), vec![reference.field.clone()]);
+                        }
+                        if psql.seed.is_some() {
+                            context.register_psql_seed(infra.name.clone());
+                        }
                     }
                     Storage(crate::parser::StorageType::GrpcClient(cfg)) => {
                         context.register_infra_entity(infra.name.clone(), cfg.entity.clone());
                         context.register_infra_target_address(infra.name.clone(), cfg.on.clone());
                     }
                     Storage(crate::parser::StorageType::S3(cfg)) => {
-                        context.register_blob_infra(infra.name.clone(), cfg.bucket.clone(), cfg.entity.clone());
+                        context.register_blob_infra(
+                            infra.name.clone(),
+                            cfg.bucket.clone(),
+                            cfg.entity.clone(),
+                        );
+                    }
+                    crate::parser::InfraServiceType::HttpClient(cfg) => {
+                        context.register_http_client_infra(infra.name.clone(), cfg.clone());
                     }
                 },
                 Ast::UseCase(use_case) => {
                     context.register_known_use_case(use_case.name.clone());
+                    // A `list` primary call (always the last one) with
+                    // `filters {}`/`owner:` queries by those columns.
+                    // Equality columns first, then the first range/sort
+                    // column, so one btree serves the whole query.
+                    if let Some(primary) = use_case.calls.last() {
+                        if primary.method == "list" {
+                            use crate::parser::FilterOperator;
+                            let mut columns: Vec<String> = use_case
+                                .filters
+                                .iter()
+                                .filter(|f| matches!(f.operator, FilterOperator::Eq | FilterOperator::In))
+                                .map(|f| f.field.clone())
+                                .collect();
+                            columns.extend(use_case.owner.iter().cloned());
+                            let trailing = use_case
+                                .order_by
+                                .first()
+                                .map(|o| o.field.clone())
+                                .or_else(|| {
+                                    use_case
+                                        .filters
+                                        .iter()
+                                        .find(|f| {
+                                            matches!(
+                                                f.operator,
+                                                FilterOperator::Gt
+                                                    | FilterOperator::Gte
+                                                    | FilterOperator::Lt
+                                                    | FilterOperator::Lte
+                                            )
+                                        })
+                                        .map(|f| f.field.clone())
+                                });
+                            if let Some(column) = trailing {
+                                if !columns.contains(&column) {
+                                    columns.push(column);
+                                }
+                            }
+                            context.register_psql_index(primary.target.clone(), columns);
+                        }
+                    }
                     if let (Some(input), Some(output)) = (&use_case.input, &use_case.output) {
                         context.register_use_case_signature(
                             use_case.name.clone(),
@@ -549,6 +868,50 @@ impl CodeGen {
                     if let Some(blob) = &use_case.blob {
                         context.register_use_case_infra(use_case.name.clone(), blob.target.clone());
                     }
+                    if let Some(code) = &use_case.code {
+                        for infra_name in &code.infras {
+                            context
+                                .register_use_case_infra(use_case.name.clone(), infra_name.clone());
+                        }
+                        if code.infras.is_empty() {
+                            // Same "constructed with no arguments" wiring
+                            // `ai {}` use cases without an infra get.
+                            context.register_ai_use_case_without_infra(use_case.name.clone());
+                        }
+                        // Only the targets matter to routes' `status {}`
+                        // validation and status functions — a `code {}`
+                        // variant has no storage error source.
+                        let errors = code
+                            .errors
+                            .iter()
+                            .map(|variant| ErrorMapping {
+                                source: String::new(),
+                                target: variant.clone(),
+                                message: None,
+                            })
+                            .collect();
+                        context.register_use_case_errors(use_case.name.clone(), errors);
+                    }
+                }
+                Ast::Config(config) => {
+                    context.json_camel = config.json_case.as_deref() == Some("camel");
+                }
+                Ast::Adapter(adapter) => {
+                    // `auth { infra ... }` looks permission rows up by
+                    // (user_id, target, action) on every guarded request.
+                    if let crate::parser::AdapterType::Http(http) = &adapter.adapter_type {
+                        if http.events.is_some() {
+                            context.has_events = true;
+                        }
+                        for route in &http.routes {
+                            if let Some(infra) = route.auth.as_ref().and_then(|a| a.permission_infra()) {
+                                context.register_psql_index(
+                                    infra.to_string(),
+                                    vec!["user_id".to_string(), "target".to_string(), "action".to_string()],
+                                );
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -567,12 +930,14 @@ impl CodeGen {
                 }
             }
         }
-        for ast in asts {
-            if let Ast::TypeDecl(t) = ast {
-                let resolved = self.resolve_type_declaration(&mut context, t)?;
-                context.add_type(resolved);
-            }
-        }
+        let decls: Vec<&crate::parser::TypeDeclaration> = asts
+            .iter()
+            .filter_map(|ast| match ast {
+                Ast::TypeDecl(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        self.resolve_type_declarations(&mut context, &decls)?;
         for ast in asts {
             if let Ast::UseCase(use_case) = ast {
                 self.register_use_case_io(&mut context, use_case)?;
@@ -638,10 +1003,15 @@ impl CodeGen {
                     ai_config,
                 ),
                 Ast::TypeDecl(t) => self.gen_domain(&mut context, t, domain_path.clone()),
-                Ast::App(_) => Ok(()),
-                Ast::Plugin(plugin_ast) => {
-                    self.generate_plugin(&mut context, plugin_ast, loaded_plugins, &plugins_path, dev_mode)
-                }
+                // Generated with the app that runs them.
+                Ast::App(_) | Ast::Schedule(_) | Ast::Config(_) => Ok(()),
+                Ast::Plugin(plugin_ast) => self.generate_plugin(
+                    &mut context,
+                    plugin_ast,
+                    loaded_plugins,
+                    &plugins_path,
+                    dev_mode,
+                ),
             }?
         }
 
@@ -674,8 +1044,18 @@ impl CodeGen {
         ModFile::new(infra_path.join("storage.rs"))?
             .with_mods(storage_mods)
             .write()?;
+        let mut infra_mods = vec!["storage".to_string()];
+        if !context.http_client_modules.is_empty() {
+            let http_client_dir = infra_path.join("http_client");
+            create_dir_all(&http_client_dir)
+                .map_err(|e| format!("Error when creating the folder http_client: {}", e))?;
+            ModFile::new(infra_path.join("http_client.rs"))?
+                .with_mods(context.http_client_modules.clone())
+                .write()?;
+            infra_mods.push("http_client".to_string());
+        }
         ModFile::new(src_path.join("infrastructures.rs"))?
-            .with_mods(vec!["storage".to_string()])
+            .with_mods(infra_mods)
             .write()?;
 
         // Only wire up `adapters/http` and `adapters/grpc` (dir + mod file
@@ -716,28 +1096,39 @@ impl CodeGen {
             adapter_mods.push("grpc".to_string());
         }
 
+        if !context.adapter_mcp_modules.is_empty() {
+            ModFile::new(adapter_path.join("mcp.rs"))?
+                .with_mods(context.adapter_mcp_modules.clone())
+                .write()?;
+            adapter_mods.push("mcp".to_string());
+        }
+
         ModFile::new(src_path.join("adapters.rs"))?
             .with_mods(adapter_mods)
             .write()?;
 
         if !context.grpc_proto_paths.is_empty() {
-            let mut build_rs = String::new();
-            build_rs.push_str("fn main() -> Result<(), Box<dyn std::error::Error>> {\n");
-            build_rs.push_str("    let protoc_path = protoc_bin_vendored::protoc_bin_path()?;\n");
-            build_rs.push_str("    unsafe {\n        std::env::set_var(\"PROTOC\", protoc_path);\n    }\n");
-            for proto_path in &context.grpc_proto_paths {
-                let relative = proto_path
-                    .strip_prefix(&path)
-                    .unwrap_or(proto_path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                build_rs.push_str(&format!("    tonic_build::compile_protos({:?})?;\n", relative));
-            }
-            build_rs.push_str("    Ok(())\n}\n");
+            // Rust string literals of each proto path, relative to the crate.
+            let protos: Vec<String> = context
+                .grpc_proto_paths
+                .iter()
+                .map(|proto_path| {
+                    let relative = proto_path
+                        .strip_prefix(&path)
+                        .unwrap_or(proto_path)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    format!("{:?}", relative)
+                })
+                .collect();
+            let mut build_context = tera::Context::new();
+            build_context.insert("protos", &protos);
+            let build_rs = crate::generator::rust_code::render::render("build_rs.rs.tera", &build_context);
             std::fs::write(path.join("build.rs"), build_rs)
                 .map_err(|e| format!("Failed to write build.rs: {}", e))?;
         }
 
+        crate::generator::domains::write_regex_validators(&mut context, &domain_path)?;
         ModFile::new(src_path.join("domains.rs"))?
             .with_mods(context.domain_modules.clone())
             .write()?;
@@ -751,6 +1142,32 @@ impl CodeGen {
             "applications".to_string(),
             "adapters".to_string(),
         ];
+        if context.has_events {
+            std::fs::write(
+                src_path.join("trust_events.rs"),
+                crate::generator::rust_code::render::render("file/events/runtime.rs.tera", &tera::Context::new()),
+            )
+            .map_err(|e| format!("Failed to write the events module: {}", e))?;
+            lib_mods.push("trust_events".to_string());
+        }
+        // A `schedule {}` run by this app's binary needs the cron runtime.
+        if asts.iter().any(|ast| matches!(ast, Ast::Schedule(_))) {
+            std::fs::write(
+                src_path.join("trust_schedule.rs"),
+                crate::generator::rust_code::render::render(
+                    "file/schedule/runtime.rs.tera",
+                    &tera::Context::new(),
+                ),
+            )
+            .map_err(|e| format!("Failed to write the scheduler: {}", e))?;
+            lib_mods.push("trust_schedule".to_string());
+        }
+        if !context.shared_modules.is_empty() {
+            ModFile::new(src_path.join("shared.rs"))?
+                .with_mods(context.shared_modules.iter().map(|(m, _)| m.clone()).collect())
+                .write()?;
+            lib_mods.push("shared".to_string());
+        }
         if !context.plugin_modules.is_empty() {
             ModFile::new(src_path.join("plugins.rs"))?
                 .with_mods(context.plugin_modules.clone())

@@ -1,0 +1,4 @@
+{%- if f.serde.double_option %}    #[serde(default, deserialize_with = "crate::trust_double_option")]
+{% elif f.serde.regex_fn %}{% if f.serde.regex_optional %}    #[serde(default, deserialize_with = "crate::{{ f.serde.regex_fn }}_opt")]
+{% else %}    #[serde(deserialize_with = "crate::{{ f.serde.regex_fn }}")]
+{% endif %}{% endif -%}

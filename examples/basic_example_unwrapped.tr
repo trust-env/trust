@@ -1,5 +1,9 @@
-import SQLConnector from "./mod/common/common.tr"
-import Permission from "./mod/user_permission/user_permission.tr"
+type Permission {
+    id: Int,
+    user_id: Int,
+    target: String,
+    action: String
+}
 
 type User {
     id: Int,

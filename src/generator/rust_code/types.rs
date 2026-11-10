@@ -15,6 +15,20 @@ pub struct RustField {
     pub field_type: RustType,
 }
 
+/// What a resolved type is beyond its Rust spelling — drives the serde
+/// attributes, column type and `sqlx` binding generated for it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum TypeKind {
+    #[default]
+    Plain,
+    /// A declared `enum`: its wire values, in declaration order.
+    Enum(Vec<String>),
+    /// A `Regex<...>` string: the resolved pattern.
+    Regex(String),
+    /// A declared struct (`type X { ... }`).
+    Struct,
+}
+
 #[derive(Debug, Clone)]
 pub struct RustType {
     pub scope: Scope,
@@ -22,6 +36,7 @@ pub struct RustType {
     pub templates: Vec<RustType>,
     pub fields: Vec<RustField>,
     pub include: Option<Include>,
+    pub kind: TypeKind,
 }
 
 impl RustType {
@@ -36,6 +51,7 @@ impl RustType {
             templates: Vec::new(),
             fields: Vec::new(),
             include: None,
+            kind: TypeKind::Plain,
         }
     }
 
@@ -46,6 +62,44 @@ impl RustType {
             templates,
             fields,
             include: None,
+            kind: TypeKind::Plain,
+        }
+    }
+
+    pub fn with_kind(mut self, kind: TypeKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    pub fn is_option(&self) -> bool {
+        self.name == "Option"
+    }
+
+    /// `Option<T>` -> `T`, anything else unchanged.
+    pub fn unwrap_option(&self) -> &RustType {
+        if self.is_option() {
+            self.templates.first().unwrap_or(self)
+        } else {
+            self
+        }
+    }
+
+    pub fn is_enum(&self) -> bool {
+        matches!(self.kind, TypeKind::Enum(_))
+    }
+
+    /// Stored as a `JSONB` column and bound through `sqlx::types::Json`:
+    /// lists and declared structs (`Json` itself binds natively).
+    pub fn is_json_wrapped(&self) -> bool {
+        let t = self.unwrap_option();
+        t.name == "Vec" || t.kind == TypeKind::Struct
+    }
+
+    /// The `Regex<...>` pattern of this field (or of its `Option` inner).
+    pub fn regex_pattern(&self) -> Option<&str> {
+        match &self.unwrap_option().kind {
+            TypeKind::Regex(p) => Some(p),
+            _ => None,
         }
     }
 
@@ -71,6 +125,9 @@ impl RustType {
 struct FieldView {
     name: String,
     field_type: String,
+    regex_fn: Option<String>,
+    regex_optional: bool,
+    sqlx_json: &'static str,
 }
 
 impl RustCode for RustType {
@@ -81,6 +138,9 @@ impl RustCode for RustType {
             .map(|field| FieldView {
                 name: field.name.clone(),
                 field_type: field.field_type.to_call_string(Vec::new()),
+                regex_fn: None,
+                regex_optional: false,
+                sqlx_json: "",
             })
             .collect();
 

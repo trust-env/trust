@@ -49,7 +49,7 @@ impl CodeGen {
             .ok_or_else(|| format!("grpc_client: unknown target service '{}'", cfg.service))?;
         let grpc_data = match &adapter.adapter_type {
             AdapterType::Grpc(g) => g,
-            AdapterType::Http(_) => {
+            AdapterType::Http(_) | AdapterType::Mcp(_) => {
                 return Err(format!("grpc_client: target service '{}' is not a grpc {{}} adapter", cfg.service));
             }
         };

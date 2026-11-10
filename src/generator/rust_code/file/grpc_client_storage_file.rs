@@ -166,46 +166,9 @@ impl GrpcClientStorageFile {
     }
 
     fn gen_unsupported_method(&self, verb: &str) -> String {
-        let signature = match verb {
-            "save_one" => format!("save_one(&self, _data: {e}) -> Result<{e}, {err}>", e = self.entity.name, err = self.error_name),
-            "save_many" => format!(
-                "save_many(&self, _data: Vec<{e}>) -> Result<Vec<{e}>, {err}>",
-                e = self.entity.name,
-                err = self.error_name
-            ),
-            "find_one" => format!(
-                "find_one(&self, _id: EntityId) -> Result<Option<{e}>, {err}>",
-                e = self.entity.name,
-                err = self.error_name
-            ),
-            "find_many" => format!(
-                "find_many(&self, _ids: Vec<EntityId>) -> Result<Vec<{e}>, {err}>",
-                e = self.entity.name,
-                err = self.error_name
-            ),
-            "list" => format!(
-                "list(&self, _query: StorageListQuery) -> Result<Vec<{e}>, {err}>",
-                e = self.entity.name,
-                err = self.error_name
-            ),
-            "update_one" => format!(
-                "update_one(&self, _id: EntityId, _data: {e}) -> Result<{e}, {err}>",
-                e = self.entity.name,
-                err = self.error_name
-            ),
-            "delete" => {
-                format!("delete(&self, _id: EntityId) -> Result<{e}, {err}>", e = self.entity.name, err = self.error_name)
-            }
-            "delete_many" => format!(
-                "delete_many(&self, _ids: Vec<EntityId>) -> Result<Vec<{e}>, {err}>",
-                e = self.entity.name,
-                err = self.error_name
-            ),
-            other => unreachable!("not one of STORAGE_VERBS: {}", other),
-        };
-
+        assert!(STORAGE_VERBS.contains(&verb), "not one of STORAGE_VERBS: {}", verb);
         let mut context = Context::new();
-        context.insert("signature", &signature);
+        context.insert("entity", &self.entity.name);
         context.insert("error_name", &self.error_name);
         context.insert("verb", verb);
         render("file/grpc_client_storage/unsupported_method.rs.tera", &context)
@@ -233,6 +196,22 @@ impl GrpcClientStorageFile {
         context.insert("client_module", &client_module);
         context.insert("service_name", &self.service_name);
         context.insert("methods_code", &self.gen_methods_code());
+        #[derive(serde::Serialize)]
+        struct PatchFieldView {
+            name: String,
+            rust_type: String,
+        }
+        let patch_fields: Vec<PatchFieldView> = self
+            .entity
+            .fields
+            .iter()
+            .filter(|f| f.name != "id")
+            .map(|f| PatchFieldView {
+                name: f.name.clone(),
+                rust_type: f.field_type.to_call_string(Vec::new()),
+            })
+            .collect();
+        context.insert("patch_fields", &patch_fields);
         let code = render("file/grpc_client_storage/client.rs.tera", &context);
 
         self.rust_file

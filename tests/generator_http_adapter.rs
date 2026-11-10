@@ -198,3 +198,66 @@ fn route_file_imports_uuid_and_decimal_for_locally_declared_split_structs() {
     assert!(route.contains("pub owner_id: Uuid,"));
     assert!(route.contains("pub amount: Decimal,"));
 }
+
+const CORS_TR: &str = r#"type Ping {
+    id: Int,
+    label: String
+}
+
+infra PingInfra {
+    storage {
+        psql {
+            entity: Ping
+        }
+    }
+}
+
+use_case ListPingsUseCase {
+    call: PingInfra.list
+}
+
+adapter HttpApi {
+    http {
+        on: "0.0.0.0:8080"
+        cors: "${CORS_ORIGINS}"
+        routes {
+            GET "/pings" {
+                use_case: ListPingsUseCase
+            }
+        }
+    }
+}
+
+app Main: run {
+    HttpApi
+}
+"#;
+
+#[test]
+fn cors_setting_adds_a_runtime_configured_layer() {
+    let project = generate(CORS_TR);
+    let adapter = project.read("main/src/adapters/http/http_api.rs");
+    assert!(
+        adapter.contains(r#".layer(cors_layer(format!("{}", std::env::var("CORS_ORIGINS")"#),
+        "{adapter}"
+    );
+    assert!(
+        adapter.contains("fn cors_layer(origins: String) -> tower_http::cors::CorsLayer"),
+        "{adapter}"
+    );
+    let cargo = project.read("main/Cargo.toml");
+    assert!(cargo.contains("tower-http"), "{cargo}");
+}
+
+#[test]
+fn adapters_without_cors_get_no_layer() {
+    let project = generate(&CORS_TR.replace("        cors: \"${CORS_ORIGINS}\"\n", ""));
+    assert!(
+        !project
+            .read("main/src/adapters/http/http_api.rs")
+            .contains("cors_layer")
+    );
+    // tower-http stays (request logs), without its `cors` feature.
+    let cargo = project.read("main/Cargo.toml");
+    assert!(!cargo.contains("\"cors\""), "{cargo}");
+}

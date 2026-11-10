@@ -27,8 +27,10 @@ Trust is the thing you write before you regret not writing it.
 
 ## Status
 
-Early. Very early. The spec exists. The engine doesn't yet.  
-Use at your own risk — which is currently zero, because nothing runs.
+Early. The compiler works: `.tr` files generate Rust services (HTTP, gRPC,
+Postgres, S3, load balancing, AI-authored use cases, plugins) that build
+and run — see the [tutorial](doc/tutorial.md). Expect rough edges and
+breaking changes.
 
 *Built in Rust. Named by committee. Shipped eventually.*
 

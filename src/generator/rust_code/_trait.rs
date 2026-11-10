@@ -69,10 +69,18 @@ pub struct TraitImpl {
 impl TraitImpl {
     pub fn to_rust_code(&self, service: &Service) -> String {
         let template_names: Vec<String> = self.templates.iter().map(|(name, _)| name.clone()).collect();
-        let where_clauses: Vec<String> = self
+        #[derive(serde::Serialize)]
+        struct BoundView {
+            name: String,
+            bound: String,
+        }
+        let where_clauses: Vec<BoundView> = self
             .templates
             .iter()
-            .map(|(name, rust_type)| format!("\n\t{}: {}", name, rust_type.to_call_string(service.templates.clone())))
+            .map(|(name, rust_type)| BoundView {
+                name: name.clone(),
+                bound: rust_type.to_call_string(service.templates.clone()),
+            })
             .collect();
         let methods: Vec<String> = self.methods.iter().map(|m| m.to_rust_code()).collect();
 

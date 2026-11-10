@@ -85,9 +85,21 @@ fn main() {
         .into_iter()
         .filter(|a| !a.starts_with("--"))
         .collect::<Vec<String>>();
+    if files.is_empty() {
+        eprintln!("Usage: trust <file.tr> [more.tr ...] [--out=<dir>] [--dev] [--vendor=<dir>] [--verbose]");
+        std::process::exit(1);
+    }
+    let verbose = flags.contains_key("verbose");
+    let out_dir = PathBuf::from(flags.get("out").map(String::as_str).unwrap_or("./out"));
     let files_content = files
         .iter()
-        .map(|file| std::fs::read_to_string(file).expect("Failed to read file"))
+        .map(|file| match std::fs::read_to_string(file) {
+            Ok(content) => content,
+            Err(e) => {
+                eprintln!("Error occurred while reading '{}': {}", file, e);
+                std::process::exit(1);
+            }
+        })
         .collect::<Vec<String>>();
     let mut lexers = files_content.iter().map(Lexer::new).collect::<Vec<Lexer>>();
     let tokens = match lexers
@@ -101,7 +113,9 @@ fn main() {
             std::process::exit(1);
         }
     };
-    println!("Tokens: {:#?}", tokens);
+    if verbose {
+        eprintln!("Tokens: {:#?}", tokens);
+    }
     let mut parsers = tokens
         .into_iter()
         .zip(files_content.iter())
@@ -120,7 +134,7 @@ fn main() {
     };
     match asts
         .iter_mut()
-        .map(|a| CodeGen::new(a.clone()).run_with_plugins(PathBuf::from("./out"), dev_mode, &ai_config, &loaded_plugins))
+        .map(|a| CodeGen::new(a.clone()).run_with_plugins(out_dir.clone(), dev_mode, &ai_config, &loaded_plugins))
         .collect::<Result<Vec<()>, String>>()
     {
         Ok(_) => (),
@@ -130,6 +144,41 @@ fn main() {
         }
     }
 
-    println!("================================");
-    println!("Parsed ASTs: {:?}", asts);
+    if verbose {
+        eprintln!("Parsed ASTs: {:#?}", asts);
+    }
+
+    for (flag, kind) in [("emit-ts", "TypeScript client"), ("emit-openapi", "OpenAPI document")] {
+        let Some(target) = flags.get(flag) else { continue };
+        let all_asts: Vec<Ast> = asts.iter().flatten().cloned().collect();
+        let generator = CodeGen::new(Vec::new());
+        let title = files.first().map(String::as_str).unwrap_or("api");
+        let content = if flag == "emit-ts" {
+            generator.emit_typescript(&all_asts)
+        } else {
+            generator.emit_openapi(&all_asts, title)
+        };
+        match content.and_then(|c| std::fs::write(target, c).map_err(|e| e.to_string())) {
+            Ok(()) => println!("Wrote {} to {}", kind, target),
+            Err(e) => {
+                eprintln!("Error occurred while writing the {}: {}", kind, e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(vendor_dir) = flags.get("vendor") {
+        match trust::vendor::vendor_dependencies(&out_dir, &PathBuf::from(vendor_dir)) {
+            Ok(vendored) if !vendored.is_empty() => {
+                println!("Vendored {} into {}", vendored.join(", "), out_dir.join("vendor").display());
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Error occurred while vendoring dependencies: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    println!("Generated {}", out_dir.display());
 }

@@ -1,0 +1,8 @@
+// Copied verbatim from {{ file }} — edit it there. Its `pub` items are
+// re-exported at the crate root, so every `code {}` body can use them.
+#[allow(unused_imports)]
+use common::{Storage, StorageListQuery, StoragePredicate, StoragePredicateOperator, UseCase};
+#[allow(unused_imports)]
+use crate::*;
+
+{{ source }}

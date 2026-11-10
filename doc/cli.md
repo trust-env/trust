@@ -29,53 +29,47 @@ argument that doesn't start with `--` is treated as a `.tr` file path.
 | `--ai-model=<name>` | value | `claude-sonnet-4-5` | — |
 | `--ai-base-url=<url>` | value | `https://api.anthropic.com` | Mainly useful for pointing at a local mock server in tests. |
 
+| `--out=<dir>` | value | `./out` | Where the project is generated. The directory is wiped first, so Trust refuses one that contains the working directory, or a non-empty one without a root `Cargo.toml`. |
+| `--vendor=<dir>` | value | none | Copies every private git dependency the output needs (`common`, `auth`, `user`, ... and theirs) from `<dir>/<crate>` into `<out>/vendor/` and rewrites the manifests to `path` dependencies. The output then builds with no SSH access (Docker, CI). |
+| `--emit-ts=<file>` | value | none | Writes a typed TypeScript client: one declaration per type the HTTP routes use and one `<Adapter>Client` class per HTTP adapter. |
+| `--emit-openapi=<file>` | value | none | Writes an OpenAPI 3.1 document of every HTTP route. |
+| `--verbose` | boolean | off | Prints the token stream and the parsed AST to stderr. |
+
 You only need the `--ai-*` flags if the `.tr` file actually contains an
 `ai {}` use case; files without one never touch these settings.
 
 ## Output
 
-Generated code is always written to `./out` relative to the current working
-directory — this path is currently hardcoded, not configurable via a flag.
+Generated code is written to `./out` (or `--out=<dir>`).
 
-> **`./out` is destroyed and rebuilt on every run.** Before generating
-> anything, Trust does `remove_dir_all("./out")` followed by
-> `create_dir_all("./out")`. Any manual edits you made inside `out/` are
-> gone the next time you compile — treat everything under `out/` as fully
-> disposable, generated-only output, never a place to hand-edit.
+> **The output directory is destroyed and rebuilt on every run.** Never
+> hand-edit generated code: it is gone the next time you compile.
 
-If the `.tr` file declares one or more named `app { ... }` blocks, `./out`
-becomes a **Cargo workspace** — even with just one `app` — with one member
+If the `.tr` file declares one or more named `app { ... }` blocks, the
+output is a **Cargo workspace** — even with just one `app` — with one member
 crate per app (named after that app's snake_cased name) and a root
-`Cargo.toml` (`[workspace] resolver = "2"`, `members = [...]`). A `.tr` file
-with **zero** `app` blocks falls back to a single flat crate directly under
-`./out` (mainly relevant for isolated test fixtures — real projects should
-always declare an `app`).
+`Cargo.toml`. A `.tr` file with **zero** `app` blocks falls back to a single
+flat crate.
 
 ## stdout / stderr behavior
 
-A successful run currently prints, to **stdout**, unconditionally (not
-gated behind `--dev` or any verbosity flag):
+A successful run prints one line per output (`Generated ./out`, `Vendored
+...`, `Wrote TypeScript client to ...`). Errors go to stderr as `Error
+occurred while <stage>: <message>`, followed by `exit(1)` — lexing,
+parsing, reading an input file, loading plugins, generating, vendoring and
+emitting all follow this path.
 
-1. The **entire lexed token stream** for every input file (`Tokens: {:#?}`).
-2. The **entire parsed AST** for every input file (`Parsed ASTs: {:?}`).
+## Generated binary commands
 
-This is leftover debug output from early development, not a documented
-feature — expect a large, noisy dump on stdout for anything beyond a
-one-line fixture. There is currently no `--quiet`, no `-v`/verbosity flag,
-and no `RUST_LOG` support to suppress or adjust it.
+Besides running its servers, a generated binary accepts:
 
-Errors are printed to **stderr**, with a consistent `Error occurred while
-<stage>: <message>` prefix, followed by a clean `exit(1)` — except for one
-case:
-
-| Failure | Where reported | Exit behavior |
+| Command | When | What |
 |---|---|---|
-| Lex error | stderr, `"Error occurred while lexing: {e}"` | clean `exit(1)` |
-| Parse error | stderr, `"Error occurred while parsing: {e}"` | clean `exit(1)` |
-| Plugin load error (bad path, ABI mismatch, keyword collision) | stderr, `"Error occurred while loading plugin '{path}': {e}"` | clean `exit(1)`, stops at the **first** failing plugin |
-| Plugin template registration error | stderr, `"Error occurred while registering plugin templates: {e}"` | clean `exit(1)` |
-| Codegen error | stderr, `"Error occurred while generating code: {e}"` | clean `exit(1)` |
-| **A `.tr` file path that doesn't exist or can't be read** | a Rust `panic!` message (`"Failed to read file"`) | **process panic, exit code 101** — not the same clean path as every other error. If you see a panic instead of a tidy error, double-check your file paths first. |
+| `<binary> token <user_id> [days]` | the app has an `auth` route (JWT) | Prints a JWT for that user, valid `days` days (365), signed with `JWT_SECRET` — for agents, scripts, the MCP server. |
+| `<binary> mcp` | the app runs an `mcp {}` adapter | Serves the first MCP adapter over stdin/stdout instead of starting the network servers. Acts as the adapter's secret user, or `MCP_USER_ID`. |
+
+Logs go to stderr: `RUST_LOG` filters them (default `info`), `LOG_FORMAT=json`
+prints one JSON object per line.
 
 ## Dev mode (`--dev`)
 
@@ -99,12 +93,14 @@ are HTML-escaped.
 Written to **that app's own crate root** (`out/<app>/.env` in a workspace —
 there is no single shared workspace-root `.env`):
 
-- One line per `psql` infra: `<INFRA_NAME>_DB_URL=postgres://postgres:postgres@localhost:5432/<entity>` (env var name is the infra's name, upper-snake-cased, entity name lowercased for the DB name). `grpc_client` infras are skipped — their target address is a compile-time literal, not env-driven.
-- One line per distinct `${VAR}` actually referenced in any adapter's or load-balancer's own `on:` (never `targets`, see [conversions.md](conversions.md#7-address-string--env-var-interpolation)):
+- One line per `psql` infra: `<INFRA_NAME>_DB_URL=postgres://postgres:postgres@localhost:5432/<entity>` (env var name is the infra's name, upper-snake-cased, entity name lowercased for the DB name), followed by `<INFRA_NAME>_DB_POOL_SIZE=16` — the maximum number of Postgres connections that infra's pool keeps open (optional at runtime; 16 when unset). `grpc_client` infras are skipped — their target address is a compile-time literal, not env-driven.
+- One line per distinct `${VAR}` referenced by an `http_client` infra's `base_url` or header values, defaulting to `changeme`.
+- One line per distinct `${VAR}` actually referenced in any adapter's `on:`/`cors:` or load-balancer's own `on:` (never `targets`, see [conversions.md](conversions.md#7-address-string--env-var-interpolation)):
   - Names containing `PORT` get a shared counter for that app, starting at **3000** and incrementing by 1 for each such variable encountered.
+  - Names containing `CORS` or `ORIGIN` default to `"http://localhost:5173"` (Vite's dev server).
   - Names containing `HOST` default to `"0.0.0.0"`.
   - Anything else defaults to the placeholder `"changeme"`.
-- `JWT_SECRET=changeme`, appended only if the app has at least one HTTP route with an `auth {}` block. The `auth` crate's `UserContext` extractor reads this variable at runtime to validate JWTs.
+- `JWT_SECRET=changeme`, appended only if the app has at least one HTTP route with `auth` (either `auth {}` or `auth: required`). The `auth` crate's `UserContext` extractor reads this variable at runtime to validate JWTs.
 
 `--dev` is meant for local iteration — none of this is meant to represent
 production secrets; you're expected to replace the scaffolded `.env` values

@@ -13,12 +13,16 @@ use crate::{
             RustCode,
             file::{
                 grpc_adapter_file::{GrpcAdapterFile, GrpcRpcBinding},
-                http_adapter_file::{HttpAdapterFile, HttpRouteBinding, ResolvedAuth},
+                mcp_adapter_file::{McpAdapterFile, McpAuth, McpToolBinding},
+                http_adapter_file::{HttpAdapterFile, HttpOptions, HttpRouteBinding, ResolvedAuth, ResolvedSecret},
             },
             service::Service,
         },
     },
-    parser::{AdapterService, AdapterType, GrpcAdapterService, GrpcRpc, HttpAdapterService, HttpRoute},
+    parser::{
+        AdapterService, AdapterType, AuthRequirement, GrpcAdapterService, GrpcRpc,
+        HttpAdapterService, HttpRoute, McpAdapterService,
+    },
 };
 
 impl CodeGen {
@@ -88,27 +92,57 @@ impl CodeGen {
             }
         }
 
-        let (input_type_name, input_fields, output_type_name, output_entity, output_fields, output_is_list) =
-            match context.find_use_case_io(&route.use_case) {
-                Some(io) => (
-                    io.input_type_name.clone(),
-                    io.input_fields.clone(),
-                    io.output_type_name.clone(),
-                    io.output_entity.clone(),
-                    io.output_fields.clone(),
-                    io.output_is_list,
-                ),
-                None => (
-                    format!("{}Input", route.use_case),
-                    Vec::new(),
-                    format!("{}Output", route.use_case),
-                    String::new(),
-                    Vec::new(),
-                    false,
-                ),
-            };
+        if route.auth.is_none()
+            && context
+                .find_use_case_io(&route.use_case)
+                .is_some_and(|io| io.requires_user)
+        {
+            return Err(format!(
+                "HTTP route '{}': use_case '{}' is scoped to the calling user ('owner'), so the route must declare 'auth'",
+                route.path, route.use_case
+            ));
+        }
 
+        let (
+            input_type_name,
+            input_fields,
+            output_type_name,
+            output_entity,
+            output_fields,
+            output_is_list,
+        ) = match context.find_use_case_io(&route.use_case) {
+            Some(io) => (
+                io.input_type_name.clone(),
+                io.input_fields.clone(),
+                io.output_type_name.clone(),
+                io.output_entity.clone(),
+                io.output_fields.clone(),
+                io.output_is_list,
+            ),
+            None => (
+                format!("{}Input", route.use_case),
+                Vec::new(),
+                format!("{}Output", route.use_case),
+                String::new(),
+                Vec::new(),
+                false,
+            ),
+        };
+
+        let raw_input = context
+            .find_use_case_io(&route.use_case)
+            .is_some_and(|io| io.raw_input);
+        let input_serde = context
+            .find_use_case_io(&route.use_case)
+            .map(|io| io.input_serde.clone())
+            .unwrap_or_default();
         let path_params = route.path_params();
+        if raw_input && !path_params.is_empty() {
+            return Err(format!(
+                "HTTP route '{}': use_case '{}' takes a RawRequest, so the route can't declare path parameters",
+                route.path, route.use_case
+            ));
+        }
         for name in &path_params {
             if !input_fields.iter().any(|(n, _)| n == name) {
                 return Err(format!(
@@ -118,8 +152,22 @@ impl CodeGen {
             }
         }
 
+        // A JWT (either form) gives the caller's id; a shared secret acts as
+        // its configured user.
+        let requires_user = route.auth.as_ref().is_some_and(|a| a.uses_jwt());
+        let secret = match &route.auth {
+            Some(AuthRequirement::Secret(secret)) => Some(ResolvedSecret {
+                value_expr: crate::generator::rust_code::env_template::to_rust_expr(&secret.secret),
+                header: secret.header.as_ref().map(|h| h.to_lowercase()),
+                user: secret.user,
+            }),
+            _ => None,
+        };
+        let output_wrapper_field = context
+            .find_use_case_io(&route.use_case)
+            .and_then(|io| io.output_wrapper_field.clone());
         let auth = match &route.auth {
-            Some(req) => {
+            Some(AuthRequirement::Permission(req)) => {
                 let entity = context.find_infra_entity(&req.infra).ok_or_else(|| {
                     format!(
                         "HTTP route '{}': auth references unknown infra '{}'",
@@ -142,7 +190,7 @@ impl CodeGen {
                     action: req.action.clone(),
                 })
             }
-            None => None,
+            Some(AuthRequirement::Authenticated) | Some(AuthRequirement::Secret(_)) | None => None,
         };
 
         Ok(HttpRouteBinding {
@@ -156,11 +204,16 @@ impl CodeGen {
             input_type_name,
             output_type_name,
             input_fields,
+            input_serde,
             output_entity,
             output_fields,
             output_is_list,
+            output_wrapper_field,
             path_params,
+            requires_user,
+            raw_input,
             auth,
+            secret,
         })
     }
 
@@ -219,11 +272,31 @@ impl CodeGen {
             }
         }
 
-        if bindings.iter().any(|b| b.auth.is_some()) {
+        if bindings.iter().any(|b| b.requires_user) {
             context.require_git_dependency("auth", "ssh://git@github.com/BH-World/auth.git");
         }
 
-        let mut file = HttpAdapterFile::new(name, bindings, dev_mode, http_folder_path)?;
+        // Request logs (TraceLayer) on every HTTP adapter.
+        context.require_version_dependency_with_features("tower-http", "0.6", vec!["trace"]);
+        if http_data.cors.is_some() {
+            context.require_version_dependency_with_features("tower-http", "0.6", vec!["cors"]);
+        }
+        if let Some(events) = &http_data.events {
+            context.require_version_dependency_with_features("tokio-stream", "0.1", vec!["sync"]);
+            if events.requires_user {
+                context.require_version_dependency("jsonwebtoken", "9");
+                context.require_version_dependency_with_features("serde", "1", vec!["derive"]);
+            }
+        }
+
+        let options = HttpOptions {
+            dev_mode,
+            cors: http_data.cors.clone(),
+            envelope: http_data.envelope,
+            events: http_data.events.clone(),
+            json_camel: context.json_camel(),
+        };
+        let mut file = HttpAdapterFile::new(name, bindings, options, http_folder_path)?;
         file.write()
     }
 
@@ -267,33 +340,51 @@ impl CodeGen {
             }
         }
 
-        let (input_type_name, input_fields, output_type_name, output_entity, output_fields, output_wrapper_field) =
-            match context.find_use_case_io(&rpc.use_case) {
-                Some(io) => {
-                    if io.output_is_list {
-                        return Err(format!(
-                            "gRPC rpc '{}': use_case '{}' returns a list, which isn't supported over gRPC yet",
-                            rpc.name, rpc.use_case
-                        ));
-                    }
-                    (
-                        io.input_type_name.clone(),
-                        io.input_fields.clone(),
-                        io.output_type_name.clone(),
-                        io.output_entity.clone(),
-                        io.output_fields.clone(),
-                        io.output_wrapper_field.clone(),
-                    )
+        let (
+            input_type_name,
+            input_fields,
+            output_type_name,
+            output_entity,
+            output_fields,
+            output_wrapper_field,
+        ) = match context.find_use_case_io(&rpc.use_case) {
+            Some(io) => {
+                if io.raw_input {
+                    return Err(format!(
+                        "gRPC rpc '{}': use_case '{}' takes a RawRequest, which only HTTP routes can provide",
+                        rpc.name, rpc.use_case
+                    ));
                 }
-                None => (
-                    format!("{}Input", rpc.use_case),
-                    Vec::new(),
-                    format!("{}Output", rpc.use_case),
-                    String::new(),
-                    Vec::new(),
-                    None,
-                ),
-            };
+                if io.requires_user {
+                    return Err(format!(
+                        "gRPC rpc '{}': use_case '{}' is scoped to the calling user ('owner'), which gRPC adapters can't authenticate yet",
+                        rpc.name, rpc.use_case
+                    ));
+                }
+                if io.output_is_list {
+                    return Err(format!(
+                        "gRPC rpc '{}': use_case '{}' returns a list, which isn't supported over gRPC yet",
+                        rpc.name, rpc.use_case
+                    ));
+                }
+                (
+                    io.input_type_name.clone(),
+                    io.input_fields.clone(),
+                    io.output_type_name.clone(),
+                    io.output_entity.clone(),
+                    io.output_fields.clone(),
+                    io.output_wrapper_field.clone(),
+                )
+            }
+            None => (
+                format!("{}Input", rpc.use_case),
+                Vec::new(),
+                format!("{}Output", rpc.use_case),
+                String::new(),
+                Vec::new(),
+                None,
+            ),
+        };
 
         Ok(GrpcRpcBinding {
             name: rpc.name.clone(),
@@ -372,7 +463,89 @@ impl CodeGen {
                 self.create_grpc_service(context, adapter.name.clone(), &folder, proto_dir, grpc_data)?;
                 context.register_adapter_grpc_module(adapter.name.to_snake_case());
             }
+            AdapterType::Mcp(mcp_data) => {
+                self.create_mcp_service(context, adapter.name.clone(), &folder, &mcp_data)?;
+                context.register_adapter_mcp_module(adapter.name.to_snake_case());
+            }
         }
         Ok(())
+    }
+
+    /// Resolves an `mcp {}` adapter's tools (input type and JSON Schema of
+    /// each use case) and writes `src/adapters/mcp/<adapter>.rs`.
+    pub(super) fn mcp_adapter_file(
+        context: &CodeGenContext,
+        name: &str,
+        mcp: &McpAdapterService,
+    ) -> Result<McpAdapterFile, String> {
+        let mut tools = Vec::new();
+        for tool in &mcp.tools {
+            if !context.is_known_use_case(&tool.use_case) {
+                return Err(format!("mcp adapter '{}': tool '{}' uses unknown use_case '{}'", name, tool.name, tool.use_case));
+            }
+            let io = context
+                .find_use_case_io(&tool.use_case)
+                .ok_or_else(|| format!("mcp adapter '{}': use_case '{}' has no resolved input", name, tool.use_case))?;
+            if io.raw_input {
+                return Err(format!(
+                    "mcp adapter '{}': tool '{}' can't use '{}' — it takes a RawRequest",
+                    name, tool.name, tool.use_case
+                ));
+            }
+            if io.requires_user && mcp.auth.is_none() {
+                return Err(format!(
+                    "mcp adapter '{}': use_case '{}' is scoped to the calling user ('owner'), so the adapter must declare 'auth'",
+                    name, tool.use_case
+                ));
+            }
+            let schema = crate::generator::schema::json_schema(&io.input_type, context.json_camel());
+            tools.push(McpToolBinding {
+                name: tool.name.clone(),
+                description: tool.description.clone().unwrap_or_else(|| tool.use_case.clone()),
+                use_case_name: tool.use_case.clone(),
+                input_type_name: io.input_type_name.clone(),
+                schema: schema.to_string(),
+            });
+        }
+        let auth = match &mcp.auth {
+            None => McpAuth::None,
+            Some(AuthRequirement::Authenticated) => McpAuth::Jwt,
+            Some(AuthRequirement::Secret(secret)) => McpAuth::Secret {
+                value_expr: McpAdapterFile::secret_expr(&secret.secret),
+                header: secret.header.as_ref().map(|h| h.to_lowercase()),
+                user: secret.user,
+            },
+            Some(AuthRequirement::Permission(_)) => {
+                return Err(format!(
+                    "mcp adapter '{}': use 'auth: required' or 'auth {{ secret ... }}' (permission rows aren't supported)",
+                    name
+                ));
+            }
+        };
+        Ok(McpAdapterFile { name: name.to_string(), tools, auth, instructions: mcp.instructions.clone() })
+    }
+
+    fn create_mcp_service(
+        &self,
+        context: &mut CodeGenContext,
+        name: String,
+        folder: &PathBuf,
+        mcp: &McpAdapterService,
+    ) -> Result<(), String> {
+        if mcp.tools.is_empty() {
+            return Err(format!("mcp adapter '{}' must declare at least one tool", name));
+        }
+        let file = Self::mcp_adapter_file(context, &name, mcp)?;
+        context.require_git_dependency("common", "ssh://git@github.com/BH-World/common.git");
+        context.require_version_dependency("axum", "0.8");
+        context.require_version_dependency("serde_json", "1");
+        context.require_version_dependency("tracing", "0.1");
+        context.require_version_dependency_with_features("tower-http", "0.6", vec!["trace"]);
+        if matches!(file.auth, McpAuth::Jwt) {
+            context.require_version_dependency("jsonwebtoken", "9");
+        }
+        let mcp_folder = folder.join("mcp");
+        create_dir_all(&mcp_folder).map_err(|e| format!("Failed to create the mcp folder: {}", e))?;
+        file.write(&mcp_folder)
     }
 }

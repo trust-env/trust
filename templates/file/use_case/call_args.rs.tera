@@ -1,0 +1,19 @@
+{%- if kind == "list" %}{{ list_query }}{% if order_by %}, &[{% for o in order_by %}({{ o.field }}, {{ o.descending }}){% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}
+{%- elif kind == "patch" %}{{ id_expr }}, {% if owner %}Some(({{ owner_literal }}, user)){% else %}None{% endif %}, {{ patch_name }} {
+{%- for f in patch_fields %}
+                {{ f.name }}: {% if f.source == "input" %}input.{{ f.name }}{% if not is_tail %}.clone(){% endif %}{% elif f.source == "some" %}Some(input.{{ f.name }}{% if not is_tail %}.clone(){% endif %}){% else %}None{% endif %},
+{%- endfor %}
+            }
+{%- else %}
+{%- if owned %}{{ id_expr }}, {{ owner_literal }}, user{% if kind == "update" %}, {% endif %}
+{%- elif kind == "update" %}{{ id_expr }}, {% elif kind == "read" or kind == "delete" %}{{ id_expr }}{% endif %}
+{%- if kind == "create" or kind == "update" or kind == "upsert" %}
+{%- if owner %}{
+                let mut entity = {{ entity }}::from({% if is_tail %}input{% else %}input.clone(){% endif %});
+                entity.{{ owner }} = user;
+                entity
+            }
+{%- else %}{{ entity }}::from({% if is_tail %}input{% else %}input.clone(){% endif %}){% endif %}
+{%- if kind == "upsert" %}, {% if owner %}Some({{ owner_literal }}){% else %}None{% endif %}{% endif %}
+{%- endif %}
+{%- endif %}

@@ -2,6 +2,7 @@
             .{{ method }}({{ args }})
             .await
             .map_err({{ error }}::from)?
-            .ok_or({{ error }}::NotFound){% if is_tail %}
+{% if owner %}            .filter(|entity| entity.{{ owner }} == user)
+{% endif %}            .ok_or({{ error }}::NotFound){% if is_tail %}
             .map({{ output }}::from){% else %}?;
 {% endif -%}

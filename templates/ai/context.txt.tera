@@ -1,0 +1,28 @@
+You are implementing: async fn execute(&self, input: {{ input.name }}) -> Result<{{ output.name }}, {{ name }}Error>
+
+Input struct `{{ input.name }}` fields:
+{% for f in input.fields %}  {{ f.name }}: {{ f.ty }}{% if not loop.last %}
+{% endif %}{% endfor %}
+
+Output struct `{{ output.name }}` fields (construct it with `{{ output.name }} { field: value, ... }`):
+{% for f in output.fields %}  {{ f.name }}: {{ f.ty }}{% if not loop.last %}
+{% endif %}{% endfor %}
+
+Error enum `{{ name }}Error` — the only variants you may return: {{ name }}Error::NotFound, {{ name }}Error::StorageError(String)
+
+{% if infra %}You have `self.{{ infra.field }}`, a storage handle for entity `{{ infra.entity.name }}` (fields:
+{% for f in infra.entity.fields %}  {{ f.name }}: {{ f.ty }}{% if not loop.last %}
+{% endif %}{% endfor %}
+) implementing the `{{ infra.storage_trait }}` trait, with these async methods (each returns `Result<_, {{ infra.storage_error }}>` — map errors with `.map_err({{ name }}Error::from)`):
+  save_one(entity: {{ infra.entity.name }}) -> {{ infra.entity.name }}
+  save_many(entities: Vec<{{ infra.entity.name }}>) -> Vec<{{ infra.entity.name }}>
+  find_one(id: i64) -> Option<{{ infra.entity.name }}>
+  find_many(ids: Vec<i64>) -> Vec<{{ infra.entity.name }}>
+  list(query: common::StorageListQuery) -> Vec<{{ infra.entity.name }}>
+  update_one(id: i64, entity: {{ infra.entity.name }}) -> {{ infra.entity.name }}
+  delete(id: i64) -> {{ infra.entity.name }}
+  delete_many(ids: Vec<i64>) -> Vec<{{ infra.entity.name }}>
+
+{% else %}No storage is available here — implement this purely from `input`.
+
+{% endif %}

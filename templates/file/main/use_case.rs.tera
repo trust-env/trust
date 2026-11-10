@@ -1,1 +1,1 @@
-    let {{ field }} = {{ name }}::new({{ args }});
+    let {{ field }} = {{ name }}::new({% for a in args %}{{ a }}.clone(){% if not loop.last %}, {% endif %}{% endfor %});

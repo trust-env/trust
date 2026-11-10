@@ -1,0 +1,1 @@
+    let {{ var }}_storage = {{ name }}::new({{ base_url_expr }}, vec![{% for h in headers %}({{ h.name }}.to_string(), {{ h.value_expr }}){% if not loop.last %}, {% endif %}{% endfor %}])?;

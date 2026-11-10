@@ -1,3 +1,8 @@
     let {{ db_var }}_db_url = std::env::var({{ env_var_literal }}).expect("{{ env_var }} environment variable not set");
-    let {{ db_var }}_db = SQLConnector::connect(&{{ db_var }}_db_url).await?;
-    let {{ entity_var }}_storage = Psql{{ entity }}Storage::new({{ db_var }}_db.clone());
+    // Connections this infra may hold open at once (default {{ default_pool_size }}).
+    let {{ db_var }}_db_pool_size: u32 = match std::env::var({{ pool_env_var_literal }}) {
+        Ok(value) => value.parse().map_err(|e| format!("{{ pool_env_var }} must be a positive integer: {}", e))?,
+        Err(_) => {{ default_pool_size }},
+    };
+    let {{ db_var }}_db = SQLConnector::connect_with_pool_size(&{{ db_var }}_db_url, {{ db_var }}_db_pool_size).await?;
+{{ migrations }}    let {{ entity_var }}_storage = Psql{{ entity }}Storage::new({{ db_var }}_db.clone());

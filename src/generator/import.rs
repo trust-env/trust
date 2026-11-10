@@ -1,7 +1,7 @@
-use std::{fs::File, io::Write, path::PathBuf};
+use std::path::PathBuf;
 
 use crate::{
-    generator::{CodeGen, CodeGenContext, rust_code::{RustCode, imports::LocalImports, types::RustType}},
+    generator::{CodeGen, CodeGenContext, rust_code::types::RustType},
     lexer::Lexer,
     parser::{Ast, ImportDeclaration, ImportItem, ModuleKind, Parser, TypeDeclaration},
 };
@@ -74,33 +74,7 @@ impl CodeGen {
         folder: PathBuf,
     ) -> Result<(), String> {
         for rust_type in self.resolve_import_types(context, &import)? {
-            let domain_file_path = folder.join(format!("{}.rs", rust_type.to_file_name()));
-            let mut domain_file = File::create(&domain_file_path)
-                .map_err(|e| format!("Failed to create domain file: {}", e))?;
-            let imports = LocalImports::from_fields(&rust_type.fields, &rust_type.name);
-            if imports.needs_uuid {
-                context.require_version_dependency_with_features("uuid", "1", vec!["serde"]);
-            }
-
-            context.require_version_dependency_with_features("serde", "1", vec!["derive"]);
-            let mut derive = "#[derive(Debug, Clone, serde::Serialize, serde::Deserialize".to_string();
-            if context.is_storage_entity(&rust_type.name) {
-                let mut features = vec!["runtime-tokio", "tls-rustls", "postgres"];
-                if imports.needs_uuid {
-                    features.push("uuid");
-                }
-                context.require_version_dependency_with_features("sqlx", "0.9.0", features);
-                derive.push_str(", sqlx::FromRow");
-            }
-            derive.push_str(")]\n");
-            let code = imports.to_use_statements() + &derive + &rust_type.to_rust_code();
-
-            domain_file
-                .write_all(code.as_bytes())
-                .map_err(|e| format!("Failed to write to domain file: {}", e))?;
-
-            context.register_domain_module(rust_type.to_file_name());
-            context.add_type(rust_type);
+            crate::generator::domains::write_domain_type(context, rust_type, &folder)?;
         }
         Ok(())
     }

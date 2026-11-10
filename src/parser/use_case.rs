@@ -1,8 +1,8 @@
 use crate::{
     lexer::{Keyword, Token},
     parser::{
-        AiSpec, AllowedType, Ast, BlobCall, ErrorMapping, FilterMapping, Parser, UseCaseCall,
-        UseCaseService,
+        AiSpec, Ast, BlobCall, CodeSpec, ErrorMapping, FilterMapping, FilterOperator, FilterSource,
+        OrderBy, Parser, UseCaseCall, UseCaseService,
     },
 };
 
@@ -81,16 +81,24 @@ impl Parser {
                 Some(Token::CloseBrace) => break,
                 Some(Token::Comma) => continue,
                 Some(Token::Identifier(s)) if s == "name" => match self.next_token() {
-                    Some(Token::Colon) => match (self.next_token(), self.next_token(), self.next_token()) {
-                        (Some(Token::Identifier(t)), Some(Token::Dot), Some(Token::Identifier(m))) => {
-                            target = Some(t);
-                            method = Some(m);
+                    Some(Token::Colon) => {
+                        match (self.next_token(), self.next_token(), self.next_token()) {
+                            (
+                                Some(Token::Identifier(t)),
+                                Some(Token::Dot),
+                                Some(Token::Identifier(m)),
+                            ) => {
+                                target = Some(t);
+                                method = Some(m);
+                            }
+                            _ => {
+                                self.reset(pos);
+                                return Err(
+                                    "Expected '<Target>.<method>' after 'name:'".to_string()
+                                );
+                            }
                         }
-                        _ => {
-                            self.reset(pos);
-                            return Err("Expected '<Target>.<method>' after 'name:'".to_string());
-                        }
-                    },
+                    }
                     _ => {
                         self.reset(pos);
                         return Err("Expected ':' after 'name'".to_string());
@@ -197,36 +205,306 @@ impl Parser {
         Ok(mappings)
     }
 
-    /// Parses one `<field>: input.<input_field>` line inside `filters {}`.
-    /// `input` lexes as `Keyword::Input` (it's a keyword everywhere else in
-    /// the language too), not a plain identifier — so this matches the
-    /// keyword token specifically, not `Token::Identifier("input")`.
-    fn try_filter_mapping(&mut self) -> Result<FilterMapping, String> {
-        let field = match self.next_token() {
-            Some(Token::Identifier(f)) => f,
+    /// A word in name position: identifiers and keywords alike (`status`,
+    /// `input`, ... are valid field names).
+    fn try_name(&mut self) -> Option<String> {
+        match self.next_token() {
+            Some(Token::Identifier(name)) => Some(name),
+            Some(Token::Keyword(k)) => Some(k.to_string()),
             _ => {
                 self.revert(1);
-                return Err("Expected field identifier in 'filters' block".to_string());
+                None
+            }
+        }
+    }
+
+    /// The operator of a `filters {}` line, right after the field name.
+    fn try_filter_operator(&mut self) -> Option<FilterOperator> {
+        let pos = self.current;
+        let op = match self.next_token() {
+            Some(Token::Colon) => FilterOperator::Eq,
+            Some(Token::Equal) => {
+                let after = self.current;
+                if self.next_token() != Some(Token::Equal) {
+                    self.reset(after);
+                }
+                FilterOperator::Eq
+            }
+            Some(Token::Bang) if self.next_token() == Some(Token::Equal) => FilterOperator::NotEq,
+            Some(Token::CloseAngle) => {
+                let after = self.current;
+                if self.next_token() == Some(Token::Equal) {
+                    FilterOperator::Gte
+                } else {
+                    self.reset(after);
+                    FilterOperator::Gt
+                }
+            }
+            Some(Token::OpenAngle) => {
+                let after = self.current;
+                if self.next_token() == Some(Token::Equal) {
+                    FilterOperator::Lte
+                } else {
+                    self.reset(after);
+                    FilterOperator::Lt
+                }
+            }
+            Some(Token::Identifier(word)) => match word.as_str() {
+                "in" => FilterOperator::In,
+                "not" if matches!(self.next_token(), Some(Token::Identifier(w)) if w == "in") => {
+                    FilterOperator::NotIn
+                }
+                "like" => FilterOperator::Like,
+                "ilike" => FilterOperator::ILike,
+                "contains" => FilterOperator::Contains,
+                _ => {
+                    self.reset(pos);
+                    return None;
+                }
+            },
+            _ => {
+                self.reset(pos);
+                return None;
             }
         };
-        match (
-            self.next_token(),
-            self.next_token(),
-            self.next_token(),
-            self.next_token(),
-        ) {
-            (
-                Some(Token::Colon),
-                Some(Token::Keyword(Keyword::Input)),
-                Some(Token::Dot),
-                Some(Token::Identifier(input_field)),
-            ) => Ok(FilterMapping { field, input_field }),
+        Some(op)
+    }
+
+    /// Parses one `filters {}` line: `<field> <op> <source>`, where `<op>`
+    /// is `:` / `=` / `==` (equality), `!=`, `>`, `>=`, `<`, `<=`, `in`,
+    /// `not in`, `like`, `ilike` or `contains`, and `<source>` is
+    /// `input.<field>`, a literal (quoted string or bare word such as
+    /// `true` / `42`), a `[a, b]` list, `now()` or `today()`.
+    fn try_filter_mapping(&mut self) -> Result<FilterMapping, String> {
+        let pos = self.current;
+        let fail = |parser: &mut Parser, message: String| {
+            parser.reset(pos);
+            Err(message)
+        };
+        let Some(field) = self.try_name() else {
+            return fail(self, "Expected field identifier in 'filters' block".to_string());
+        };
+        let Some(operator) = self.try_filter_operator() else {
+            return fail(
+                self,
+                format!("Expected an operator (:, =, !=, >, >=, <, <=, in, not in, like, ilike, contains) after '{}' in 'filters' block", field),
+            );
+        };
+        let source = match self.next_token() {
+            Some(Token::Keyword(Keyword::Input)) => match self.next_token() {
+                Some(Token::Dot) => match self.try_name() {
+                    Some(input_field) => FilterSource::Input(input_field),
+                    None => return fail(self, format!("Expected a field name after 'input.' for '{}'", field)),
+                },
+                _ => return fail(self, format!("Expected 'input.<field>' for '{}'", field)),
+            },
+            Some(Token::OpenBracket) => {
+                let mut values = Vec::new();
+                loop {
+                    match self.next_token() {
+                        Some(Token::CloseBracket) => break,
+                        Some(Token::Comma) => continue,
+                        Some(Token::StringLiteral(v)) | Some(Token::Identifier(v)) => values.push(v),
+                        _ => return fail(self, format!("Expected literal values in the list for '{}'", field)),
+                    }
+                }
+                FilterSource::List(values)
+            }
+            Some(Token::Identifier(word)) if (word == "now" || word == "today") => {
+                let after = self.current;
+                match (self.next_token(), self.next_token()) {
+                    (Some(Token::OpenParen), Some(Token::CloseParen)) => {
+                        if word == "now" { FilterSource::Now } else { FilterSource::Today(None) }
+                    }
+                    (Some(Token::OpenParen), Some(Token::StringLiteral(tz)))
+                        if word == "today" && self.next_token() == Some(Token::CloseParen) =>
+                    {
+                        FilterSource::Today(Some(tz))
+                    }
+                    _ => {
+                        self.reset(after);
+                        FilterSource::Literal(word)
+                    }
+                }
+            }
+            Some(Token::StringLiteral(v)) | Some(Token::Identifier(v)) => FilterSource::Literal(v),
             _ => {
-                self.revert(5);
-                Err(format!(
-                    "Expected ': input.<field>' after '{}' in 'filters' block",
-                    field
-                ))
+                return fail(
+                    self,
+                    format!("Expected 'input.<field>', a literal, a [list], now() or today() for '{}' in 'filters' block", field),
+                );
+            }
+        };
+        if operator.is_set() && matches!(source, FilterSource::Literal(_) | FilterSource::Now | FilterSource::Today(_)) {
+            return fail(self, format!("'{}' uses 'in'/'not in': expected a [list] or input.<field>", field));
+        }
+        if !operator.is_set() && matches!(source, FilterSource::List(_)) {
+            return fail(self, format!("'{}': a [list] needs 'in' or 'not in'", field));
+        }
+        Ok(FilterMapping { field, operator, source })
+    }
+
+    /// Parses `order_by: field [asc|desc], field [asc|desc] ...` after the
+    /// `order_by` word.
+    fn try_order_by(&mut self) -> Result<Vec<OrderBy>, String> {
+        if self.next_token() != Some(Token::Colon) {
+            self.revert(1);
+            return Err("Expected ':' after 'order_by'".to_string());
+        }
+        let mut entries = Vec::new();
+        loop {
+            let Some(field) = self.try_name() else {
+                return Err("Expected a field name in 'order_by'".to_string());
+            };
+            let pos = self.current;
+            let descending = match self.next_token() {
+                Some(Token::Identifier(dir)) if dir == "desc" => true,
+                Some(Token::Identifier(dir)) if dir == "asc" => false,
+                _ => {
+                    self.reset(pos);
+                    false
+                }
+            };
+            entries.push(OrderBy { field, descending });
+            let pos = self.current;
+            if self.next_token() != Some(Token::Comma) {
+                self.reset(pos);
+                break;
+            }
+        }
+        Ok(entries)
+    }
+
+    /// Parses `code { file: "..." infra: X ... errors { A B } deps { name: "version" } }`.
+    /// None of `code`/`file`/`deps` are reserved keywords (all common
+    /// identifiers), so they're matched by name, like `auth`'s `target`.
+    fn try_code_block(&mut self) -> Result<CodeSpec, String> {
+        match (self.next_token(), self.next_token()) {
+            (Some(Token::Identifier(k)), Some(Token::OpenBrace)) if k == "code" => {}
+            _ => {
+                self.revert(2);
+                return Err("Expected 'code {' block".to_string());
+            }
+        }
+
+        let pos = self.current;
+        let mut spec = CodeSpec::default();
+        let mut file = None;
+
+        loop {
+            match self.next_token() {
+                Some(Token::CloseBrace) => break,
+                Some(Token::Comma) => continue,
+                Some(Token::Identifier(k)) if k == "file" => {
+                    match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::StringLiteral(path))) => file = Some(path),
+                        _ => {
+                            self.reset(pos);
+                            return Err(
+                                "Expected ': \"<path>\"' after 'file' in 'code' block".to_string()
+                            );
+                        }
+                    }
+                }
+                Some(Token::Identifier(k)) if k == "include" => {
+                    match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::StringLiteral(path))) => spec.includes.push(path),
+                        _ => {
+                            self.reset(pos);
+                            return Err(
+                                "Expected ': \"<path>\"' after 'include' in 'code' block".to_string()
+                            );
+                        }
+                    }
+                }
+                Some(Token::Keyword(Keyword::Infra)) => {
+                    match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::Identifier(name))) => {
+                            spec.infras.push(name)
+                        }
+                        _ => {
+                            self.reset(pos);
+                            return Err(
+                                "Expected ': <Infra>' after 'infra' in 'code' block".to_string()
+                            );
+                        }
+                    }
+                }
+                Some(Token::Keyword(Keyword::Errors)) => {
+                    if self.next_token() != Some(Token::OpenBrace) {
+                        self.reset(pos);
+                        return Err("Expected '{' after 'errors' in 'code' block".to_string());
+                    }
+                    loop {
+                        match self.next_token() {
+                            Some(Token::CloseBrace) => break,
+                            Some(Token::Comma) => continue,
+                            Some(Token::Identifier(variant)) => {
+                                if spec.errors.contains(&variant) {
+                                    self.reset(pos);
+                                    return Err(format!(
+                                        "'code' block declares error '{}' more than once",
+                                        variant
+                                    ));
+                                }
+                                spec.errors.push(variant)
+                            }
+                            _ => {
+                                self.reset(pos);
+                                return Err(
+                                    "Expected error variant names in 'code' block's 'errors'"
+                                        .to_string(),
+                                );
+                            }
+                        }
+                    }
+                }
+                Some(Token::Identifier(k)) if k == "deps" => {
+                    if self.next_token() != Some(Token::OpenBrace) {
+                        self.reset(pos);
+                        return Err("Expected '{' after 'deps' in 'code' block".to_string());
+                    }
+                    loop {
+                        match self.next_token() {
+                            Some(Token::CloseBrace) => break,
+                            Some(Token::Comma) => continue,
+                            Some(Token::Identifier(name)) => {
+                                match (self.next_token(), self.next_token()) {
+                                    (Some(Token::Colon), Some(Token::StringLiteral(version))) => {
+                                        spec.deps.push((name, version))
+                                    }
+                                    _ => {
+                                        self.reset(pos);
+                                        return Err(format!(
+                                            "Expected ': \"<version>\"' after dependency '{}'",
+                                            name
+                                        ));
+                                    }
+                                }
+                            }
+                            _ => {
+                                self.reset(pos);
+                                return Err("Expected '<crate>: \"<version>\"' entries in 'deps'"
+                                    .to_string());
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    self.reset(pos);
+                    return Err("Failed to parse 'code' block".to_string());
+                }
+            }
+        }
+
+        match file {
+            Some(file) => {
+                spec.file = file;
+                Ok(spec)
+            }
+            None => {
+                self.reset(pos);
+                Err("'code' block must declare 'file'".to_string())
             }
         }
     }
@@ -261,9 +539,11 @@ impl Parser {
     /// `BlobCall`'s doc comment).
     fn try_blob_call(&mut self) -> Result<BlobCall, String> {
         match (self.next_token(), self.next_token(), self.next_token()) {
-            (Some(Token::Identifier(target)), Some(Token::Dot), Some(Token::Identifier(operation))) => {
-                Ok(BlobCall { target, operation })
-            }
+            (
+                Some(Token::Identifier(target)),
+                Some(Token::Dot),
+                Some(Token::Identifier(operation)),
+            ) => Ok(BlobCall { target, operation }),
             _ => {
                 self.revert(3);
                 Err("Expected '<Target>.<operation>' after 'blob:'".to_string())
@@ -271,26 +551,18 @@ impl Parser {
         }
     }
 
-    #[allow(clippy::type_complexity)]
-    fn try_use_case_body(
-        &mut self,
-    ) -> Result<
-        (
-            Option<AllowedType>,
-            Option<AllowedType>,
-            Vec<UseCaseCall>,
-            Option<AiSpec>,
-            Option<BlobCall>,
-            Vec<FilterMapping>,
-        ),
-        String,
-    > {
+    fn try_use_case_body(&mut self, name: String) -> Result<UseCaseService, String> {
         let mut input = None;
         let mut output = None;
         let mut calls = Vec::new();
         let mut ai = None;
         let mut blob = None;
         let mut filters = Vec::new();
+        let mut owner = None;
+        let mut code = None;
+        let mut order_by = Vec::new();
+        let mut transaction = false;
+        let mut notify = None;
         let pos = self.current;
 
         loop {
@@ -333,13 +605,64 @@ impl Parser {
                     self.revert(1);
                     filters = self.try_filters_block()?;
                 }
-                _ => {
+                Some(Token::Identifier(k)) if k == "owner" => {
+                    match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::Identifier(field))) => owner = Some(field),
+                        _ => {
+                            self.reset(pos);
+                            return Err("Expected ': <field>' after 'owner'".to_string());
+                        }
+                    }
+                }
+                Some(Token::Identifier(k)) if k == "code" => {
+                    self.revert(1);
+                    code = Some(self.try_code_block()?);
+                }
+                Some(Token::Identifier(k)) if k == "order_by" => {
+                    order_by = self.try_order_by()?;
+                }
+                Some(Token::Identifier(k)) if k == "notify" => {
+                    match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::Identifier(v))) if v == "true" || v == "false" => {
+                            notify = Some(v == "true");
+                        }
+                        _ => {
+                            self.reset(pos);
+                            return Err("Expected ': true' or ': false' after 'notify'".to_string());
+                        }
+                    }
+                }
+                Some(Token::Identifier(k)) if k == "transaction" => {
+                    match (self.next_token(), self.next_token()) {
+                        (Some(Token::Colon), Some(Token::Identifier(v))) if v == "true" || v == "false" => {
+                            transaction = v == "true";
+                        }
+                        _ => {
+                            self.reset(pos);
+                            return Err("Expected ': true' or ': false' after 'transaction'".to_string());
+                        }
+                    }
+                }
+                other => {
                     self.reset(pos);
-                    return Err("Failed to parse UseCase body".to_string());
+                    return Err(format!("Failed to parse UseCase body: unexpected {:?}", other));
                 }
             }
         }
-        Ok((input, output, calls, ai, blob, filters))
+        Ok(UseCaseService {
+            name,
+            input,
+            output,
+            calls,
+            ai,
+            blob,
+            filters,
+            owner,
+            code,
+            order_by,
+            transaction,
+            notify,
+        })
     }
 
     pub(super) fn try_use_case_service(&mut self) -> Result<Ast, String> {
@@ -349,11 +672,47 @@ impl Parser {
                 Some(Token::Identifier(name)),
                 Some(Token::OpenBrace),
             ) => {
-                let (input, output, calls, ai, blob, filters) = self.try_use_case_body()?;
-                let modes_used = !calls.is_empty() as u8 + ai.is_some() as u8 + blob.is_some() as u8;
+                let use_case = self.try_use_case_body(name.clone())?;
+                let UseCaseService {
+                    calls,
+                    ai,
+                    blob,
+                    filters,
+                    owner,
+                    code,
+                    ..
+                } = &use_case;
+                let modes_used = !calls.is_empty() as u8
+                    + ai.is_some() as u8
+                    + blob.is_some() as u8
+                    + code.is_some() as u8;
                 if modes_used > 1 {
                     return Err(format!(
-                        "UseCase '{}' cannot declare more than one of 'call', 'ai', 'blob' — they're mutually exclusive",
+                        "UseCase '{}' cannot declare more than one of 'call', 'ai', 'blob', 'code' — they're mutually exclusive",
+                        name
+                    ));
+                }
+                if !filters.is_empty() && code.is_some() {
+                    return Err(format!(
+                        "UseCase '{}': 'filters' cannot be combined with 'code'",
+                        name
+                    ));
+                }
+                if !use_case.order_by.is_empty() && calls.is_empty() {
+                    return Err(format!(
+                        "UseCase '{}': 'order_by' is only valid with 'call'",
+                        name
+                    ));
+                }
+                if use_case.transaction && calls.is_empty() && code.is_none() {
+                    return Err(format!(
+                        "UseCase '{}': 'transaction' is only valid with 'call' or 'code'",
+                        name
+                    ));
+                }
+                if owner.is_some() && calls.is_empty() {
+                    return Err(format!(
+                        "UseCase '{}': 'owner' is only valid with 'call'",
                         name
                     ));
                 }
@@ -369,15 +728,7 @@ impl Parser {
                         name
                     ));
                 }
-                Ok(Ast::UseCase(UseCaseService {
-                    name: name.clone(),
-                    input,
-                    output,
-                    calls,
-                    ai,
-                    blob,
-                    filters,
-                }))
+                Ok(Ast::UseCase(use_case))
             }
             _ => {
                 self.revert(3);
@@ -390,7 +741,7 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer::Lexer;
+    use crate::{lexer::Lexer, parser::AllowedType};
 
     fn parser_for(src: &str) -> Parser {
         let tokens = Lexer::new(&src.to_string()).run().expect("lex should succeed");
@@ -521,7 +872,7 @@ mod tests {
         let err = parser_for(src).try_use_case_service().unwrap_err();
         assert_eq!(
             err,
-            "UseCase 'Bad' cannot declare more than one of 'call', 'ai', 'blob' — they're mutually exclusive"
+            "UseCase 'Bad' cannot declare more than one of 'call', 'ai', 'blob', 'code' — they're mutually exclusive"
         );
     }
 
@@ -571,7 +922,7 @@ mod tests {
         );
         assert_eq!(uc.filters.len(), 1);
         assert_eq!(uc.filters[0].field, "spot_id");
-        assert_eq!(uc.filters[0].input_field, "spot_id");
+        assert_eq!(uc.filters[0].input_field(), Some("spot_id"));
     }
 
     #[test]
@@ -587,7 +938,7 @@ mod tests {
         );
         assert_eq!(uc.filters.len(), 2);
         assert_eq!(uc.filters[1].field, "kind");
-        assert_eq!(uc.filters[1].input_field, "kind");
+        assert_eq!(uc.filters[1].input_field(), Some("kind"));
     }
 
     #[test]
@@ -601,16 +952,140 @@ mod tests {
     }
 
     #[test]
-    fn filters_requires_the_input_keyword_form() {
-        // The RHS must be exactly `input.<field>` — a plain identifier (or
-        // any other shape) is a clear parse error, not silently accepted.
+    fn filters_accept_quoted_and_bare_literals() {
+        let uc = parse_use_case(
+            r#"use_case ListPublic {
+                call: StickerInfra.list
+                filters {
+                    visibility: "public"
+                    featured: true
+                }
+            }"#,
+        );
+        assert_eq!(
+            uc.filters[0].source,
+            FilterSource::Literal("public".to_string())
+        );
+        assert_eq!(
+            uc.filters[1].source,
+            FilterSource::Literal("true".to_string())
+        );
+        assert_eq!(uc.filters[0].input_field(), None);
+    }
+
+    #[test]
+    fn filters_accept_a_keyword_as_the_field_name() {
+        let uc = parse_use_case(
+            r#"use_case ListPaid {
+                call: OrderInfra.list
+                filters {
+                    status: "paid"
+                }
+            }"#,
+        );
+        assert_eq!(uc.filters[0].field, "status");
+    }
+
+    #[test]
+    fn filters_reject_a_dangling_input_keyword() {
+        // `input` alone (no `.field`) is neither form — a clear parse error.
         let src = r#"use_case Bad {
             call: RatingInfra.list
             filters {
-                spot_id: somethingElse
+                spot_id: input
             }
         }"#;
         assert!(parser_for(src).try_use_case_service().is_err());
+    }
+
+    #[test]
+    fn owner_parses_the_field_name() {
+        let uc = parse_use_case(
+            r#"use_case ListMyCart {
+                call: CartInfra.list
+                owner: user_id
+            }"#,
+        );
+        assert_eq!(uc.owner.as_deref(), Some("user_id"));
+    }
+
+    #[test]
+    fn owner_without_a_call_is_rejected() {
+        let src = r#"use_case Bad {
+            blob: MediaInfra.presigned_put_url
+            owner: user_id
+        }"#;
+        let err = parser_for(src).try_use_case_service().unwrap_err();
+        assert!(
+            err.contains("'owner' is only valid with 'call'"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn code_block_parses_file_infras_errors_and_deps() {
+        let uc = parse_use_case(
+            r#"use_case Checkout {
+                input: CheckoutRequest
+                output: CheckoutResponse
+                code {
+                    file: "./logic/checkout.rs"
+                    infra: CartInfra
+                    infra: PaymentApi
+                    errors { EmptyCart PaymentUnavailable }
+                    deps { hmac: "0.12" sha2: "0.10" }
+                }
+            }"#,
+        );
+        let code = uc.code.expect("expected a code spec");
+        assert_eq!(code.file, "./logic/checkout.rs");
+        assert_eq!(code.infras, vec!["CartInfra", "PaymentApi"]);
+        assert_eq!(code.errors, vec!["EmptyCart", "PaymentUnavailable"]);
+        assert_eq!(
+            code.deps,
+            vec![
+                ("hmac".to_string(), "0.12".to_string()),
+                ("sha2".to_string(), "0.10".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn code_block_without_file_is_rejected() {
+        let src = r#"use_case Bad {
+            code {
+                infra: CartInfra
+            }
+        }"#;
+        assert!(parser_for(src).try_use_case_service().is_err());
+    }
+
+    #[test]
+    fn code_block_with_a_duplicate_error_is_rejected() {
+        let src = r#"use_case Bad {
+            code {
+                file: "./x.rs"
+                errors { A A }
+            }
+        }"#;
+        assert!(parser_for(src).try_use_case_service().is_err());
+    }
+
+    #[test]
+    fn declaring_both_call_and_code_is_rejected() {
+        let src = r#"use_case Bad {
+            call: Storage.create
+            code {
+                file: "./x.rs"
+            }
+        }"#;
+        let err = parser_for(src).try_use_case_service().unwrap_err();
+        assert!(
+            err.contains("mutually exclusive"),
+            "unexpected error: {}",
+            err
+        );
     }
 
     #[test]

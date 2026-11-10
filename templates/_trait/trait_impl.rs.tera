@@ -1,5 +1,6 @@
 impl {% if has_templates %}<{{ template_names | join(sep=", ") }}> {% endif %}{{ trait_name }} for {{ service_name }}{% if has_templates %}<{{ template_names | join(sep=", ") }}>
-where {{ where_clauses | join(sep=", ") }}{% endif %}
+where {% for c in where_clauses %}
+	{{ c.name }}: {{ c.bound }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}
 {
 {% for method in methods %}{{ method }}
 {% endfor -%}

@@ -1,0 +1,3 @@
+    sqlx::raw_sql(sqlx::AssertSqlSafe(include_str!("../migrations/{{ file }}")))
+        .execute({{ db_var }}_db.pool())
+        .await?;

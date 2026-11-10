@@ -46,8 +46,9 @@ fn filtered_list_input_gains_the_filter_field_alongside_limit_and_offset() {
 
     let uc = project.read("main/src/applications/list_ratings_for_spot_use_case.rs");
     assert!(uc.contains("pub struct ListRatingsForSpotUseCaseInput {"));
-    assert!(uc.contains("pub limit: i64,"));
-    assert!(uc.contains("pub offset: i64,"));
+    // Paging is optional: absent means the defaults.
+    assert!(uc.contains("pub limit: Option<i64>,"));
+    assert!(uc.contains("pub offset: Option<i64>,"));
     assert!(uc.contains("pub spot_id: i64,"));
 }
 
@@ -77,7 +78,7 @@ fn spot_id_path_param_routes_to_the_path_extractor_not_the_body() {
         "pub(crate) struct ListRatingsForSpotUseCasePathParams {\n    pub spot_id: i64,\n}"
     ));
     assert!(handler.contains(
-        "pub(crate) struct ListRatingsForSpotUseCaseBody {\n    pub limit: i64,\n    pub offset: i64,\n}"
+        "pub(crate) struct ListRatingsForSpotUseCaseBody {\n    pub limit: Option<i64>,\n    pub offset: Option<i64>,\n}"
     ));
     assert!(handler.contains("spot_id: path.spot_id,"));
     // GET routes read their non-path fields from the query string, not a

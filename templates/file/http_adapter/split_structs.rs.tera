@@ -1,10 +1,10 @@
 #[derive(serde::Deserialize)]
 pub(crate) struct {{ path_name }} {
-{% for f in path_fields %}    pub {{ f.name }}: {{ f.field_type }},
+{% for f in path_fields %}{% include "fragments/serde_field_attr.rs.tera" %}    pub {{ f.name }}: {{ f.field_type }},
 {% endfor %}}
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize)]{% if camel %}
+#[serde(rename_all = "camelCase")]{% endif %}
 pub(crate) struct {{ body_name }} {
-{% for f in body_fields %}    pub {{ f.name }}: {{ f.field_type }},
+{% for f in body_fields %}{% include "fragments/serde_field_attr.rs.tera" %}    pub {{ f.name }}: {{ f.field_type }},
 {% endfor %}}
-

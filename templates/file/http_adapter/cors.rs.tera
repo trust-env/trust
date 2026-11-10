@@ -1,0 +1,13 @@
+
+/// Browser origins allowed to call this adapter, from its `cors:` setting
+/// (comma-separated; `*` allows any origin).
+fn cors_layer(origins: String) -> tower_http::cors::CorsLayer {
+    use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+
+    let allow_origin = if origins.trim() == "*" {
+        AllowOrigin::any()
+    } else {
+        AllowOrigin::list(origins.split(',').filter_map(|origin| origin.trim().parse().ok()))
+    };
+    CorsLayer::new().allow_origin(allow_origin).allow_methods(Any).allow_headers(Any)
+}

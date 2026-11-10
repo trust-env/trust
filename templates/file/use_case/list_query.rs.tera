@@ -1,0 +1,25 @@
+{%- if has_optional %}{
+                let mut predicates = vec![
+{%- for p in predicates %}{% if not p.optional %}
+                    {% include "file/use_case/predicate.rs.tera" %},
+{%- endif %}{% endfor %}
+                ];
+{%- for p in predicates %}{% if p.optional %}
+                if let Some(value) = &input.{{ p.value }} {
+                    predicates.push({% include "file/use_case/predicate.rs.tera" %});
+                }
+{%- endif %}{% endfor %}
+                StorageListQuery {
+                    limit: {% include "file/use_case/list_limit.rs.tera" %},
+                    offset: {% include "file/use_case/list_offset.rs.tera" %},
+                    predicates,
+                }
+            }
+{%- else %}StorageListQuery {
+                limit: {% include "file/use_case/list_limit.rs.tera" %},
+                offset: {% include "file/use_case/list_offset.rs.tera" %},
+                predicates: vec![{% if predicates %}
+{% for p in predicates %}                    {% include "file/use_case/predicate.rs.tera" %}{% if not loop.last %},{% endif %}
+{% endfor %}                {% endif %}],
+            }
+{%- endif %}

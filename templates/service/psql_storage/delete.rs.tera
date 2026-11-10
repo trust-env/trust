@@ -1,7 +1,0 @@
-        sqlx::query_as::<_, {{ entity }}>(
-            "DELETE FROM {{ table }} WHERE {{ id_field }} = $1 RETURNING {{ all_columns }}",
-        )
-            .bind(id)
-            .fetch_one(self.db.pool())
-            .await
-            .map_err({{ error }}::from)

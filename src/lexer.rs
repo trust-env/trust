@@ -28,13 +28,21 @@ impl Lexer {
         Ok(tokens)
     }
 
+    /// Skips whitespace and `// ...` line comments.
     fn skip_whitespace(&mut self) {
-        match self.chars.get(self.position) {
-            Some(c) if c.is_whitespace() => {
-                self.position += 1;
-                self.skip_whitespace();
+        loop {
+            match (self.chars.get(self.position), self.chars.get(self.position + 1)) {
+                (Some(c), _) if c.is_whitespace() => self.position += 1,
+                (Some('/'), Some('/')) => {
+                    while let Some(c) = self.chars.get(self.position) {
+                        if *c == '\n' {
+                            break;
+                        }
+                        self.position += 1;
+                    }
+                }
+                _ => break,
             }
-            _ => {}
         }
     }
 
@@ -118,6 +126,18 @@ impl Lexer {
             Some('>') => {
                 self.position += 1;
                 return Some(Token::CloseAngle);
+            }
+            Some('!') => {
+                self.position += 1;
+                return Some(Token::Bang);
+            }
+            Some('[') => {
+                self.position += 1;
+                return Some(Token::OpenBracket);
+            }
+            Some(']') => {
+                self.position += 1;
+                return Some(Token::CloseBracket);
             }
             _ => {}
         }
@@ -205,6 +225,13 @@ impl Lexer {
 mod tests {
     use super::*;
 
+    #[test]
+    fn line_comments_are_skipped() {
+        let tokens = lex("// a comment\ntype // trailing\n// last").unwrap();
+        assert_eq!(tokens[0], Token::Keyword(Keyword::Type));
+        assert!(tokens[1..].iter().all(|t| *t == Token::Eof), "{:?}", tokens);
+    }
+
     fn lex(src: &str) -> Result<Vec<Token>, String> {
         Lexer::new(&src.to_string())
             .run()
@@ -224,6 +251,9 @@ mod tests {
             ("Int", Keyword::Int),
             ("Float", Keyword::Float),
             ("Decimal", Keyword::Decimal),
+            ("Bool", Keyword::Bool),
+            ("DateTime", Keyword::DateTime),
+            ("Option", Keyword::Option),
             ("Regex", Keyword::Regex),
             ("type", Keyword::Type),
             ("entity", Keyword::Entity),

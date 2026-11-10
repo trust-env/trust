@@ -79,27 +79,17 @@ fn errors_table(route: &HttpRouteBinding) -> String {
 }
 
 fn route_section(route: &HttpRouteBinding) -> String {
-    let output_type = if route.output_is_list {
-        format!("Vec&lt;{}&gt;", escape(&route.output_entity))
-    } else {
-        escape(&route.output_entity)
-    };
-
-    let path_params_joined = route
-        .path_params
-        .iter()
-        .map(|p| format!("<code>{}</code>", escape(p)))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let path_params: Vec<String> = route.path_params.iter().map(|p| escape(p)).collect();
 
     let mut context = Context::new();
     context.insert("method_class", route.method.as_axum_fn());
     context.insert("method", &route.method.as_axum_fn().to_uppercase());
     context.insert("path", &escape(&route.path));
     context.insert("use_case", &escape(&route.use_case_name));
-    context.insert("path_params_joined", &path_params_joined);
+    context.insert("path_params", &path_params);
     context.insert("input_table", &fields_table(&route.input_fields));
-    context.insert("output_type", &output_type);
+    context.insert("output_entity", &escape(&route.output_entity));
+    context.insert("output_is_list", &route.output_is_list);
     context.insert("output_table", &fields_table(&route.output_fields));
     context.insert("errors_table", &errors_table(route));
     render_template("dev_docs/route_section.html.tera", &context)

@@ -1,0 +1,121 @@
+use serde::{Serialize, de::DeserializeOwned};
+
+/// Outbound HTTP client for the `{{ infra }}` infra: every request goes to
+/// `base_url` + the given path, with the infra's configured headers.
+/// Failures (network errors, non-2xx statuses, undecodable bodies) are
+/// returned as a readable `String`. Requests time out after {{ timeout_secs }} s
+{%- if retry %} and are retried up to {{ retry }} time(s) after a network error, a 429
+/// or a 5xx (backoff 200 ms, 400 ms, ...){% endif %}.
+#[derive(Clone)]
+pub struct {{ name }} {
+    client: reqwest::Client,
+    base_url: String,
+    headers: reqwest::header::HeaderMap,
+}
+
+/// Extra attempts after a transient failure.
+const RETRIES: u32 = {{ retry }};
+
+impl {{ name }} {
+    pub fn new(base_url: String, headers: Vec<(String, String)>) -> Result<Self, String> {
+        let mut header_map = reqwest::header::HeaderMap::new();
+        for (name, value) in headers {
+            let header_name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                .map_err(|e| format!("invalid header name '{}': {}", name, e))?;
+            let header_value = reqwest::header::HeaderValue::from_str(&value)
+                .map_err(|e| format!("invalid value for header '{}': {}", name, e))?;
+            header_map.insert(header_name, header_value);
+        }
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs({{ timeout_secs }}))
+            .build()
+            .map_err(|e| format!("{} client: {}", "{{ infra }}", e))?;
+        Ok(Self {
+            client,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            headers: header_map,
+        })
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}/{}", self.base_url, path.trim_start_matches('/'))
+    }
+
+    /// A request to `base_url` + `path` with the configured headers, for
+    /// anything the helpers below don't cover (per-request headers, bearer
+    /// tokens, multipart, ...). Send it with `send_raw` to keep the
+    /// retries.
+    pub fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        self.client.request(method, self.url(path)).headers(self.headers.clone())
+    }
+
+    /// Sends `request`, retrying transient failures, and returns the
+    /// response status and body text. Non-2xx statuses are errors.
+    pub async fn send_raw(&self, request: reqwest::RequestBuilder) -> Result<(reqwest::StatusCode, String), String> {
+        let mut attempt = 0;
+        loop {
+            let this_try = request
+                .try_clone()
+                .ok_or_else(|| format!("{} request body can't be retried", "{{ infra }}"))?;
+            let outcome = this_try.send().await;
+            let transient = match &outcome {
+                Err(error) => error.is_connect() || error.is_timeout() || error.is_request(),
+                Ok(response) => {
+                    response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS || response.status().is_server_error()
+                }
+            };
+            if transient && attempt < RETRIES {
+                tokio::time::sleep(std::time::Duration::from_millis(200 << attempt)).await;
+                attempt += 1;
+                continue;
+            }
+            let response = outcome.map_err(|e| format!("{} request failed: {}", "{{ infra }}", e))?;
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .map_err(|e| format!("{} response unreadable: {}", "{{ infra }}", e))?;
+            if !status.is_success() {
+                return Err(format!("{} responded {}: {}", "{{ infra }}", status, body));
+            }
+            return Ok((status, body));
+        }
+    }
+
+    async fn send<T: DeserializeOwned>(&self, request: reqwest::RequestBuilder) -> Result<T, String> {
+        let (_, body) = self.send_raw(request.headers(self.headers.clone())).await?;
+        serde_json::from_str(if body.is_empty() { "null" } else { &body })
+            .map_err(|e| format!("{} response is not the expected JSON: {} (body: {})", "{{ infra }}", e, body))
+    }
+
+    pub async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
+        self.send(self.client.get(self.url(path))).await
+    }
+
+    pub async fn post_json<B: Serialize + ?Sized, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T, String> {
+        self.send(self.client.post(self.url(path)).json(body)).await
+    }
+
+    pub async fn put_json<B: Serialize + ?Sized, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T, String> {
+        self.send(self.client.put(self.url(path)).json(body)).await
+    }
+
+    pub async fn patch_json<B: Serialize + ?Sized, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T, String> {
+        self.send(self.client.patch(self.url(path)).json(body)).await
+    }
+
+    pub async fn delete_json<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
+        self.send(self.client.delete(self.url(path))).await
+    }
+
+    /// The response body as text (an ICS feed, HTML, CSV, ...).
+    pub async fn get_text(&self, path: &str) -> Result<String, String> {
+        self.send_raw(self.request(reqwest::Method::GET, path)).await.map(|(_, body)| body)
+    }
+
+    /// `application/x-www-form-urlencoded` POST (e.g. OAuth token
+    /// refresh), JSON response.
+    pub async fn post_form<B: Serialize + ?Sized, T: DeserializeOwned>(&self, path: &str, form: &B) -> Result<T, String> {
+        self.send(self.client.post(self.url(path)).form(form)).await
+    }
+}

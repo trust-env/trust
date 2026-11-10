@@ -230,7 +230,47 @@ currently introduce a new field/expression *type* usable elsewhere in the
 language, and there's no plugin registry — every invocation must pass
 `--plugin=` explicitly.
 
-## 13. Dev Mode Artifacts
+## 13. App-Platform Features
+
+Everything a typical user-facing app needs beyond CRUD, all documented in
+[keywords.md](keywords.md):
+
+- **Current user**: routes with `auth` (including the login-only
+  `auth: required`) pass the JWT's user id to use cases.
+- **Ownership**: `owner: <field>` scopes a CRUD use case to that user
+  (stamp on create, filter on list, `NotFound` for others' rows).
+- **Literal filters**: `filters { visibility: "public" }`.
+- **Types**: `Bool`, `DateTime`, `Option<T>`.
+- **Migrations**: every `psql` entity's table is created at startup, with
+  optional idempotent `seed:` data.
+- **CORS**: `cors: "${CORS_ORIGINS}"` on HTTP adapters.
+- **Hand-written logic**: `code { file: "./logic/x.rs" infra: ... }` use
+  cases, with custom error variants and extra crates.
+- **Outbound HTTP**: `http_client` infras (JSON, configured headers).
+- **Webhooks**: the built-in `RawRequest` input gives a `code` use case the
+  raw body and headers, e.g. to verify an HMAC signature.
+
+## 14. Backend Features for Real Apps
+
+Everything a small product backend needs, declared in `.tr` (details in
+[keywords.md](keywords.md)):
+
+- Types: `List<T>`, `Json`, `Date`, `Time`, `enum`, validated `Regex<...>`,
+  nested structs stored as JSONB.
+- Queries: filter operators (`>=`, `in`, `contains`, `now()`,
+  `today("Europe/Paris")`, ...), `order_by`, optional paging.
+- Writes: `patch_one`, `upsert_one`, `unique` keys, foreign keys, indexes,
+  column renames and drops, `transaction: true`.
+- Logic: `code {}` bodies sharing code through `include`.
+- Time: `schedule {}` cron jobs with time zones.
+- HTTP: shared-secret routes, long-lived service tokens (`<binary> token`),
+  Server-Sent Events (`events:`), `/health`, structured logs, camelCase
+  JSON (`config {}`), unwrapped responses (`envelope: false`), resilient
+  `http_client` (retries, timeouts, text and form bodies).
+- Agents: `mcp {}` adapters expose use cases as MCP tools.
+- Clients: `--emit-ts` (typed TypeScript client) and `--emit-openapi`.
+
+## 15. Dev Mode Artifacts
 
 What it does:
 - Adds a live `GET /app` HTML docs route to every HTTP adapter (method,
@@ -242,7 +282,7 @@ What it does:
 How to use:
 - Run with `--dev`. Full defaulting rules: [cli.md](cli.md#dev-mode---dev).
 
-## 14. Scenarios and E2E Workflows
+## 16. Scenarios and E2E Workflows
 
 What it does:
 - Demonstrates complete, live-executed workflows (not just compile checks):
@@ -261,8 +301,6 @@ How to use:
 
 - `./out` is fully wiped (`remove_dir_all` + `create_dir_all`) on **every**
   compile — never hand-edit generated code and expect it to survive.
-- A successful compile currently prints the full token stream and full AST
-  to stdout unconditionally — expect noisy output, this isn't a `--dev`-only
-  thing and isn't suppressible today.
-- A missing/unreadable `.tr` file path causes a Rust panic (exit code 101),
-  not the clean `exit(1)` every other error path uses.
+- Private dependencies (`common`, `auth`, ...) come from BH-World over SSH;
+  `--vendor=<dir>` copies local checkouts into the output so it builds
+  without SSH (Docker, CI).
