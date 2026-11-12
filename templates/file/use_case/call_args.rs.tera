@@ -8,7 +8,22 @@
 {%- if owned %}{{ id_expr }}, {{ owner_literal }}, user{% if kind == "update" %}, {% endif %}
 {%- elif kind == "update" %}{{ id_expr }}, {% elif kind == "read" or kind == "delete" %}{{ id_expr }}{% endif %}
 {%- if kind == "create" or kind == "update" or kind == "upsert" %}
-{%- if owner %}{
+{%- if defaults_fn and kind != "update" %}{
+                #[allow(unused_mut)]
+                let mut given: Vec<&str> = vec![{% for g in given_always %}"{{ g }}", {% endfor %}];
+{%- for g in given_optional %}
+                if input.{{ g }}.is_some() {
+                    given.push("{{ g }}");
+                }
+{%- endfor %}
+                let mut entity = {{ entity }}::from({% if is_tail %}input{% else %}input.clone(){% endif %});
+                crate::{{ defaults_fn }}(&mut entity, &given);
+{%- if owner %}
+                entity.{{ owner }} = user;
+{%- endif %}
+                entity
+            }
+{%- elif owner %}{
                 let mut entity = {{ entity }}::from({% if is_tail %}input{% else %}input.clone(){% endif %});
                 entity.{{ owner }} = user;
                 entity

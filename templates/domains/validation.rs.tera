@@ -14,7 +14,7 @@ where
     <Option<T> as serde::Deserialize>::deserialize(deserializer).map(Some)
 }
 {%- endif %}
-{% for r in regexes %}
+{% for r in regexes %}{% if r.kind == "regex" %}
 static {{ r.fn_name | upper }}: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new({{ r.pattern_literal }}).expect("pattern checked by trust"));
 
@@ -34,4 +34,31 @@ pub fn {{ r.fn_name }}_opt<'de, D: serde::Deserializer<'de>>(deserializer: D) ->
         None => Ok(None),
     }
 }
-{% endfor %}
+{% else %}
+/// `{{ r.rust_type }}` within{% if r.min %} {{ r.min }} ≤{% endif %} value{% if r.max %} ≤ {{ r.max }}{% endif %}.
+fn {{ r.fn_name }}_check(value: {{ r.rust_type }}) -> Result<{{ r.rust_type }}, String> {
+{%- if r.min %}
+    if value < {{ r.min }} {
+        return Err(format!("{} is below the minimum {}", value, {{ r.min }}));
+    }
+{%- endif %}
+{%- if r.max %}
+    if value > {{ r.max }} {
+        return Err(format!("{} is above the maximum {}", value, {{ r.max }}));
+    }
+{%- endif %}
+    Ok(value)
+}
+
+pub fn {{ r.fn_name }}<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<{{ r.rust_type }}, D::Error> {
+    let value = <{{ r.rust_type }} as serde::Deserialize>::deserialize(deserializer)?;
+    {{ r.fn_name }}_check(value).map_err(serde::de::Error::custom)
+}
+
+pub fn {{ r.fn_name }}_opt<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<{{ r.rust_type }}>, D::Error> {
+    match <Option<{{ r.rust_type }}> as serde::Deserialize>::deserialize(deserializer)? {
+        Some(value) => {{ r.fn_name }}_check(value).map(Some).map_err(serde::de::Error::custom),
+        None => Ok(None),
+    }
+}
+{% endif %}{% endfor %}

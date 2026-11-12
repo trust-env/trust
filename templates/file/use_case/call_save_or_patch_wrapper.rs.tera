@@ -1,0 +1,5 @@
+        {{ args }}
+{%- if is_tail %}
+        .map({{ output }}::from)
+{%- else %}?;
+{%- endif %}

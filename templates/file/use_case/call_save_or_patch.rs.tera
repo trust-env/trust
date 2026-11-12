@@ -1,0 +1,39 @@
+match input.id {
+            // With an id: only the fields given change (null clears).
+            Some(id) => self.{{ field }}
+                .patch_one(id, {% if owner %}Some(({{ owner_literal }}, user)){% else %}None{% endif %}, {{ patch_name }} {
+{%- for f in patch_fields %}
+                    {{ f.name }}: {% if f.source == "input" %}input.{{ f.name }}{% elif f.source == "some" %}Some(input.{{ f.name }}){% else %}None{% endif %},
+{%- endfor %}
+                })
+                .await
+                .map_err({{ error }}::from)?
+                .ok_or({{ error }}::NotFound),
+            // Without: a new row, from what's given and the `defaults {}`.
+            None => {
+{%- for r in required %}
+                if input.{{ r }}.is_none() {
+                    return Err({{ error }}::MissingField("'{{ r }}' is required to create".to_string()));
+                }
+{%- endfor %}
+{%- if defaults_fn %}
+                #[allow(unused_mut)]
+                let mut given: Vec<&str> = Vec::new();
+{%- for g in given_optional %}
+                if input.{{ g }}.is_some() {
+                    given.push("{{ g }}");
+                }
+{%- endfor %}
+{%- endif %}
+                #[allow(unused_mut)]
+                let mut entity = {{ entity }} {
+{%- for f in create_fields %}
+                    {{ f.name }}: {% if f.how == "id" %}Default::default(){% elif f.how == "owner" %}user{% elif f.how == "flatten" %}input.{{ f.name }}.flatten(){% elif f.how == "now_or" %}input.{{ f.name }}.unwrap_or_else(chrono::Utc::now){% else %}input.{{ f.name }}.unwrap_or_default(){% endif %},
+{%- endfor %}
+                };
+{%- if defaults_fn %}
+                crate::{{ defaults_fn }}(&mut entity, &given);
+{%- endif %}
+                self.{{ field }}.save_one(entity).await.map_err({{ error }}::from)
+            }
+        }

@@ -49,8 +49,18 @@ pub fn json_schema(t: &RustType, camel: bool) -> Value {
             let items = t.templates.first().map(|i| json_schema(i, camel)).unwrap_or(json!({}));
             json!({ "type": "array", "items": items })
         }
-        "i64" => json!({ "type": "integer" }),
-        "f64" => json!({ "type": "number" }),
+        "i64" | "f64" => {
+            let mut schema = json!({ "type": if t.name == "i64" { "integer" } else { "number" } });
+            if let TypeKind::Range(min, max) = &t.kind {
+                if let Some(min) = min.as_ref().and_then(|m| m.parse::<f64>().ok()) {
+                    schema["minimum"] = json!(min);
+                }
+                if let Some(max) = max.as_ref().and_then(|m| m.parse::<f64>().ok()) {
+                    schema["maximum"] = json!(max);
+                }
+            }
+            schema
+        }
         "bool" => json!({ "type": "boolean" }),
         "String" => match &t.kind {
             TypeKind::Regex(pattern) => json!({ "type": "string", "pattern": pattern }),

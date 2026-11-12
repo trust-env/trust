@@ -134,7 +134,7 @@ impl Parser {
 impl Parser {
     /// A JSON value written in Trust syntax: `{ key: value ... }` (commas
     /// optional), `[a, b]`, `"text"`, numbers, `true` / `false` / `null`.
-    pub(super) fn try_json_literal(&mut self) -> Result<serde_json::Value, String> {
+    pub(crate) fn try_json_literal(&mut self) -> Result<serde_json::Value, String> {
         match self.next_token() {
             Some(Token::OpenBrace) => {
                 let mut map = serde_json::Map::new();

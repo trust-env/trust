@@ -79,6 +79,8 @@ pub enum CallKind {
     Upsert,
     /// `patch_one`: update only the fields the input carries.
     Patch,
+    /// `save_or_patch`: create without `id`, patch with one.
+    SaveOrPatch,
 }
 
 impl CallKind {
@@ -91,8 +93,9 @@ impl CallKind {
             "list" => Ok(CallKind::List),
             "upsert_one" => Ok(CallKind::Upsert),
             "patch_one" => Ok(CallKind::Patch),
+            "save_or_patch" => Ok(CallKind::SaveOrPatch),
             other => Err(format!(
-                "Unsupported call method '{}': expected one of save_one, find_one, update_one, patch_one, upsert_one, delete, list",
+                "Unsupported call method '{}': expected one of save_one, find_one, update_one, patch_one, upsert_one, save_or_patch, delete, list",
                 other
             )),
         }
@@ -103,7 +106,7 @@ impl CallKind {
     pub fn required_input_fields(&self) -> &'static [&'static str] {
         match self {
             CallKind::Create | CallKind::Upsert => &[],
-            CallKind::Read | CallKind::Delete | CallKind::Update | CallKind::Patch => &["id"],
+            CallKind::Read | CallKind::Delete | CallKind::Update | CallKind::Patch | CallKind::SaveOrPatch => &["id"],
             // `limit`/`offset` are optional: absent means the defaults.
             CallKind::List => &[],
         }
@@ -150,6 +153,8 @@ pub struct UseCaseFile {
     /// Announce successful runs to `events:` streams.
     publish: bool,
     journal: Option<crate::generator::journal::JournalUse>,
+    /// Fields with a `defaults {}` entry, per infra.
+    default_fields: std::collections::HashMap<String, Vec<String>>,
     /// `config { json_case: "camel" }`.
     json_camel: bool,
     file: File,
@@ -183,7 +188,14 @@ impl UseCaseFile {
             publish: false,
             json_camel: false,
             journal: None,
+            default_fields: std::collections::HashMap::new(),
         })
+    }
+
+    /// The `defaults {}` fields of each infra the calls target.
+    pub fn with_default_fields(mut self, default_fields: std::collections::HashMap<String, Vec<String>>) -> Self {
+        self.default_fields = default_fields;
+        self
     }
 
     /// A journaled run (always in a transaction).
@@ -280,8 +292,15 @@ impl UseCaseFile {
     /// `created_at`) is server-stamped with the current time rather than
     /// defaulted to the epoch.
     fn field_init(&self, field: &RustField, copy_id: bool) -> FieldInitView {
-        let source = if (field.name != "id" || copy_id) && self.input.fields.iter().any(|f| f.name == field.name) {
-            "input"
+        let input_field = self.input.fields.iter().find(|f| f.name == field.name);
+        let source = if (field.name != "id" || copy_id) && input_field.is_some() {
+            // An optional input for a field with a default.
+            match input_field {
+                Some(i) if i.field_type.is_option() && field.field_type.name == DATE_TIME => "input_or_now",
+                Some(i) if i.field_type.is_option() && !field.field_type.is_option() => "input_unwrap",
+                Some(i) if i.field_type.is_option() && i.field_type.unwrap_option().is_option() => "input_flatten",
+                _ => "input",
+            }
         } else if field.field_type.name == DATE_TIME {
             "now"
         } else {
@@ -307,7 +326,7 @@ impl UseCaseFile {
             .map(|field| FieldView {
                 name: field.name.clone(),
                 field_type: field.field_type.to_call_string(Vec::new()),
-                regex_fn: field.field_type.regex_pattern().map(crate::generator::domains::regex_fn_name),
+                regex_fn: field.field_type.validator_key().map(|k| crate::generator::domains::regex_fn_name(&k)),
                 regex_optional: field.field_type.is_option(),
                 double_option: field.field_type.is_option() && field.field_type.unwrap_option().is_option(),
             })
@@ -385,6 +404,10 @@ impl UseCaseFile {
     /// produces it.
     fn unique_error_targets(&self) -> Vec<&str> {
         let mut seen = Vec::new();
+        // `save_or_patch` creating without a required field.
+        if self.calls.iter().any(|c| c.call_kind == CallKind::SaveOrPatch) {
+            seen.push("MissingField");
+        }
 
         for call in &self.calls {
             for mapping in &call.errors {
@@ -664,6 +687,7 @@ impl UseCaseFile {
             CallKind::List => "list",
             CallKind::Upsert => "upsert",
             CallKind::Patch => "patch",
+            CallKind::SaveOrPatch => "save_or_patch",
         };
         // update_one/delete on an owned entity go through the storage's
         // `*_owned` variant, which checks the owner in the same statement.
@@ -677,6 +701,56 @@ impl UseCaseFile {
         args_context.insert("id_expr", if is_tail { "input.id" } else { "input.id.clone()" });
         args_context.insert("entity", &entity);
         args_context.insert("is_tail", &is_tail);
+        // Creations: the infra's `defaults {}` fill what the input lacks.
+        let defaults = self.default_fields.get(&call.infra_name).cloned().unwrap_or_default();
+        if matches!(call.call_kind, CallKind::Create | CallKind::Upsert | CallKind::SaveOrPatch) && !defaults.is_empty() {
+            let mut always = Vec::new();
+            let mut optional = Vec::new();
+            for field in &defaults {
+                match self.input.fields.iter().find(|f| &f.name == field) {
+                    Some(f) if f.field_type.is_option() => optional.push(field.clone()),
+                    Some(_) => always.push(field.clone()),
+                    None => {}
+                }
+            }
+            args_context.insert("defaults_fn", &format!("apply_{}_defaults", call.entity_type.name.to_snake_case()));
+            args_context.insert("given_always", &always);
+            args_context.insert("given_optional", &optional);
+        }
+        if call.call_kind == CallKind::SaveOrPatch {
+            args_context.insert("patch_name", &format!("{}Patch", call.entity_type.name));
+            args_context.insert("patch_fields", &self.patch_field_views(&call.entity_type, owner));
+            #[derive(Serialize)]
+            struct CreateFieldView {
+                name: String,
+                /// `id`, `owner`, `flatten`, `now_or`, `unwrap`.
+                how: &'static str,
+            }
+            let mut required = Vec::new();
+            let mut create_fields = Vec::new();
+            for field in &call.entity_type.fields {
+                let how = if field.name == "id" {
+                    "id"
+                } else if Some(field.name.as_str()) == owner {
+                    "owner"
+                } else if field.field_type.is_option() {
+                    "flatten"
+                } else if field.field_type.name == DATE_TIME && !defaults.contains(&field.name) {
+                    "now_or"
+                } else {
+                    if !defaults.contains(&field.name) {
+                        required.push(field.name.clone());
+                    }
+                    "unwrap"
+                };
+                create_fields.push(CreateFieldView { name: field.name.clone(), how });
+            }
+            args_context.insert("required", &required);
+            args_context.insert("create_fields", &create_fields);
+            args_context.insert("error", &self.error_name());
+            args_context.insert("output", &self.output_name());
+            args_context.insert("field", &field);
+        }
         if call.call_kind == CallKind::Patch {
             args_context.insert("patch_name", &format!("{}Patch", call.entity_type.name));
             args_context.insert("patch_fields", &self.patch_field_views(&call.entity_type, owner));
@@ -706,6 +780,11 @@ impl UseCaseFile {
         // when no row of theirs matched.
         if matches!(call.call_kind, CallKind::Patch | CallKind::Upsert) {
             context.insert("owner", &None::<String>);
+        }
+        if call.call_kind == CallKind::SaveOrPatch {
+            context.insert("args", &render("file/use_case/call_save_or_patch.rs.tera", &args_context));
+            context.insert("owner_literal", &owner.map(|o| format!("{:?}", o)));
+            return render("file/use_case/call_save_or_patch_wrapper.rs.tera", &context);
         }
         let template = match call.call_kind {
             _ if owned => "file/use_case/call_owned.rs.tera",
@@ -779,7 +858,7 @@ impl UseCaseFile {
                 imports.types.push(call.storage_error.clone());
             }
             let patch = format!("{}Patch", call.entity_type.name);
-            if call.call_kind == CallKind::Patch && !imports.types.contains(&patch) {
+            if matches!(call.call_kind, CallKind::Patch | CallKind::SaveOrPatch) && !imports.types.contains(&patch) {
                 imports.types.push(patch);
             }
         }

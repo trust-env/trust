@@ -89,7 +89,7 @@ pub struct FieldSerde {
 impl FieldSerde {
     pub fn of(t: &RustType) -> Self {
         FieldSerde {
-            regex_fn: t.regex_pattern().map(crate::generator::domains::regex_fn_name),
+            regex_fn: t.validator_key().map(|k| crate::generator::domains::regex_fn_name(&k)),
             regex_optional: t.is_option(),
             double_option: t.is_option() && t.unwrap_option().is_option(),
         }
@@ -206,6 +206,8 @@ pub struct CodeGenContext {
     journals: HashMap<String, crate::parser::JournalDeclaration>,
     /// The journal each use case writes to (`journal: X`).
     use_case_journals: HashMap<String, String>,
+    /// Fields with a `defaults {}` entry, per psql infra.
+    psql_default_fields: HashMap<String, Vec<String>>,
 }
 
 impl CodeGenContext {
@@ -253,7 +255,13 @@ impl CodeGenContext {
             use_case_deps: HashMap::new(),
             journals: HashMap::new(),
             use_case_journals: HashMap::new(),
+            psql_default_fields: HashMap::new(),
         }
+    }
+
+    /// Fields of `infra`'s entity that have a `defaults {}` entry.
+    pub fn find_psql_default_fields(&self, infra: &str) -> &[String] {
+        self.psql_default_fields.get(infra).map(Vec::as_slice).unwrap_or(&[])
     }
 
     pub fn find_journal(&self, name: &str) -> Option<&crate::parser::JournalDeclaration> {
@@ -820,6 +828,12 @@ impl CodeGen {
                         if !psql.unique.is_empty() {
                             context.psql_unique_keys.push(infra.name.clone());
                         }
+                        if !psql.defaults.is_empty() {
+                            context.psql_default_fields.insert(
+                                infra.name.clone(),
+                                psql.defaults.iter().map(|(f, _)| f.clone()).collect(),
+                            );
+                        }
                         if let Some(database) = &psql.database {
                             context.psql_databases.insert(infra.name.clone(), database.clone());
                         }
@@ -913,6 +927,14 @@ impl CodeGen {
                     for call in &use_case.calls {
                         context.register_use_case_infra(use_case.name.clone(), call.target.clone());
                         all_errors.extend(call.errors.iter().cloned());
+                    }
+                    // `save_or_patch` adds a MissingField error (422).
+                    if use_case.calls.iter().any(|c| c.method == "save_or_patch") {
+                        all_errors.push(ErrorMapping {
+                            source: String::new(),
+                            target: "MissingField".to_string(),
+                            message: None,
+                        });
                     }
                     if !all_errors.is_empty() {
                         context.register_use_case_errors(use_case.name.clone(), all_errors);

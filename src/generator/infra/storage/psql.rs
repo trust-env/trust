@@ -102,8 +102,8 @@ impl CodeGen {
                 Some(rust_type) => {
                     let rust_type = &rust_type;
                     let module_name = rust_type.to_file_name();
-                    let mut file =
-                        PsqlStorageFile::new(rust_type.clone(), psql.unique.first().cloned(), folder.clone())?;
+                    let mut file = PsqlStorageFile::new(rust_type.clone(), psql.unique.first().cloned(), folder.clone())?
+                        .with_schema_rules(&psql.defaults, &psql.stamps)?;
 
                     file.write()?;
                     if !context.has_transaction_module() {

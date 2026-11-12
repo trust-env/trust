@@ -81,12 +81,29 @@ pub struct PsqlStorageFile {
     /// conflicts on.
     unique_key: Option<Vec<String>>,
     path: PathBuf,
+    defaults: Vec<DefaultView>,
+    stamps: Vec<StampView>,
 }
 
 impl PsqlStorageFile {
     pub fn new(entity: RustType, unique_key: Option<Vec<String>>, folder: PathBuf) -> Result<Self, String> {
         let path = folder.join("psql").join(format!("{}.rs", entity.to_file_name()));
-        Ok(PsqlStorageFile { entity, unique_key, path })
+        Ok(PsqlStorageFile { entity, unique_key, path, defaults: Vec::new(), stamps: Vec::new() })
+    }
+
+    /// `defaults {}` / `stamps {}` of the infra.
+    pub fn with_schema_rules(
+        mut self,
+        defaults: &[(String, crate::parser::DefaultValue)],
+        stamps: &[crate::parser::Stamp],
+    ) -> Result<Self, String> {
+        for (field, value) in defaults {
+            self.defaults.push(DefaultView { field: field.clone(), expr: default_expr(&self.entity, field, value)? });
+        }
+        for stamp in stamps {
+            self.stamps.push(StampView { set_sql: stamp_set_sql(&self.entity, stamp)? });
+        }
+        Ok(self)
     }
 
     pub fn error_name(entity: &str) -> String {
@@ -154,6 +171,9 @@ impl PsqlStorageFile {
         context.insert("owner_columns", &owner_columns);
         context.insert("unique_key", &self.unique_key);
         context.insert("upsert_fields", &upsert_fields);
+        context.insert("defaults", &self.defaults);
+        context.insert("stamps", &self.stamps);
+        context.insert("entity_snake", &heck::ToSnakeCase::to_snake_case(entity.name.as_str()));
         let code = render("file/psql_storage/storage.rs.tera", &context);
         std::fs::write(&self.path, code)
             .map_err(|e| format!("Failed to write entity storage file: {}", e))
@@ -167,4 +187,127 @@ pub fn write_transaction_module(storage_folder: &Path) -> Result<(), String> {
         render("file/psql_storage/trust_tx.rs.tera", &Context::new()),
     )
     .map_err(|e| format!("Failed to write the transaction module: {}", e))
+}
+
+/// One `defaults {}` entry as the storage's `apply_<entity>_defaults` writes it.
+#[derive(Serialize, Clone)]
+pub struct DefaultView {
+    pub field: String,
+    /// A Rust expression of the field's type (may read `entity`'s fields).
+    pub expr: String,
+}
+
+/// One `stamps {}` entry: the SQL `SET` fragment for the column.
+#[derive(Serialize, Clone)]
+pub struct StampView {
+    pub set_sql: String,
+}
+
+fn literal_expr(entity: &str, field: &str, t: &RustType, value: &serde_json::Value) -> Result<String, String> {
+    use serde_json::Value;
+    if t.is_option() {
+        return match value {
+            Value::Null => Ok("None".to_string()),
+            other => Ok(format!("Some({})", literal_expr(entity, field, t.unwrap_option(), other)?)),
+        };
+    }
+    let mismatch = || format!("defaults of '{}': '{}' doesn't fit field '{}' ({})", entity, value, field, t.name);
+    match (t.name.as_str(), value) {
+        ("String", Value::String(s)) => Ok(format!("{:?}.to_string()", s)),
+        ("i64", Value::Number(n)) if n.is_i64() => Ok(n.to_string()),
+        ("f64", Value::Number(n)) => Ok(format!("{}_f64", n)),
+        ("bool", Value::Bool(b)) => Ok(b.to_string()),
+        (_, Value::String(s)) if t.is_enum() => match &t.kind {
+            crate::generator::rust_code::types::TypeKind::Enum(values) if values.contains(s) => {
+                Ok(format!("{}::{}", t.name, crate::generator::types::enum_variant_ident(s)))
+            }
+            _ => Err(mismatch()),
+        },
+        ("String" | "i64" | "f64" | "bool", _) => Err(mismatch()),
+        _ => Ok(format!(
+            "serde_json::from_str({:?}).expect(\"default of {}.{} checked by trust\")",
+            value.to_string(),
+            entity,
+            field
+        )),
+    }
+}
+
+/// The Rust expression a `defaults {}` value stands for.
+pub fn default_expr(entity: &RustType, field: &str, value: &crate::parser::DefaultValue) -> Result<String, String> {
+    use crate::parser::{DefaultArg, DefaultValue};
+    let target = entity
+        .fields
+        .iter()
+        .find(|f| f.name == field)
+        .ok_or_else(|| format!("defaults of '{}': unknown field '{}'", entity.name, field))?;
+    let t = &target.field_type;
+    let wrap = |expr: String| if t.is_option() { format!("Some({})", expr) } else { expr };
+    match value {
+        DefaultValue::Literal(v) => literal_expr(&entity.name, field, t, v),
+        DefaultValue::Now => match t.unwrap_option().name.as_str() {
+            crate::generator::rust_code::imports::DATE_TIME => Ok(wrap("chrono::Utc::now()".to_string())),
+            "NaiveDate" => Ok(wrap("chrono::Utc::now().date_naive()".to_string())),
+            other => Err(format!("defaults of '{}': now() doesn't fit '{}' ({})", entity.name, field, other)),
+        },
+        DefaultValue::Today => match t.unwrap_option().name.as_str() {
+            "NaiveDate" => Ok(wrap("chrono::Utc::now().date_naive()".to_string())),
+            other => Err(format!("defaults of '{}': today() doesn't fit '{}' ({})", entity.name, field, other)),
+        },
+        DefaultValue::Call(name, args) => {
+            let mut rendered = Vec::new();
+            for arg in args {
+                rendered.push(match arg {
+                    DefaultArg::Field(f) => {
+                        if !entity.fields.iter().any(|ef| &ef.name == f) {
+                            return Err(format!("defaults of '{}': {}(...) reads unknown field '{}'", entity.name, name, f));
+                        }
+                        format!("&entity.{}", f)
+                    }
+                    DefaultArg::Now => "chrono::Utc::now()".to_string(),
+                    DefaultArg::Today => "chrono::Utc::now().date_naive()".to_string(),
+                    DefaultArg::Literal(serde_json::Value::String(s)) => format!("{:?}", s),
+                    DefaultArg::Literal(other) => other.to_string(),
+                });
+            }
+            Ok(format!("crate::{}({})", name, rendered.join(", ")))
+        }
+    }
+}
+
+fn sql_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// The `SET` fragment of a `stamps {}` entry.
+pub fn stamp_set_sql(entity: &RustType, stamp: &crate::parser::Stamp) -> Result<String, String> {
+    let field = entity
+        .fields
+        .iter()
+        .find(|f| f.name == stamp.field)
+        .ok_or_else(|| format!("stamps of '{}': unknown field '{}'", entity.name, stamp.field))?;
+    if !field.field_type.is_option() {
+        return Err(format!("stamps of '{}': '{}' must be optional (it is null while the condition is false)", entity.name, stamp.field));
+    }
+    let now = match field.field_type.unwrap_option().name.as_str() {
+        crate::generator::rust_code::imports::DATE_TIME => "now()",
+        "NaiveDate" => "CURRENT_DATE",
+        other => return Err(format!("stamps of '{}': '{}' must be a DateTime or Date, not {}", entity.name, stamp.field, other)),
+    };
+    if !entity.fields.iter().any(|f| f.name == stamp.when_field) {
+        return Err(format!("stamps of '{}': unknown field '{}'", entity.name, stamp.when_field));
+    }
+    let values: Vec<String> = stamp.values.iter().map(|v| sql_quote(v)).collect();
+    let condition = format!(
+        "{}{} IN ({})",
+        stamp.when_field,
+        if stamp.negated { " NOT" } else { "" },
+        values.join(", ")
+    );
+    Ok(format!(
+        "{f} = CASE WHEN {c} THEN COALESCE({f}, {now}) ELSE NULL END",
+        f = stamp.field,
+        c = condition,
+        now = now
+    ))
 }

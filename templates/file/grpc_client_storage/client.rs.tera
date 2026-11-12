@@ -35,6 +35,7 @@ pub trait {{ entity }}Storage: Storage<{{ entity }}, {{ error_name }}> + Send + 
     fn list_sorted(&self, query: StorageListQuery, order_by: &[(&'static str, bool)]) -> impl std::future::Future<Output = Result<Vec<{{ entity }}>, {{ error_name }}>> + Send;
     fn query(&self, query: crate::Query) -> impl std::future::Future<Output = Result<Vec<{{ entity }}>, {{ error_name }}>> + Send;
     fn find_one_owned(&self, id: EntityId, owner_field: &'static str, owner: i64) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error_name }}>> + Send;
+    fn get_or_default(&self, owner_field: &'static str, owner: i64) -> impl std::future::Future<Output = Result<{{ entity }}, {{ error_name }}>> + Send;
     fn upsert_one(&self, data: {{ entity }}, owner: Option<&'static str>) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error_name }}>> + Send;
     fn patch_one(&self, id: EntityId, owner: Option<(&'static str, i64)>, patch: {{ entity }}Patch) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error_name }}>> + Send;
 }
@@ -56,6 +57,10 @@ impl {{ entity }}Storage for {{ struct_name }} {
 
     async fn query(&self, _query: crate::Query) -> Result<Vec<{{ entity }}>, {{ error_name }}> {
         Err({{ error_name }}::DatabaseError("list is not supported by this grpc_client infra".to_string()))
+    }
+
+    async fn get_or_default(&self, _owner_field: &'static str, _owner: i64) -> Result<{{ entity }}, {{ error_name }}> {
+        Err({{ error_name }}::DatabaseError("get_or_default is not supported by this grpc_client infra".to_string()))
     }
 
     async fn find_one_owned(&self, id: EntityId, _owner_field: &'static str, _owner: i64) -> Result<Option<{{ entity }}>, {{ error_name }}> {

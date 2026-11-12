@@ -73,6 +73,20 @@ impl CodeGen {
             AllowedType::Json => Ok(RustType::primitive(JSON_VALUE)),
             AllowedType::Date => Ok(RustType::primitive("NaiveDate")),
             AllowedType::Time => Ok(RustType::primitive("NaiveTime")),
+            AllowedType::Range(inner, min, max) => {
+                let base = self.resolve_type_reference(context, inner)?;
+                for bound in [min, max].into_iter().flatten() {
+                    if base.name == "i64" && bound.contains('.') {
+                        return Err(format!("Int range bound '{}' must be a whole number", bound));
+                    }
+                }
+                if let (Some(a), Some(b)) = (min, max) {
+                    if a.parse::<f64>().unwrap_or(0.0) > b.parse::<f64>().unwrap_or(0.0) {
+                        return Err(format!("range {}..{} is empty", a, b));
+                    }
+                }
+                Ok(base.with_kind(TypeKind::Range(min.clone(), max.clone())))
+            }
             AllowedType::Regex(pattern) => {
                 Ok(RustType::primitive("String").with_kind(TypeKind::Regex(resolve_regex(pattern)?)))
             }

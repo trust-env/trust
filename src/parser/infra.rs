@@ -1,7 +1,7 @@
 use crate::{
     lexer::{Keyword, Token},
     parser::{
-        Ast, ForeignKey, GrpcClientInfraService, GrpcClientMethodMapping, HttpClientInfraService, InfraService,
+        Ast, DefaultArg, DefaultValue, ForeignKey, GrpcClientInfraService, Stamp, GrpcClientMethodMapping, HttpClientInfraService, InfraService,
         InfraServiceType, InfraServiceType::Storage, Parser, PsqlInfraService, S3InfraService,
         StorageType, StorageType::Psql,
     },
@@ -85,6 +85,70 @@ impl Parser {
                         _ => psql.dropped.extend(columns),
                     }
                 }
+                Some(Token::Identifier(k)) if k == "defaults" => {
+                    if self.next_token() != Some(Token::OpenBrace) {
+                        return Err("Expected '{' after 'defaults'".to_string());
+                    }
+                    loop {
+                        let field = match self.next_token() {
+                            Some(Token::CloseBrace) => break,
+                            Some(Token::Comma) => continue,
+                            Some(Token::Identifier(f)) => f,
+                            Some(Token::Keyword(k)) => k.to_string(),
+                            other => return Err(format!("Expected a field name in 'defaults', got {:?}", other)),
+                        };
+                        if self.next_token() != Some(Token::Colon) {
+                            return Err(format!("Expected ':' after '{}' in 'defaults'", field));
+                        }
+                        let value = self.try_default_value().map_err(|e| format!("defaults '{}': {}", field, e))?;
+                        psql.defaults.push((field, value));
+                    }
+                }
+                Some(Token::Identifier(k)) if k == "stamps" => {
+                    if self.next_token() != Some(Token::OpenBrace) {
+                        return Err("Expected '{' after 'stamps'".to_string());
+                    }
+                    loop {
+                        let field = match self.next_token() {
+                            Some(Token::CloseBrace) => break,
+                            Some(Token::Comma) => continue,
+                            Some(Token::Identifier(f)) => f,
+                            other => return Err(format!("Expected a field name in 'stamps', got {:?}", other)),
+                        };
+                        let when_field = match (self.next_token(), self.next_token()) {
+                            (Some(Token::Colon), Some(Token::Identifier(w))) => w,
+                            (Some(Token::Colon), Some(Token::Keyword(k))) => k.to_string(),
+                            _ => return Err(format!("Expected ': <field> == \"value\"' after '{}' in 'stamps'", field)),
+                        };
+                        let (negated, values) = match self.next_token() {
+                            Some(Token::Equal) => {
+                                let pos = self.current;
+                                if self.next_token() != Some(Token::Equal) {
+                                    self.reset(pos);
+                                }
+                                (false, vec![self.try_stamp_value()?])
+                            }
+                            Some(Token::Bang) if self.next_token() == Some(Token::Equal) => (true, vec![self.try_stamp_value()?]),
+                            Some(Token::Identifier(word)) if word == "in" => {
+                                if self.next_token() != Some(Token::OpenBracket) {
+                                    return Err("Expected '[' after 'in' in 'stamps'".to_string());
+                                }
+                                let mut values = Vec::new();
+                                loop {
+                                    match self.next_token() {
+                                        Some(Token::CloseBracket) => break,
+                                        Some(Token::Comma) => continue,
+                                        Some(Token::StringLiteral(v)) | Some(Token::Identifier(v)) => values.push(v),
+                                        other => return Err(format!("Expected values in 'stamps', got {:?}", other)),
+                                    }
+                                }
+                                (false, values)
+                            }
+                            other => return Err(format!("Expected ==, != or in after '{}' in 'stamps', got {:?}", when_field, other)),
+                        };
+                        psql.stamps.push(Stamp { field, when_field, negated, values });
+                    }
+                }
                 Some(Token::Identifier(k)) if k == "references" => {
                     if self.next_token() != Some(Token::OpenBrace) {
                         return Err("Expected '{' after 'references'".to_string());
@@ -140,6 +204,53 @@ impl Parser {
                 }
             }
         }
+    }
+
+    fn try_stamp_value(&mut self) -> Result<String, String> {
+        match self.next_token() {
+            Some(Token::StringLiteral(v)) | Some(Token::Identifier(v)) => Ok(v),
+            other => Err(format!("Expected a value in 'stamps', got {:?}", other)),
+        }
+    }
+
+    /// A `defaults {}` value: a literal, `now()`, `today()` or `function(args)`.
+    fn try_default_value(&mut self) -> Result<DefaultValue, String> {
+        let pos = self.current;
+        if let Some(Token::Identifier(name)) = self.next_token() {
+            if self.next_token() == Some(Token::OpenParen) {
+                if name == "now" || name == "today" {
+                    if self.next_token() != Some(Token::CloseParen) {
+                        return Err(format!("{}() takes no argument", name));
+                    }
+                    return Ok(if name == "now" { DefaultValue::Now } else { DefaultValue::Today });
+                }
+                let mut args = Vec::new();
+                loop {
+                    let arg_pos = self.current;
+                    match self.next_token() {
+                        Some(Token::CloseParen) => break,
+                        Some(Token::Comma) => continue,
+                        Some(Token::Identifier(word)) if word == "now" || word == "today" => {
+                            if (self.next_token(), self.next_token()) != (Some(Token::OpenParen), Some(Token::CloseParen)) {
+                                return Err(format!("Expected {}()", word));
+                            }
+                            args.push(if word == "now" { DefaultArg::Now } else { DefaultArg::Today });
+                        }
+                        Some(Token::Identifier(word)) if !word.chars().next().is_some_and(|c| c.is_ascii_digit()) && word != "true" && word != "false" && word != "null" => {
+                            args.push(DefaultArg::Field(word))
+                        }
+                        Some(Token::Keyword(k)) => args.push(DefaultArg::Field(k.to_string())),
+                        _ => {
+                            self.reset(arg_pos);
+                            args.push(DefaultArg::Literal(self.try_json_literal()?));
+                        }
+                    }
+                }
+                return Ok(DefaultValue::Call(name, args));
+            }
+        }
+        self.reset(pos);
+        Ok(DefaultValue::Literal(self.try_json_literal()?))
     }
 
     /// `[a, b, c]` (or a single bare name) — column names.

@@ -263,6 +263,40 @@ pub struct PsqlInfraService {
     pub renamed: Vec<(String, String)>,
     /// `dropped: [a, b]` — columns removed since the last deploy.
     pub dropped: Vec<String>,
+    /// `defaults { status: "todo" domain: guess_domain(title, now()) }` —
+    /// values a created row gets for fields the input doesn't give.
+    pub defaults: Vec<(String, DefaultValue)>,
+    /// `stamps { done_at: status == "done" }` — a timestamp set when the row
+    /// starts matching the condition, cleared when it stops.
+    pub stamps: Vec<Stamp>,
+}
+
+/// The value of a `defaults {}` entry.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DefaultValue {
+    Literal(serde_json::Value),
+    Now,
+    Today,
+    /// `function(arg, ...)` — a function of an `include:` file; field
+    /// arguments are passed by reference.
+    Call(String, Vec<DefaultArg>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DefaultArg {
+    Field(String),
+    Now,
+    Today,
+    Literal(serde_json::Value),
+}
+
+/// `field: when_field == "value"` (or `!=`, `in [...]`) in `stamps {}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stamp {
+    pub field: String,
+    pub when_field: String,
+    pub negated: bool,
+    pub values: Vec<String>,
 }
 
 /// One `references {}` entry of a psql infra.
@@ -603,6 +637,9 @@ pub enum AllowedType {
     /// `Regex<"pattern">` or `Regex<preset>` — a `String` validated
     /// against the pattern whenever it is decoded from JSON.
     Regex(String),
+    /// `Int(1..4)` / `Float(0..1)` — a number checked against bounds
+    /// (inclusive; either may be left out: `Int(0..)`).
+    Range(Box<AllowedType>, Option<String>, Option<String>),
     DefinedType(String),
 }
 
@@ -622,6 +659,7 @@ impl AllowedType {
             AllowedType::Date => "date".to_string(),
             AllowedType::Time => "time".to_string(),
             AllowedType::Regex(_) => "regex".to_string(),
+            AllowedType::Range(inner, _, _) => inner.to_file_name(),
             AllowedType::DefinedType(name) => name.to_snake_case(),
         }
     }
@@ -798,6 +836,11 @@ pub struct ResourceDeclaration {
     pub singular: Option<String>,
     /// `journal: Actions` — the resource's writes are journaled.
     pub journal: Option<String>,
+    /// `singleton` — one row per owner: `get` returns it (or the defaults),
+    /// `upsert` writes it.
+    pub singleton: bool,
+    /// `default { field: value }` — added to the infra's `defaults {}`.
+    pub defaults: Vec<(String, serde_json::Value)>,
     pub operations: Vec<ResourceOperation>,
 }
 
