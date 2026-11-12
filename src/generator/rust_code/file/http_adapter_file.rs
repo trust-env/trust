@@ -572,7 +572,8 @@ impl HttpAdapterFile {
             .find(|m| m.target == target)
             .or_else(|| mappings.iter().find(|m| m.target == "_"))
             .map(|m| m.status)
-            .unwrap_or(500)
+            // `save_or_patch` creating without a required field.
+            .unwrap_or(if target == "MissingField" { 422 } else { 500 })
     }
 
     /// The use case's error enum is HTTP-agnostic (`NotFound`, `StorageError`,

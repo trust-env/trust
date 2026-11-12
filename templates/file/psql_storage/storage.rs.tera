@@ -33,6 +33,17 @@ pub struct {{ patch }} {
 {%- endfor %}
 }
 
+/// Fills the `defaults {}` of the fields not in `given` (a created row).
+#[allow(unused_variables)]
+pub fn apply_{{ entity_snake }}_defaults(entity: &mut {{ entity }}, given: &[&str]) {
+{%- for d in defaults %}
+    if !given.contains(&"{{ d.field }}") {
+        let value = {{ d.expr }};
+        entity.{{ d.field }} = value;
+    }
+{%- endfor %}
+}
+
 pub trait {{ trait_name }}: Storage<{{ entity }}, {{ error }}> + Send + Sync {
     /// `update_one` restricted to the row whose `owner_field` equals
     /// `owner`; `Ok(None)` when no such row exists for that owner.
@@ -44,6 +55,9 @@ pub trait {{ trait_name }}: Storage<{{ entity }}, {{ error }}> + Send + Sync {
     fn list_sorted(&self, query: StorageListQuery, order_by: &[(&'static str, bool)]) -> impl std::future::Future<Output = Result<Vec<{{ entity }}>, {{ error }}>> + Send;
     /// The rows matching a `Query` (filters, sort, page).
     fn query(&self, query: Query) -> impl std::future::Future<Output = Result<Vec<{{ entity }}>, {{ error }}>> + Send;
+    /// The owner's row (the first one), or a new unsaved one built from the
+    /// `defaults {}` — for one-row-per-user settings.
+    fn get_or_default(&self, owner_field: &'static str, owner: i64) -> impl std::future::Future<Output = Result<{{ entity }}, {{ error }}>> + Send;
     /// `find_one` restricted to the row whose `owner_field` equals `owner`.
     fn find_one_owned(&self, id: EntityId, owner_field: &'static str, owner: i64) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error }}>> + Send;
     /// Inserts `data`, or updates the row with the same unique key. With
@@ -85,6 +99,18 @@ impl {{ struct_name }} {
     pub fn new(db: SQLConnector) -> Self {
         Self { db, tx: None, journal: None }
     }
+{%- if stamps and has_id %}
+
+    /// `stamps {}`: timestamps set when the row starts matching their
+    /// condition (kept while it does), cleared when it stops.
+    async fn stamped(&self, row: {{ entity }}) -> Result<{{ entity }}, {{ error }}> {
+        let query = sqlx::query_as::<_, {{ entity }}>(
+            "UPDATE {{ table }} SET {% for st in stamps %}{{ st.set_sql }}{% if not loop.last %}, {% endif %}{% endfor %} WHERE {{ id_field }} = $1 RETURNING {{ all_columns | join(sep=", ") }}",
+        )
+        .bind(row.{{ id_field }});
+        run!(self, query, fetch_one).map_err({{ error }}::from)
+    }
+{%- endif %}
 {%- if has_id %}
 
     /// The row as JSON (column names), when journaling.
@@ -130,6 +156,9 @@ impl Storage<{{ entity }}, {{ error }}> for {{ struct_name }} {
         ){% for f in data_fields %}
             .bind({{ self::bind(var="data", f=f) }}){% endfor %};
         let row = run!(self, query, fetch_one).map_err({{ error }}::from)?;
+{%- if stamps and has_id %}
+        let row = self.stamped(row).await?;
+{%- endif %}
 {%- if has_id %}
         self.journal_write(row.{{ id_field }}, None, false).await?;
 {%- endif %}
@@ -157,6 +186,13 @@ impl Storage<{{ entity }}, {{ error }}> for {{ struct_name }} {
             .bind(col_{{ f.name }})
 {%- endfor %};
         let rows = run!(self, query, fetch_all).map_err({{ error }}::from)?;
+{%- if stamps and has_id %}
+        let mut stamped_rows = Vec::with_capacity(rows.len());
+        for row in rows {
+            stamped_rows.push(self.stamped(row).await?);
+        }
+        let rows = stamped_rows;
+{%- endif %}
 {%- if has_id %}
         for row in &rows {
             self.journal_write(row.{{ id_field }}, None, false).await?;
@@ -196,6 +232,9 @@ impl Storage<{{ entity }}, {{ error }}> for {{ struct_name }} {
             .bind({{ self::bind(var="data", f=f) }}){% endfor %}
             .bind(id);
         let row = run!(self, query, fetch_one).map_err({{ error }}::from)?;
+{%- if stamps and has_id %}
+        let row = self.stamped(row).await?;
+{%- endif %}
 {%- if has_id %}
         self.journal_write(id, before, false).await?;
 {%- endif %}
@@ -260,6 +299,12 @@ impl {{ trait_name }} for {{ struct_name }} {
             .bind(id)
             .bind(owner);
         let row = run!(self, query, fetch_optional).map_err({{ error }}::from)?;
+{%- if stamps and has_id %}
+        let row = match row {
+            Some(row) => Some(self.stamped(row).await?),
+            None => None,
+        };
+{%- endif %}
         if row.is_some() {
             self.journal_write(id, before, false).await?;
         }
@@ -300,6 +345,23 @@ impl {{ trait_name }} for {{ struct_name }} {
     /// checked against the entity's columns before reaching the SQL text.
     async fn query(&self, query: Query) -> Result<Vec<{{ entity }}>, {{ error }}> {
         self.list_sorted(query.to_list_query(), &query.order_by).await
+    }
+
+    async fn get_or_default(&self, owner_field: &'static str, owner: i64) -> Result<{{ entity }}, {{ error }}> {
+        let rows = self.query(Query::new().eq(owner_field, owner).limit(1)).await?;
+        if let Some(row) = rows.into_iter().next() {
+            return Ok(row);
+        }
+        #[allow(unused_mut)]
+        let mut row = {{ entity }}::default();
+        match owner_field {
+{%- for o in owner_columns %}
+            "{{ o }}" => row.{{ o }} = owner,
+{%- endfor %}
+            other => return Err({{ error }}::ConversionError(format!("'{}' is not an owner column of {{ table }}", other))),
+        }
+        apply_{{ entity_snake }}_defaults(&mut row, &[owner_field]);
+        Ok(row)
     }
 
     async fn find_one_owned(&self, id: EntityId, owner_field: &'static str, owner: i64) -> Result<Option<{{ entity }}>, {{ error }}> {
@@ -432,6 +494,12 @@ impl {{ trait_name }} for {{ struct_name }} {
             .bind({{ self::bind(var="data", f=f) }})
 {%- endfor %};
         let row = run!(self, query, fetch_optional).map_err({{ error }}::from)?;
+{%- if stamps and has_id %}
+        let row = match row {
+            Some(row) => Some(self.stamped(row).await?),
+            None => None,
+        };
+{%- endif %}
 {%- if has_id %}
         if let Some(row) = &row {
             self.journal_write(row.{{ id_field }}, before, false).await?;
@@ -497,6 +565,12 @@ impl {{ trait_name }} for {{ struct_name }} {
             q = q.bind(value);
         }
         let row = run!(self, q, fetch_optional).map_err({{ error }}::from)?;
+{%- if stamps and has_id %}
+        let row = match row {
+            Some(row) => Some(self.stamped(row).await?),
+            None => None,
+        };
+{%- endif %}
 {%- if has_id %}
         if row.is_some() {
             self.journal_write(id, before, false).await?;

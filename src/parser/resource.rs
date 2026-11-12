@@ -6,7 +6,7 @@ use crate::{
     },
 };
 
-const OPERATIONS: &[&str] = &["list", "get", "create", "update", "patch", "upsert", "delete"];
+const OPERATIONS: &[&str] = &["list", "get", "create", "update", "patch", "upsert", "save", "delete"];
 
 impl Parser {
     /// `journal Actions { infra: ActionInfra owner: user_id undo: "/actions/:id/toggle" conflict: refuse }`.
@@ -122,6 +122,8 @@ impl Parser {
         let mut owner = None;
         let mut singular = None;
         let mut journal = None;
+        let mut singleton = false;
+        let mut defaults = Vec::new();
         let mut operations: Vec<ResourceOperation> = Vec::new();
         loop {
             match self.next_token() {
@@ -135,6 +137,14 @@ impl Parser {
                     (Some(Token::Colon), Some(Token::StringLiteral(v))) => path = Some(v),
                     _ => return Err(format!("resource '{}': expected path: \"/...\"", name)),
                 },
+                Some(Token::Identifier(k)) if k == "singleton" => singleton = true,
+                Some(Token::Identifier(k)) if k == "default" => {
+                    self.revert(0);
+                    match self.try_json_literal()? {
+                        serde_json::Value::Object(map) => defaults.extend(map.into_iter()),
+                        _ => return Err(format!("resource '{}': default expects {{ field: value }}", name)),
+                    }
+                }
                 Some(Token::Identifier(k)) if k == "journal" => match (self.next_token(), self.next_token()) {
                     (Some(Token::Colon), Some(Token::Identifier(v))) => journal = Some(v),
                     _ => return Err(format!("resource '{}': expected journal: <Journal>", name)),
@@ -193,7 +203,13 @@ impl Parser {
         if operations.is_empty() {
             return Err(format!("resource '{}' must declare at least one operation ({})", name, OPERATIONS.join(", ")));
         }
-        Ok(Ast::Resource(ResourceDeclaration { name, infra, path, owner, singular, journal, operations }))
+        if singleton && owner.is_none() {
+            return Err(format!("resource '{}': 'singleton' needs 'owner'", name));
+        }
+        if singleton && operations.iter().any(|o| !["get", "upsert"].contains(&o.kind.as_str())) {
+            return Err(format!("resource '{}': a singleton only has 'get' and 'upsert'", name));
+        }
+        Ok(Ast::Resource(ResourceDeclaration { name, infra, path, owner, singular, journal, singleton, defaults, operations }))
     }
 
     /// After `type Name =`: `Omit<...>` / `Pick<...>` / `Partial<...>`.

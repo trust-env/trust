@@ -29,6 +29,8 @@ pub enum TypeKind {
     Struct,
     /// An enum whose variants carry fields: `(wire name, fields)`.
     TaggedEnum(Vec<(String, Vec<RustField>)>),
+    /// `Int(min..max)` / `Float(min..max)`: inclusive bounds.
+    Range(Option<String>, Option<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +103,22 @@ impl RustType {
     pub fn regex_pattern(&self) -> Option<&str> {
         match &self.unwrap_option().kind {
             TypeKind::Regex(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// What decoding checks on this field (or its `Option` inner): `re:`
+    /// + a pattern, or `range:<type>:<min>:<max>`.
+    pub fn validator_key(&self) -> Option<String> {
+        let inner = self.unwrap_option();
+        match &inner.kind {
+            TypeKind::Regex(p) => Some(format!("re:{}", p)),
+            TypeKind::Range(min, max) => Some(format!(
+                "range:{}:{}:{}",
+                inner.name,
+                min.clone().unwrap_or_default(),
+                max.clone().unwrap_or_default()
+            )),
             _ => None,
         }
     }

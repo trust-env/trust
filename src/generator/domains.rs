@@ -39,8 +39,14 @@ struct VariantView {
 #[derive(Serialize)]
 struct RegexView {
     fn_name: String,
+    /// `regex` or `range`.
+    kind: &'static str,
     /// The pattern as a Rust string literal.
     pattern_literal: String,
+    /// Range: the number type and its bounds as Rust literals.
+    rust_type: String,
+    min: Option<String>,
+    max: Option<String>,
 }
 
 impl CodeGen {
@@ -68,8 +74,8 @@ pub(super) fn field_views(
         .map(|field| {
             let regex_fn = field
                 .field_type
-                .regex_pattern()
-                .map(|p| context.register_regex(p));
+                .validator_key()
+                .map(|key| context.register_regex(&key));
             let sqlx_json = match (is_storage_entity, field.field_type.is_json_wrapped()) {
                 (true, true) if field.field_type.is_option() => "nullable",
                 (true, true) => "plain",
@@ -201,6 +207,11 @@ pub(super) fn write_domain_type(
             let is_storage_entity = context.is_storage_entity(&t.name);
             let fields = field_views(context, &t, is_storage_entity);
             let has_regex = t.fields.iter().any(|f| f.field_type.regex_pattern().is_some());
+            for field in &t.fields {
+                if let Some(key) = field.field_type.validator_key() {
+                    context.register_regex(&key);
+                }
+            }
             require_field_dependencies(context, &imports, is_storage_entity, has_regex);
 
             let mut ctx = Context::new();
@@ -228,9 +239,34 @@ pub(super) fn write_regex_validators(context: &mut CodeGenContext, folder: &Path
     }
     let regexes: Vec<RegexView> = patterns
         .iter()
-        .map(|pattern| RegexView {
-            fn_name: regex_fn_name(pattern),
-            pattern_literal: format!("{:?}", pattern),
+        .map(|key| {
+            let fn_name = regex_fn_name(key);
+            if let Some(range) = key.strip_prefix("range:") {
+                let mut parts = range.splitn(3, ':');
+                let rust_type = parts.next().unwrap_or("i64").to_string();
+                let literal = |bound: &str| {
+                    if bound.is_empty() {
+                        None
+                    } else if rust_type == "f64" && !bound.contains('.') {
+                        Some(format!("{}.0", bound))
+                    } else {
+                        Some(bound.to_string())
+                    }
+                };
+                let min = literal(parts.next().unwrap_or(""));
+                let max = literal(parts.next().unwrap_or(""));
+                RegexView { fn_name, kind: "range", pattern_literal: String::new(), rust_type, min, max }
+            } else {
+                let pattern = key.strip_prefix("re:").unwrap_or(key);
+                RegexView {
+                    fn_name,
+                    kind: "regex",
+                    pattern_literal: format!("{:?}", pattern),
+                    rust_type: String::new(),
+                    min: None,
+                    max: None,
+                }
+            }
         })
         .collect();
     let mut ctx = Context::new();
@@ -242,7 +278,7 @@ pub(super) fn write_regex_validators(context: &mut CodeGenContext, folder: &Path
     )
     .map_err(|e| format!("Failed to write regex validators: {}", e))?;
     context.register_domain_module("trust_validation".to_string());
-    if !patterns.is_empty() {
+    if patterns.iter().any(|k| k.starts_with("re:")) {
         context.require_version_dependency("regex", "1");
     }
     Ok(())

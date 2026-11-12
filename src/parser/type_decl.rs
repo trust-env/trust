@@ -7,12 +7,56 @@ use crate::{
 };
 
 impl Parser {
+    /// `(min..max)` after `Int` / `Float`, if present.
+    fn try_range(&mut self, base: AllowedType) -> Result<AllowedType, String> {
+        let pos = self.current;
+        if self.next_token() != Some(Token::OpenParen) {
+            self.reset(pos);
+            return Ok(base);
+        }
+        let min = self.try_number_text();
+        if (self.next_token(), self.next_token()) != (Some(Token::Dot), Some(Token::Dot)) {
+            self.reset(pos);
+            return Err("Expected '..' in a range, as in Int(1..4)".to_string());
+        }
+        let max = self.try_number_text();
+        if self.next_token() != Some(Token::CloseParen) {
+            self.reset(pos);
+            return Err("Expected ')' to close the range".to_string());
+        }
+        if min.is_none() && max.is_none() {
+            self.reset(pos);
+            return Err("A range needs a minimum, a maximum or both".to_string());
+        }
+        Ok(AllowedType::Range(Box::new(base), min, max))
+    }
+
+    /// `3`, `0.5` (lexed as `0`, `.`, `5`) — `None` when no number is here.
+    fn try_number_text(&mut self) -> Option<String> {
+        let pos = self.current;
+        let integer = match self.next_token() {
+            Some(Token::Identifier(n)) if n.chars().all(|c| c.is_ascii_digit()) => n,
+            _ => {
+                self.reset(pos);
+                return None;
+            }
+        };
+        let after = self.current;
+        if let (Some(Token::Dot), Some(Token::Identifier(fraction))) = (self.next_token(), self.next_token()) {
+            if fraction.chars().all(|c| c.is_ascii_digit()) {
+                return Some(format!("{}.{}", integer, fraction));
+            }
+        }
+        self.reset(after);
+        Some(integer)
+    }
+
     pub(super) fn try_type(&mut self) -> Result<AllowedType, String> {
         match self.next_token() {
             Some(Token::Keyword(Keyword::String)) => Ok(AllowedType::String),
             Some(Token::Keyword(Keyword::Uuid)) => Ok(AllowedType::Uuid),
-            Some(Token::Keyword(Keyword::Int)) => Ok(AllowedType::Int),
-            Some(Token::Keyword(Keyword::Float)) => Ok(AllowedType::Float),
+            Some(Token::Keyword(Keyword::Int)) => self.try_range(AllowedType::Int),
+            Some(Token::Keyword(Keyword::Float)) => self.try_range(AllowedType::Float),
             Some(Token::Keyword(Keyword::Decimal)) => Ok(AllowedType::Decimal),
             Some(Token::Keyword(Keyword::Bool)) => Ok(AllowedType::Bool),
             Some(Token::Keyword(Keyword::DateTime)) => Ok(AllowedType::DateTime),

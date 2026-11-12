@@ -63,7 +63,11 @@ impl CodeGen {
         entity_type: &RustType,
         filters: &[FilterMapping],
         owner: Option<&str>,
+        defaults: &[String],
     ) -> RustType {
+        let optional = |t: &RustType| {
+            if t.is_option() { t.clone() } else { RustType::generic("Option", vec![t.clone()], vec![]) }
+        };
         match call_kind {
             CallKind::Update => {
                 let mut guessed = entity_type.clone();
@@ -71,10 +75,35 @@ impl CodeGen {
                 guessed
             }
             // The database assigns the id of a new row: not an input.
+            // Fields with a `defaults {}` entry may be left out.
             CallKind::Create | CallKind::Upsert => {
                 let mut guessed = entity_type.clone();
                 guessed.fields.retain(|f| Some(f.name.as_str()) != owner && f.name != "id");
+                for field in &mut guessed.fields {
+                    // Defaulted fields, and timestamps (stamped with now).
+                    if defaults.contains(&field.name)
+                        || field.field_type.name == crate::generator::rust_code::imports::DATE_TIME
+                    {
+                        field.field_type = optional(&field.field_type);
+                    }
+                }
                 guessed
+            }
+            // `id` absent: create; present: patch the fields given.
+            CallKind::SaveOrPatch => {
+                let mut fields = Vec::new();
+                for field in &entity_type.fields {
+                    if Some(field.name.as_str()) == owner {
+                        continue;
+                    }
+                    let field_type = if field.name == "id" {
+                        optional(&field.field_type)
+                    } else {
+                        RustType::generic("Option", vec![field.field_type.clone()], vec![])
+                    };
+                    fields.push(RustField { name: field.name.clone(), field_type });
+                }
+                RustType::generic("GuessedSaveOrPatchInput", vec![], fields)
             }
             CallKind::Patch => {
                 // `id` plus every other field as `Option`: absent fields
@@ -201,7 +230,7 @@ impl CodeGen {
             // that only surfaces once someone builds the generated crate
             // against the real `common` checkout. Catch it here instead,
             // with a message that says why. See doc/limitations.md.
-            if matches!(call_kind, CallKind::Upsert | CallKind::Patch | CallKind::List)
+            if matches!(call_kind, CallKind::Upsert | CallKind::Patch | CallKind::SaveOrPatch | CallKind::List)
                 && context.find_infra_target_address(&call.target).is_some()
                 && call_kind != CallKind::List
             {
@@ -216,7 +245,7 @@ impl CodeGen {
                     use_case.name, call.target
                 ));
             }
-            if matches!(call_kind, CallKind::Read | CallKind::Update | CallKind::Delete | CallKind::Patch)
+            if matches!(call_kind, CallKind::Read | CallKind::Update | CallKind::Delete | CallKind::Patch | CallKind::SaveOrPatch)
                 && let Some(id_field) = entity_type.fields.iter().find(|f| f.name == "id")
                 && id_field.field_type.name != "i64"
             {
@@ -379,6 +408,7 @@ impl CodeGen {
                     &primary_entity,
                     &use_case.filters,
                     use_case.owner.as_deref(),
+                    context.find_psql_default_fields(&resolved_calls.last().unwrap().infra_name),
                 );
                 let copy_id = matches!(primary_call_kind, CallKind::Create | CallKind::Update);
                 (guessed, copy_id)
@@ -1043,6 +1073,13 @@ impl CodeGen {
                 )?
                 .with_publish(context.has_events() && use_case.notifies())
                 .with_journal(Self::journal_use(context, &use_case, None, false)?)
+                .with_default_fields(
+                    use_case
+                        .calls
+                        .iter()
+                        .map(|c| (c.target.clone(), context.find_psql_default_fields(&c.target).to_vec()))
+                        .collect(),
+                )
                 .with_json_camel(context.json_camel());
 
                 file.write()?;

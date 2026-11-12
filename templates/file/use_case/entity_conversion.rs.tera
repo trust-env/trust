@@ -1,7 +1,7 @@
 impl From<{{ input_name }}> for {{ entity_type }} {
     fn from(input: {{ input_name }}) -> Self {
         Self {
-{% for f in fields %}            {{ f.name }}: {% if f.source == "input" %}input.{{ f.name }}{% elif f.source == "now" %}chrono::Utc::now(){% else %}Default::default(){% endif %},
+{% for f in fields %}            {{ f.name }}: {% if f.source == "input" %}input.{{ f.name }}{% elif f.source == "input_or_now" %}input.{{ f.name }}.unwrap_or_else(chrono::Utc::now){% elif f.source == "input_unwrap" %}input.{{ f.name }}.unwrap_or_default(){% elif f.source == "input_flatten" %}input.{{ f.name }}.flatten(){% elif f.source == "now" %}chrono::Utc::now(){% else %}Default::default(){% endif %},
 {% endfor %}        }
     }
 }

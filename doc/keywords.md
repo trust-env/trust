@@ -229,6 +229,11 @@ defaults). With `json_case: "camel"` the fields are camelCase too.
 ### Nested structs in entities
 A field whose type is another declared struct is stored as `JSONB`.
 
+### Number ranges
+`Int(1..4)`, `Float(0..60)`, `Int(0..)` — a number checked when decoded (a
+value out of bounds is a 422 naming the bound); the bounds also reach MCP /
+OpenAPI schemas.
+
 ### `Regex`
 A `String` validated against a pattern whenever it is decoded from JSON
 (request bodies, query strings): a mismatch is a 422.
@@ -337,6 +342,30 @@ infra EventInfra {
 
 Foreign keys and transactions need every infra involved on the same
 database.
+
+#### Creation defaults and stamps
+
+```tr
+psql {
+    entity: Task
+    defaults {
+        status: "todo"  priority: 3  energy: "medium"
+        domain: guess_domain(title, now())     // a function of an include: file
+    }
+    stamps { done_at: status == "done" }       // or: status in ["done", "archived"], status != "x"
+}
+```
+
+- `defaults {}` fill the fields a creation doesn't give (`save_one`,
+  `upsert_one`, `save_or_patch` without id, `get_or_default`): a literal
+  (checked against the field's type), `now()`, `today()`, or a call to a
+  `pub fn` of a `code { include: ... }` file, field arguments passed by
+  reference (`&entity.title`). The guessed input of a creation makes those
+  fields optional, and `DateTime` fields too (now when absent). The storage
+  exposes `apply_<entity>_defaults(&mut entity, &given_fields)`.
+- `stamps {}`: an `Option<DateTime>` (or `Option<Date>`) set to now when the
+  row starts matching the condition, kept while it does, cleared when it
+  stops — after every insert or update, in SQL.
 
 #### Shorthand forms
 
@@ -598,8 +627,8 @@ Notes:
   enum regardless of what you map, and (see [`status`](#status) below) their
   eventual HTTP status codes are hardcoded and **not** overridable.
 
-### `patch_one` and `upsert_one`
-Two more `call:` verbs on `psql` infras:
+### `patch_one`, `upsert_one` and `save_or_patch`
+More `call:` verbs on `psql` infras:
 
 - `patch_one` updates only the fields the request carries. Its guessed
   input is `id` plus every other field as `Option`; a missing field is left
@@ -607,8 +636,13 @@ Two more `call:` verbs on `psql` infras:
 - `upsert_one` inserts the entity, or updates the row with the same value
   of the infra's first `unique` key (a codegen error without one).
 
-Both honour `owner:` (an upsert never takes over someone else's row; it
-answers 404 instead).
+- `save_or_patch` creates without `id` (from the fields given and the
+  infra's `defaults {}`; a missing field without default is a
+  `MissingField` error, 422) and patches with one (`null` clears).
+
+All honour `owner:` (an upsert never takes over someone else's row; it
+answers 404 instead). Storages also offer `get_or_default(owner_field,
+owner)`: the owner's row, or a new unsaved one from the `defaults {}`.
 
 ### `transaction`
 `transaction: true` runs every `call:` of a use case — or the whole body of a
@@ -1039,6 +1073,12 @@ adapter Api { http { on: "..." auth: required resources { Tasks } routes { ... }
 | `update` | `Update{Entity}UseCase` (`update_one`) | `PUT /tasks/:id` |
 | `patch` | `Patch{Entity}UseCase` (`patch_one`) | `PATCH /tasks/:id` |
 | `delete` | `Delete{Entity}UseCase` (`delete`) | `DELETE /tasks/:id` |
+| `save` | `Save{Entity}UseCase` (`save_or_patch`) | `PUT /tasks` |
+
+`singleton` (with `owner`) makes a one-row-per-user resource: `get` answers
+`GET /settings` with the caller's row or one built from the defaults
+(`default { day_start: "08:00:00" }` adds to the infra's `defaults {}`),
+`upsert` writes it (`PUT /settings`); the infra gets `unique: [owner]`.
 
 The use cases are ordinary ones: `mcp { tools }` and `schedule` can name
 them. `name: Event` sets the singular of generated names
