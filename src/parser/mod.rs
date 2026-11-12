@@ -5,6 +5,7 @@ mod config;
 mod driver;
 mod import;
 mod mirror;
+mod notify;
 mod infra;
 mod plugin;
 mod resource;

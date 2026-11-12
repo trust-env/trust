@@ -64,6 +64,10 @@ impl CodeGen {
         tera_context.insert("infra", infra_name);
         tera_context.insert("name", &Self::http_client_struct_name(infra_name));
         tera_context.insert("ics", &cfg.ics.is_some());
+        tera_context.insert("notify", &false);
+        if let Some(notify) = &cfg.notify {
+            Self::notify_context(context, infra_name, notify, &mut tera_context)?;
+        }
         if let Some(ics) = &cfg.ics {
             ics.timezone_fallback.parse::<chrono_tz::Tz>().map_err(|_| {
                 format!("infra '{}': unknown timezone_fallback '{}' (use an IANA name such as \"Europe/Paris\")", infra_name, ics.timezone_fallback)
@@ -87,6 +91,95 @@ impl CodeGen {
         context.require_version_dependency("serde_json", "1");
         context.require_version_dependency_with_features("serde", "1", vec!["derive"]);
         context.register_http_client_module(module);
+        Ok(())
+    }
+
+    /// The template values of a notify-mode client (`notifications {}`, a
+    /// bot's channel).
+    fn notify_context(
+        context: &mut CodeGenContext,
+        infra_name: &str,
+        notify: &crate::parser::NotifyOptions,
+        tera_context: &mut tera::Context,
+    ) -> Result<(), String> {
+        use crate::generator::rust_code::env_template::to_rust_expr_lenient;
+        #[derive(serde::Serialize)]
+        struct ChannelView {
+            name: String,
+            label: String,
+            kind: String,
+            token: String,
+            chat: String,
+            api_url: String,
+            url: String,
+            format: String,
+        }
+        let setting = |c: &crate::parser::ChannelDeclaration, key: &str, default: &str| {
+            let value = c.settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone()).unwrap_or_else(|| default.to_string());
+            to_rust_expr_lenient(&value)
+        };
+        let channels: Vec<ChannelView> = notify
+            .channels
+            .iter()
+            .map(|c| ChannelView {
+                name: c.name.clone(),
+                label: c.name.to_snake_case(),
+                kind: c.kind.clone(),
+                token: setting(c, "token", ""),
+                chat: setting(c, "chat", ""),
+                api_url: setting(c, "api_url", "https://api.telegram.org"),
+                url: setting(c, "url", ""),
+                format: c.settings.iter().find(|(k, _)| k == "format").map(|(_, v)| v.clone()).unwrap_or_else(|| "json".to_string()),
+            })
+            .collect();
+        let quote = |names: &[String]| names.iter().map(|n| format!("{:?}", n)).collect::<Vec<_>>().join(", ");
+        let routing: Vec<(String, String)> = notify.routing.iter().map(|(kind, names)| (format!("{:?}", kind), quote(names))).collect();
+        tera_context.insert("notify", &true);
+        tera_context.insert("channels", &channels);
+        tera_context.insert("default_channels", &quote(&notify.default));
+        tera_context.insert("fallback", &notify.fallback);
+        tera_context.insert("routing", &routing);
+        tera_context.insert("record", &false);
+        if let Some(record) = &notify.record {
+            let entity_name = match context.find_infra_entity(record) {
+                Some(crate::parser::AllowedType::DefinedType(name)) => name.clone(),
+                _ => return Err(format!("notifications '{}': '{}' is not a psql infra", infra_name, record)),
+            };
+            let entity = context
+                .find_type(&entity_name)
+                .cloned()
+                .ok_or_else(|| format!("notifications '{}': unknown entity '{}'", infra_name, entity_name))?;
+            let mut required = vec!["id", "kind", "at", "channel", "text", "status", "error", "external_id"];
+            if let Some(owner) = &notify.record_owner {
+                required.push(owner.as_str());
+            }
+            for field in &required {
+                if !entity.fields.iter().any(|f| f.name == *field) {
+                    return Err(format!(
+                        "notifications '{}': entity '{}' needs a field '{}' (kind, at, channel, text, status, error, external_id and the owner)",
+                        infra_name, entity_name, field
+                    ));
+                }
+            }
+            if let Some(extra) = entity.fields.iter().find(|f| !required.contains(&f.name.as_str()) && !f.field_type.is_option()) {
+                return Err(format!(
+                    "notifications '{}': entity '{}' field '{}' must be optional (Trust only fills {})",
+                    infra_name,
+                    entity_name,
+                    extra.name,
+                    required.join(", ")
+                ));
+            }
+            let camel = context.json_camel();
+            let key = |name: &str| format!("{:?}", crate::generator::schema::wire_name(name, camel));
+            tera_context.insert("record", &true);
+            tera_context.insert("record_entity", &entity_name);
+            tera_context.insert("record_owner_key", &notify.record_owner.as_deref().map(key));
+            tera_context.insert("external_id_key", &key("external_id"));
+        }
+        context.needs_notify = true;
+        context.require_version_dependency("tracing", "0.1");
+        context.require_version_dependency_with_features("chrono", "0.4", vec!["serde"]);
         Ok(())
     }
 }

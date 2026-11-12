@@ -386,6 +386,20 @@ pub struct HttpClientInfraService {
     /// `ics_feed { ... }` — the URL serves an iCalendar feed, read with
     /// `occurrences(from, to)`.
     pub ics: Option<IcsOptions>,
+    /// Generated from `notifications {}` / a `bot`: the client sends on
+    /// these channels.
+    pub notify: Option<NotifyOptions>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotifyOptions {
+    pub channels: Vec<ChannelDeclaration>,
+    pub default: Vec<String>,
+    pub fallback: Option<String>,
+    pub routing: Vec<(String, Vec<String>)>,
+    /// The psql infra recording notifications, and its owner field.
+    pub record: Option<String>,
+    pub record_owner: Option<String>,
 }
 
 /// `${VAR}` templates, resolved at startup.
@@ -919,6 +933,53 @@ pub enum Ast {
     Map(MapDeclaration),
     /// Expanded into a use case before generation.
     Mirror(MirrorDeclaration),
+    /// Expanded into a notify-mode `http_client` infra before generation.
+    Channel(ChannelDeclaration),
+    Notifications(NotificationsDeclaration),
+    /// Expanded into a webhook use case and route before generation.
+    Bot(BotDeclaration),
+}
+
+/// `channel Telegram { telegram { token: "${TELEGRAM_BOT_TOKEN}" chat: "${TELEGRAM_CHAT_ID}" } }`
+/// or `channel Team { webhook { url: "${HOOK_URL}" format: discord } }`.
+#[derive(Debug, Clone)]
+pub struct ChannelDeclaration {
+    pub name: String,
+    /// `telegram` or `webhook`.
+    pub kind: String,
+    /// `${VAR}` templates (`token`, `chat`, `api_url`; `url`, `format`).
+    pub settings: Vec<(String, String)>,
+}
+
+/// `notifications Notify { infra: NotificationInfra default: Telegram fallback: log routing { brief: Telegram conflict: [Telegram, Sms] } }`.
+#[derive(Debug, Clone)]
+pub struct NotificationsDeclaration {
+    pub name: String,
+    /// Where sent notifications are recorded (`send_recorded`).
+    pub infra: Option<String>,
+    pub default: Vec<String>,
+    pub fallback: Option<String>,
+    /// Channels tried in order, per notification kind.
+    pub routing: Vec<(String, Vec<String>)>,
+}
+
+/// `bot TelegramBot { channel: Telegram path: "/webhooks/telegram" secret: "${...}" user: 1
+///     commands { journal: JournalUseCase } on_reply { review: JournalUseCase } default: CaptureUseCase reply: "{result.text}" }`.
+#[derive(Debug, Clone)]
+pub struct BotDeclaration {
+    pub name: String,
+    pub channel: String,
+    pub path: String,
+    pub secret: Option<String>,
+    pub user: i64,
+    /// `/name <text>` → the use case, with input `{ text }`.
+    pub commands: Vec<(String, String)>,
+    /// A reply to a recorded notification of that kind → the use case.
+    pub on_reply: Vec<(String, String)>,
+    /// Any other text (other commands are ignored).
+    pub default: Option<String>,
+    /// The acknowledgment sent back: `{result.<field>}` reads the use case output.
+    pub reply: Option<String>,
 }
 
 /// `mirror OutlookMirror { source: OutlookIcs into: EventInfra key: [...] scope {...} map {...} window {...} }`:

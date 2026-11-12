@@ -518,11 +518,11 @@ impl Parser {
             }
         }
         let base_url = base_url.ok_or("'http_client' block must declare 'base_url'")?;
-        Ok(HttpClientInfraService { base_url, headers, retry, timeout_secs, oauth2, ics: None })
+        Ok(HttpClientInfraService { base_url, headers, retry, timeout_secs, oauth2, ics: None, notify: None })
     }
 
     /// `{ key: "value" ... }` with string values, after its opening word.
-    fn try_string_map(&mut self, block: &str) -> Result<Vec<(String, String)>, String> {
+    pub(super) fn try_string_map(&mut self, block: &str) -> Result<Vec<(String, String)>, String> {
         if self.next_token() != Some(Token::OpenBrace) {
             return Err(format!("Expected '{{' after '{}'", block));
         }
@@ -574,6 +574,7 @@ impl Parser {
             retry: 0,
             timeout_secs: 30,
             oauth2: None,
+            notify: None,
             ics: Some(IcsOptions { timezone_fallback: "UTC".to_string(), include_all_day: false }),
         };
         let mut url = None;

@@ -414,9 +414,21 @@ impl Parser {
                 Some(Token::Keyword(Keyword::UseCase)) => {
                     match (self.next_token(), self.next_token()) {
                         (Some(Token::Colon), Some(Token::Identifier(name))) => spec.use_cases.push(name),
+                        // `use_case: [A, B]`, like `infra: [A, B]`.
+                        (Some(Token::Colon), Some(Token::OpenBracket)) => loop {
+                            match self.next_token() {
+                                Some(Token::CloseBracket) => break,
+                                Some(Token::Comma) => continue,
+                                Some(Token::Identifier(name)) => spec.use_cases.push(name),
+                                _ => {
+                                    self.reset(pos);
+                                    return Err("Expected use case names in 'use_case: [...]' in 'code' block".to_string());
+                                }
+                            }
+                        },
                         _ => {
                             self.reset(pos);
-                            return Err("Expected ': <UseCase>' after 'use_case' in 'code' block".to_string());
+                            return Err("Expected ': <UseCase>' or ': [A, B]' after 'use_case' in 'code' block".to_string());
                         }
                     }
                 }
