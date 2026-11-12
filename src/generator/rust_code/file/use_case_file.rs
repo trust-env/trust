@@ -153,6 +153,8 @@ pub struct UseCaseFile {
     /// Announce successful runs to `events:` streams.
     publish: bool,
     journal: Option<crate::generator::journal::JournalUse>,
+    /// `output:` keeping some of the entity's fields (and `action_id`).
+    output_projection: Option<RustType>,
     /// Fields with a `defaults {}` entry, per infra.
     default_fields: std::collections::HashMap<String, Vec<String>>,
     /// `config { json_case: "camel" }`.
@@ -188,6 +190,7 @@ impl UseCaseFile {
             publish: false,
             json_camel: false,
             journal: None,
+            output_projection: None,
             default_fields: std::collections::HashMap::new(),
         })
     }
@@ -204,6 +207,11 @@ impl UseCaseFile {
             self.transaction = true;
         }
         self.journal = journal;
+        self
+    }
+
+    pub fn with_output_projection(mut self, projection: Option<RustType>) -> Self {
+        self.output_projection = projection;
         self
     }
 
@@ -378,6 +386,27 @@ impl UseCaseFile {
 
     fn gen_output_struct(&self) -> String {
         let primary = self.primary();
+        if let Some(projection) = &self.output_projection {
+            let entity = primary.entity_type.to_call_string(Vec::new());
+            let mut code = String::from("#[derive(Debug, Clone, serde::Serialize)]\n");
+            if self.json_camel {
+                code.push_str("#[serde(rename_all = \"camelCase\")]\n");
+            }
+            code.push_str(&format!("/// `{}`, built from the {}.\npub struct {} {{\n", projection.name, entity, self.output_name()));
+            for f in &projection.fields {
+                code.push_str(&format!("    pub {}: {},\n", f.name, f.field_type.to_call_string(Vec::new())));
+            }
+            code.push_str(&format!("}}\n\nimpl From<{}> for {} {{\n    fn from(entity: {}) -> Self {{\n        Self {{\n", entity, self.output_name(), entity));
+            for f in &projection.fields {
+                if primary.entity_type.fields.iter().any(|e| e.name == f.name) {
+                    code.push_str(&format!("            {}: entity.{},\n", f.name, f.name));
+                } else {
+                    code.push_str(&format!("            {}: Default::default(),\n", f.name));
+                }
+            }
+            code.push_str("        }\n    }\n}\n\n");
+            return code;
+        }
         let entity_type = primary.entity_type.to_call_string(Vec::new());
         let is_list = primary.call_kind == CallKind::List;
         let field_name = if is_list {

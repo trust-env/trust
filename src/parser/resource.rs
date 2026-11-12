@@ -253,8 +253,10 @@ impl Parser {
     /// right-hand side isn't a derived type (a plain alias then).
     pub(super) fn try_derived_declaration(&mut self, name: &str) -> Result<Option<Ast>, String> {
         let pos = self.current;
-        match self.tokens.get(self.current).map(|t| &t.value) {
-            Some(Token::Identifier(kind)) if kind == "Omit" || kind == "Pick" || kind == "Partial" => {}
+        match (self.tokens.get(self.current).map(|t| &t.value), self.tokens.get(self.current + 1).map(|t| &t.value)) {
+            (Some(Token::Identifier(kind)), _) if kind == "Omit" || kind == "Pick" || kind == "Partial" => {}
+            // `type X = Task + { ... }`.
+            (Some(Token::Identifier(_)), Some(Token::Plus)) => {}
             _ => return Ok(None),
         }
         let base = self.try_derived_type()?;

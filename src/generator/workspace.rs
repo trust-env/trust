@@ -161,6 +161,16 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
         }
     }
 
+    // A `map` touching a type this app uses brings its other side along.
+    for ast in asts {
+        if let Ast::Map(map) = ast
+            && (type_names.contains(&map.from) || type_names.contains(&map.to))
+        {
+            type_names.insert(map.from.clone());
+            type_names.insert(map.to.clone());
+        }
+    }
+
     // Recursively close over struct field / type-alias references, since a
     // declared type can itself reference other declared types.
     let mut worklist: Vec<String> = type_names.iter().cloned().collect();
@@ -205,6 +215,7 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
             // Expanded before partitioning.
             Ast::Resource(_) | Ast::InfraSet(..) => false,
             Ast::Journal(_) => true,
+            Ast::Map(m) => type_names.contains(&m.from) && type_names.contains(&m.to),
             Ast::App(a) => a.name == app.name,
             Ast::Adapter(a) => adapter_names.contains(&a.name),
             Ast::UseCase(u) => use_case_names.contains(&u.name),

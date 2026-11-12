@@ -358,7 +358,12 @@ impl CodeGen {
         for job in &schedule.jobs {
             let cron = crate::cron::parse(&job.cron)
                 .map_err(|e| format!("schedule '{}': {}", schedule.name, e))?;
-            let tz = job.tz.clone().or_else(|| schedule.tz.clone()).unwrap_or_else(|| "UTC".to_string());
+            let tz = job
+                .tz
+                .clone()
+                .or_else(|| schedule.tz.clone())
+                .or_else(|| context.app_tz().map(str::to_string))
+                .unwrap_or_else(|| "UTC".to_string());
             tz.parse::<chrono_tz::Tz>().map_err(|_| {
                 format!("schedule '{}': unknown time zone '{}' (use an IANA name such as \"Europe/Paris\")", schedule.name, tz)
             })?;

@@ -3,6 +3,8 @@ pub mod app;
 pub mod desugar;
 pub mod domains;
 pub(crate) mod journal;
+mod maps;
+mod time;
 mod emit;
 pub mod import;
 pub mod infra;
@@ -193,6 +195,12 @@ pub struct CodeGenContext {
     shared_modules: Vec<(String, String)>,
     /// `config { json_case: "camel" }`.
     json_camel: bool,
+    /// `config { tz: "Europe/Paris" }`.
+    app_tz: Option<String>,
+    /// `config { locale: "fr" }`.
+    locale: Option<String>,
+    /// `map A -> B {}` declarations.
+    maps: Vec<crate::parser::MapDeclaration>,
     /// Some HTTP adapter of this crate declares `events:`, so use cases
     /// with `notify` publish to `crate::trust_publish`.
     has_events: bool,
@@ -249,6 +257,9 @@ impl CodeGenContext {
             needs_double_option: false,
             shared_modules: Vec::new(),
             json_camel: false,
+            app_tz: None,
+            locale: None,
+            maps: Vec::new(),
             has_events: false,
             databases: HashMap::new(),
             psql_databases: HashMap::new(),
@@ -306,6 +317,11 @@ impl CodeGenContext {
 
     pub fn json_camel(&self) -> bool {
         self.json_camel
+    }
+
+    /// The app's time zone (`config { tz }`), if any.
+    pub fn app_tz(&self) -> Option<&str> {
+        self.app_tz.as_deref()
     }
 
     pub fn has_events(&self) -> bool {
@@ -983,12 +999,22 @@ impl CodeGen {
                 Ast::Journal(journal) => {
                     context.journals.insert(journal.name.clone(), journal.clone());
                 }
+                Ast::Map(map) => context.maps.push(map.clone()),
                 Ast::Database(database) => {
                     context.databases.insert(database.name.clone(), database.clone());
                 }
                 Ast::Config(config) => {
                     if config.json_case.is_some() {
                         context.json_camel = config.json_case.as_deref() == Some("camel");
+                    }
+                    if let Some(tz) = &config.tz {
+                        tz.parse::<chrono_tz::Tz>().map_err(|_| {
+                            format!("config: unknown time zone '{}' (use an IANA name such as \"Europe/Paris\")", tz)
+                        })?;
+                        context.app_tz = Some(tz.clone());
+                    }
+                    if config.locale.is_some() {
+                        context.locale = config.locale.clone();
                     }
                     for (name, version) in &config.deps {
                         context.require_version_dependency(name, version);
@@ -1102,7 +1128,7 @@ impl CodeGen {
                 ),
                 Ast::TypeDecl(t) => self.gen_domain(&mut context, t, domain_path.clone()),
                 // Generated with the app that runs them.
-                Ast::App(_) | Ast::Schedule(_) | Ast::Config(_) | Ast::Include(_) | Ast::Database(_) | Ast::Resource(_) | Ast::InfraSet(..) | Ast::Journal(_) => Ok(()),
+                Ast::App(_) | Ast::Schedule(_) | Ast::Config(_) | Ast::Include(_) | Ast::Database(_) | Ast::Resource(_) | Ast::InfraSet(..) | Ast::Journal(_) | Ast::Map(_) => Ok(()),
                 Ast::Plugin(plugin_ast) => self.generate_plugin(
                     &mut context,
                     plugin_ast,
@@ -1250,6 +1276,12 @@ impl CodeGen {
         }
         if self.write_journal_module(&mut context, &src_path)? {
             lib_mods.push("trust_journal".to_string());
+        }
+        if crate::generator::time::write_time_module(&mut context, &src_path)? {
+            lib_mods.push("trust_time".to_string());
+        }
+        if crate::generator::maps::write_maps_module(&mut context, &src_path)? {
+            lib_mods.push("trust_maps".to_string());
         }
         // Typed list queries, named by every storage trait.
         if !context.infra_entity_modules.is_empty() || !context.grpc_client_entity_modules.is_empty() {

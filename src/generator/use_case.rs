@@ -34,6 +34,9 @@ pub(super) struct UseCaseShape {
     pub owner: Option<String>,
     /// Validated `order_by:` entries of a `list` primary call.
     pub order_by: Vec<crate::parser::OrderBy>,
+    /// `output:` naming a type other than the entity: some of its fields
+    /// (same types) plus, on a journaled use case, `action_id`.
+    pub output_projection: Option<RustType>,
 }
 
 impl CodeGen {
@@ -415,13 +418,44 @@ impl CodeGen {
             }
         };
 
+        let mut output_projection = None;
         if let Some(output) = &use_case.output {
             let declared_output_type = self.resolve_named_type(context, output)?;
             if primary_entity.name != declared_output_type.name {
-                return Err(format!(
-                    "UseCase '{}': output type '{}' does not match entity type '{}' returned by the last call ('{}')",
-                    use_case.name, declared_output_type.name, primary_entity.name, resolved_calls.last().unwrap().infra_name
-                ));
+                let mismatch = |why: String| {
+                    format!(
+                        "UseCase '{}': output type '{}' does not match entity type '{}' returned by the last call ('{}'): {}",
+                        use_case.name, declared_output_type.name, primary_entity.name, resolved_calls.last().unwrap().infra_name, why
+                    )
+                };
+                if primary_call_kind == CallKind::List {
+                    return Err(mismatch("a list returns the entities themselves".to_string()));
+                }
+                for field in &declared_output_type.fields {
+                    let wanted = field.field_type.to_call_string(Vec::new());
+                    if field.name == "action_id" && use_case.journal.is_some() {
+                        continue;
+                    }
+                    match primary_entity.fields.iter().find(|f| f.name == field.name) {
+                        Some(f) if f.field_type.to_call_string(Vec::new()) == wanted => {}
+                        Some(f) => {
+                            return Err(mismatch(format!(
+                                "field '{}' is {} in the output but {} in the entity",
+                                field.name,
+                                wanted,
+                                f.field_type.to_call_string(Vec::new())
+                            )));
+                        }
+                        None => {
+                            return Err(mismatch(format!(
+                                "the entity has no field '{}' (an output may keep some of the entity's fields{})",
+                                field.name,
+                                if use_case.journal.is_some() { ", plus action_id" } else { "; with journal:, plus action_id" }
+                            )));
+                        }
+                    }
+                }
+                output_projection = Some(declared_output_type);
             }
         }
 
@@ -432,6 +466,7 @@ impl CodeGen {
             filters: use_case.filters.clone(),
             owner: use_case.owner.clone(),
             order_by: use_case.order_by.clone(),
+            output_projection,
         }))
     }
 
@@ -610,6 +645,29 @@ impl CodeGen {
             } else {
                 primary.entity_type.name.to_snake_case()
             };
+            if let Some(projection) = &shape.output_projection {
+                context.register_use_case_io(
+                    use_case.name.clone(),
+                    UseCaseIo {
+                        input_type_name: format!("{}Input", use_case.name),
+                        input_fields: Self::field_docs(&shape.input_type.fields),
+                        output_type_name: format!("{}Output", use_case.name),
+                        output_entity: projection.name.clone(),
+                        output_fields: Self::field_docs(&projection.fields),
+                        output_is_list: false,
+                        output_wrapper_field: None,
+                        requires_user: shape.owner.is_some(),
+                        raw_input: false,
+                        input_serde: FieldSerde::of_fields(&shape.input_type.fields),
+                        input_type: RustType {
+                            name: format!("{}Input", use_case.name),
+                            ..shape.input_type.clone()
+                        },
+                        output_type: RustType { name: format!("{}Output", use_case.name), ..projection.clone() },
+                    },
+                );
+                return Ok(());
+            }
             context.register_use_case_io(
                 use_case.name.clone(),
                 UseCaseIo {
@@ -1045,6 +1103,14 @@ impl CodeGen {
                 {
                     context.require_double_option();
                 }
+                let mut shape = shape;
+                if let Some(tz) = context.app_tz() {
+                    for filter in &mut shape.filters {
+                        if filter.source == crate::parser::FilterSource::Today(None) {
+                            filter.source = crate::parser::FilterSource::Today(Some(tz.to_string()));
+                        }
+                    }
+                }
                 for filter in &shape.filters {
                     match &filter.source {
                         crate::parser::FilterSource::Now | crate::parser::FilterSource::Today(None) => {
@@ -1060,6 +1126,7 @@ impl CodeGen {
                         _ => {}
                     }
                 }
+                let journal = Self::journal_use(context, &use_case, shape.output_projection.as_ref(), false)?;
                 let mut file = UseCaseFile::new(
                     use_case.name.clone(),
                     shape.input_type,
@@ -1072,7 +1139,8 @@ impl CodeGen {
                     folder,
                 )?
                 .with_publish(context.has_events() && use_case.notifies())
-                .with_journal(Self::journal_use(context, &use_case, None, false)?)
+                .with_journal(journal)
+                .with_output_projection(shape.output_projection)
                 .with_default_fields(
                     use_case
                         .calls
