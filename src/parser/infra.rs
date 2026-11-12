@@ -1,7 +1,7 @@
 use crate::{
     lexer::{Keyword, Token},
     parser::{
-        Ast, DefaultArg, DefaultValue, ForeignKey, GrpcClientInfraService, Stamp, GrpcClientMethodMapping, HttpClientInfraService, InfraService,
+        Ast, DefaultArg, DefaultValue, ForeignKey, GrpcClientInfraService, Stamp, GrpcClientMethodMapping, HttpClientInfraService, IcsOptions, InfraService, OAuth2Config,
         InfraServiceType, InfraServiceType::Storage, Parser, PsqlInfraService, S3InfraService,
         StorageType, StorageType::Psql,
     },
@@ -460,6 +460,7 @@ impl Parser {
         let mut headers = Vec::new();
         let mut retry = 0;
         let mut timeout_secs = 30;
+        let mut oauth2 = None;
         loop {
             match self.next_token() {
                 Some(Token::CloseBrace) => break,
@@ -512,11 +513,92 @@ impl Parser {
                         timeout_secs = value.max(1);
                     }
                 }
+                Some(Token::Identifier(k)) if k == "oauth2" => oauth2 = Some(self.try_oauth2_body()?),
                 _ => return Err("Unexpected token in 'http_client' block".to_string()),
             }
         }
         let base_url = base_url.ok_or("'http_client' block must declare 'base_url'")?;
-        Ok(HttpClientInfraService { base_url, headers, retry, timeout_secs })
+        Ok(HttpClientInfraService { base_url, headers, retry, timeout_secs, oauth2, ics: None })
+    }
+
+    /// `{ key: "value" ... }` with string values, after its opening word.
+    fn try_string_map(&mut self, block: &str) -> Result<Vec<(String, String)>, String> {
+        if self.next_token() != Some(Token::OpenBrace) {
+            return Err(format!("Expected '{{' after '{}'", block));
+        }
+        let mut entries = Vec::new();
+        loop {
+            match self.next_token() {
+                Some(Token::CloseBrace) => return Ok(entries),
+                Some(Token::Comma) => continue,
+                Some(Token::Identifier(key)) => match (self.next_token(), self.next_token()) {
+                    (Some(Token::Colon), Some(Token::StringLiteral(value))) => entries.push((key, value)),
+                    (Some(Token::Colon), Some(Token::Identifier(value))) => entries.push((key, value)),
+                    _ => return Err(format!("{}: expected ': \"<value>\"' after '{}'", block, key)),
+                },
+                other => return Err(format!("{}: unexpected {:?}", block, other)),
+            }
+        }
+    }
+
+    /// `oauth2 { token_url: "..." client_id: "..." client_secret: "..." refresh_token: "..." }`.
+    fn try_oauth2_body(&mut self) -> Result<OAuth2Config, String> {
+        let entries = self.try_string_map("oauth2")?;
+        let get = |key: &str| {
+            entries
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .ok_or_else(|| format!("oauth2 must declare '{}'", key))
+        };
+        if let Some((unknown, _)) =
+            entries.iter().find(|(k, _)| !["token_url", "client_id", "client_secret", "refresh_token"].contains(&k.as_str()))
+        {
+            return Err(format!("oauth2: unknown key '{}' (known: token_url, client_id, client_secret, refresh_token)", unknown));
+        }
+        Ok(OAuth2Config {
+            token_url: get("token_url")?,
+            client_id: get("client_id")?,
+            client_secret: get("client_secret")?,
+            refresh_token: get("refresh_token")?,
+        })
+    }
+
+    /// `ics_feed { url: "${ICS_URL}" timezone_fallback: "Europe/Paris" all_day: skip retry: 3 timeout: 30 }`
+    /// — an `http_client` reading an iCalendar feed.
+    fn infra_ics_feed_body(&mut self) -> Result<HttpClientInfraService, String> {
+        let entries = self.try_string_map("ics_feed")?;
+        let mut client = HttpClientInfraService {
+            base_url: String::new(),
+            headers: Vec::new(),
+            retry: 0,
+            timeout_secs: 30,
+            oauth2: None,
+            ics: Some(IcsOptions { timezone_fallback: "UTC".to_string(), include_all_day: false }),
+        };
+        let mut url = None;
+        for (key, value) in entries {
+            let ics = client.ics.as_mut().expect("set above");
+            match key.as_str() {
+                "url" => url = Some(value),
+                "timezone_fallback" => ics.timezone_fallback = value,
+                "all_day" if value == "skip" || value == "include" => ics.include_all_day = value == "include",
+                "all_day" => return Err("ics_feed: expected all_day: skip | include".to_string()),
+                "retry" | "timeout" => {
+                    let n = value.parse::<u64>().map_err(|_| format!("ics_feed: expected {}: <number>", key))?;
+                    if key == "retry" {
+                        client.retry = n.min(10) as u32;
+                    } else {
+                        client.timeout_secs = n.max(1);
+                    }
+                }
+                other => {
+                    return Err(format!("ics_feed: unknown key '{}' (known: url, timezone_fallback, all_day, retry, timeout)", other));
+                }
+            }
+        }
+        client.base_url = url.ok_or("'ics_feed' block must declare 'url'")?;
+        Ok(client)
     }
 
     fn infra_content(&mut self) -> Result<InfraServiceType, String> {
@@ -538,6 +620,9 @@ impl Parser {
                 }
                 Some(Token::Identifier(k)) if k == "http_client" => {
                     res = Some(InfraServiceType::HttpClient(self.infra_http_client_body()?))
+                }
+                Some(Token::Identifier(k)) if k == "ics_feed" => {
+                    res = Some(InfraServiceType::HttpClient(self.infra_ics_feed_body()?))
                 }
                 _ => {
                     self.revert(i + 1);

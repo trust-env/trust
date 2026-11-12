@@ -97,8 +97,10 @@ impl CodeGen {
                 // directly into the generated code, not an env-var-driven
                 // URL — nothing to scaffold here for them.
                 InfraKind::GrpcClient { .. } => {}
-                InfraKind::HttpClient { base_url, headers } => {
-                    let templates = std::iter::once(base_url).chain(headers.iter().map(|(_, v)| v));
+                InfraKind::HttpClient { base_url, headers, oauth2 } => {
+                    let templates = std::iter::once(base_url)
+                        .chain(headers.iter().map(|(_, v)| v))
+                        .chain(oauth2.iter().flatten());
                     for template in templates {
                         for var in env_template::extract_vars(template) {
                             let value = env_template::var_default(template, &var).unwrap_or_else(|| "changeme".to_string());
@@ -161,6 +163,9 @@ impl CodeGen {
                 kind: InfraKind::HttpClient {
                     base_url: cfg.base_url.clone(),
                     headers: cfg.headers.clone(),
+                    oauth2: cfg.oauth2.as_ref().map(|o| {
+                        vec![o.token_url.clone(), o.client_id.clone(), o.client_secret.clone(), o.refresh_token.clone()]
+                    }),
                 },
             });
             return Ok(());

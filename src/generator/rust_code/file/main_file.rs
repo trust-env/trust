@@ -39,6 +39,8 @@ pub enum InfraKind {
     HttpClient {
         base_url: String,
         headers: Vec<(String, String)>,
+        /// `oauth2 {}`: token_url, client_id, client_secret, refresh_token.
+        oauth2: Option<Vec<String>>,
     },
 }
 
@@ -207,7 +209,7 @@ impl MainFile {
                 context.insert("bucket_literal", &format!("{:?}", bucket));
                 render("file/main/s3_infra.rs.tera", &context)
             }
-            InfraKind::HttpClient { base_url, headers } => {
+            InfraKind::HttpClient { base_url, headers, oauth2 } => {
                 #[derive(serde::Serialize)]
                 struct HeaderView {
                     name: String,
@@ -226,6 +228,10 @@ impl MainFile {
                 context.insert("name", &format!("{}Client", infra.infra_name));
                 context.insert("base_url_expr", &env_template::to_rust_expr_lenient(base_url));
                 context.insert("headers", &headers);
+                context.insert(
+                    "oauth2",
+                    &oauth2.as_ref().map(|values| values.iter().map(|v| env_template::to_rust_expr_lenient(v)).collect::<Vec<_>>()),
+                );
                 render("file/main/http_client_infra.rs.tera", &context)
             }
         }

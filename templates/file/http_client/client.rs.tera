@@ -11,6 +11,10 @@ pub struct {{ name }} {
     client: reqwest::Client,
     base_url: String,
     headers: reqwest::header::HeaderMap,
+    /// `oauth2 {}`: (token_url, client_id, client_secret, refresh_token).
+    oauth2: Option<std::sync::Arc<(String, String, String, String)>>,
+    /// The current access token and when it expires.
+    token: std::sync::Arc<tokio::sync::Mutex<Option<(String, std::time::Instant)>>>,
 }
 
 /// Extra attempts after a transient failure.
@@ -34,7 +38,65 @@ impl {{ name }} {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
             headers: header_map,
+            oauth2: None,
+            token: Default::default(),
         })
+    }
+
+    /// Every request carries a bearer token obtained from `refresh_token`
+    /// at `token_url` (renewed a minute before it expires, or after a 401).
+    pub fn with_oauth2(mut self, token_url: String, client_id: String, client_secret: String, refresh_token: String) -> Self {
+        self.oauth2 = Some(std::sync::Arc::new((token_url, client_id, client_secret, refresh_token)));
+        self
+    }
+
+    /// The base URL (and the `oauth2 {}` values) are set: a source left
+    /// unconfigured (an empty `${VAR}`) can be skipped.
+    pub fn is_configured(&self) -> bool {
+        !self.base_url.trim().is_empty()
+            && self.oauth2.as_ref().is_none_or(|o| [&o.0, &o.1, &o.2, &o.3].iter().all(|v| !v.trim().is_empty()))
+    }
+
+    /// The current access token, refreshed when missing or about to expire.
+    pub async fn access_token(&self) -> Result<Option<String>, String> {
+        let Some(oauth2) = &self.oauth2 else { return Ok(None) };
+        let mut token = self.token.lock().await;
+        if let Some((value, expires)) = token.as_ref() {
+            if *expires > std::time::Instant::now() {
+                return Ok(Some(value.clone()));
+            }
+        }
+        let (token_url, client_id, client_secret, refresh_token) = oauth2.as_ref();
+        if [token_url, client_id, client_secret, refresh_token].iter().any(|v| v.trim().is_empty()) {
+            return Err(format!("{} is not configured (oauth2)", "{{ infra }}"));
+        }
+        let form = [
+            ("grant_type", "refresh_token"),
+            ("client_id", client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
+            ("refresh_token", refresh_token.as_str()),
+        ];
+        let response = self
+            .client
+            .post(token_url)
+            .form(&form)
+            .send()
+            .await
+            .map_err(|e| format!("{} token request failed: {}", "{{ infra }}", e))?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(format!("{} token endpoint responded {}: {}", "{{ infra }}", status, body));
+        }
+        let json: serde_json::Value =
+            serde_json::from_str(&body).map_err(|e| format!("{} token response is not JSON: {}", "{{ infra }}", e))?;
+        let value = json["access_token"]
+            .as_str()
+            .ok_or_else(|| format!("{} token response has no access_token: {}", "{{ infra }}", body))?
+            .to_string();
+        let lifetime = json["expires_in"].as_u64().unwrap_or(3600).saturating_sub(60).max(30);
+        *token = Some((value.clone(), std::time::Instant::now() + std::time::Duration::from_secs(lifetime)));
+        Ok(Some(value))
     }
 
     /// `base_url` + `path`; an empty path is `base_url` itself, and a full
@@ -61,10 +123,14 @@ impl {{ name }} {
     /// response status and body text. Non-2xx statuses are errors.
     pub async fn send_raw(&self, request: reqwest::RequestBuilder) -> Result<(reqwest::StatusCode, String), String> {
         let mut attempt = 0;
+        let mut renewed = false;
         loop {
-            let this_try = request
+            let mut this_try = request
                 .try_clone()
                 .ok_or_else(|| format!("{} request body can't be retried", "{{ infra }}"))?;
+            if let Some(token) = self.access_token().await? {
+                this_try = this_try.bearer_auth(token);
+            }
             let outcome = this_try.send().await;
             let transient = match &outcome {
                 Err(error) => error.is_connect() || error.is_timeout() || error.is_request(),
@@ -79,6 +145,12 @@ impl {{ name }} {
             }
             let response = outcome.map_err(|e| format!("{} request failed: {}", "{{ infra }}", e))?;
             let status = response.status();
+            if status == reqwest::StatusCode::UNAUTHORIZED && self.oauth2.is_some() && !renewed {
+                // The token was revoked or expired early: renew it once.
+                *self.token.lock().await = None;
+                renewed = true;
+                continue;
+            }
             let body = response
                 .text()
                 .await
@@ -116,6 +188,60 @@ impl {{ name }} {
         self.send(self.client.delete(self.url(path))).await
     }
 
+    /// Every item of a paginated JSON list: GETs `path`, reads the array at
+    /// `items_key`, and follows the token at `next_key` (sent back as the
+    /// query parameter `next_key` without its `next` prefix:
+    /// `nextPageToken` → `pageToken`) until there is none.
+    pub async fn get_json_paged<T: DeserializeOwned>(&self, path: &str, items_key: &str, next_key: &str) -> Result<Vec<T>, String> {
+        let param = match next_key.strip_prefix("next") {
+            Some(rest) if !rest.is_empty() => {
+                let mut chars = rest.chars();
+                chars.next().map(|c| c.to_ascii_lowercase().to_string() + chars.as_str()).unwrap_or_default()
+            }
+            _ => next_key.to_string(),
+        };
+        self.get_json_paged_with(path, items_key, next_key, &param).await
+    }
+
+    /// `get_json_paged` with an explicit query parameter for the token.
+    pub async fn get_json_paged_with<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        items_key: &str,
+        next_key: &str,
+        param: &str,
+    ) -> Result<Vec<T>, String> {
+        let mut items = Vec::new();
+        let mut next: Option<String> = None;
+        for _ in 0..1000 {
+            let url = match &next {
+                None => path.to_string(),
+                Some(token) => {
+                    let separator = if path.contains('?') { '&' } else { '?' };
+                    let encoded: String = token
+                        .bytes()
+                        .map(|b| match b {
+                            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+                            other => format!("%{:02X}", other),
+                        })
+                        .collect();
+                    format!("{}{}{}={}", path, separator, param, encoded)
+                }
+            };
+            let mut page: serde_json::Value = self.get_json(&url).await?;
+            if let Some(array) = page.get_mut(items_key).map(serde_json::Value::take) {
+                let page_items: Vec<T> = serde_json::from_value(if array.is_null() { serde_json::json!([]) } else { array })
+                    .map_err(|e| format!("{} '{}' items are not the expected JSON: {}", "{{ infra }}", items_key, e))?;
+                items.extend(page_items);
+            }
+            match page.get(next_key).and_then(|v| v.as_str()).filter(|t| !t.is_empty()) {
+                Some(token) => next = Some(token.to_string()),
+                None => return Ok(items),
+            }
+        }
+        Err(format!("{} returned more than 1000 pages", "{{ infra }}"))
+    }
+
     /// The response body as text (an ICS feed, HTML, CSV, ...).
     pub async fn get_text(&self, path: &str) -> Result<String, String> {
         self.send_raw(self.request(reqwest::Method::GET, path)).await.map(|(_, body)| body)
@@ -127,3 +253,36 @@ impl {{ name }} {
         self.send(self.client.post(self.url(path)).form(form)).await
     }
 }
+{% if ics %}
+impl {{ name }} {
+    /// The feed's occurrences overlapping `[from, to)`: recurring events
+    /// expanded (RRULE, EXDATE, moved occurrences), cancelled ones dropped,
+    /// all-day events {% if ics_all_day %}spanning local midnights{% else %}skipped{% endif %}. Times without an IANA
+    /// TZID read as {{ ics_fallback }}.
+    pub async fn occurrences(
+        &self,
+        from: chrono::DateTime<chrono::Utc>,
+        to: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<crate::IcsOccurrence>, String> {
+        let (occurrences, warnings) = self.occurrences_with_warnings(from, to).await?;
+        for warning in warnings {
+            tracing::warn!(feed = "{{ infra }}", %warning, "ics feed");
+        }
+        Ok(occurrences)
+    }
+
+    /// `occurrences`, and what couldn't be read (an unreadable RRULE keeps
+    /// its first occurrence only).
+    pub async fn occurrences_with_warnings(
+        &self,
+        from: chrono::DateTime<chrono::Utc>,
+        to: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(Vec<crate::IcsOccurrence>, Vec<String>), String> {
+        let text = self.get_text("").await?;
+        if !text.contains("BEGIN:VCALENDAR") {
+            return Err(format!("{} does not serve an iCalendar feed", "{{ infra }}"));
+        }
+        Ok(crate::trust_ics_occurrences(&text, from, to, "{{ ics_fallback }}", {{ ics_all_day }}))
+    }
+}
+{% endif %}

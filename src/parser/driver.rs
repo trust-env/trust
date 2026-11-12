@@ -20,6 +20,7 @@ impl Parser {
             Some(Token::Identifier(word)) if word == "schedule" => self.try_schedule_declaration(),
             Some(Token::Identifier(word)) if word == "config" => self.try_config_declaration(),
             Some(Token::Identifier(word)) if word == "map" => self.try_map_declaration(),
+            Some(Token::Identifier(word)) if word == "mirror" => self.try_mirror_declaration(),
             Some(Token::Identifier(word)) if word == "database" => self.try_database_declaration(),
             Some(Token::Identifier(word)) if word == "resource" => self.try_resource_declaration(),
             Some(Token::Identifier(word)) if word == "infra_set" => self.try_infra_set(),

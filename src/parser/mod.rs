@@ -4,6 +4,7 @@ pub mod ast;
 mod config;
 mod driver;
 mod import;
+mod mirror;
 mod infra;
 mod plugin;
 mod resource;

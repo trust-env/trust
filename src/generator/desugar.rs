@@ -156,6 +156,243 @@ fn expand(resource: &ResourceDeclaration, entity: &str, entity_type: &str) -> (V
     (use_cases, types, routes)
 }
 
+/// What a mirror needs to know about the project.
+struct MirrorEnv<'a> {
+    infra_entities: &'a HashMap<String, String>,
+    infra_owners: &'a HashMap<String, String>,
+    ics_infras: Vec<String>,
+    use_cases: Vec<String>,
+    struct_fields: HashMap<String, Vec<String>>,
+    app_tz: Option<String>,
+}
+
+/// `mirror Name {...}`: a `code` use case `{Name}UseCase` (input
+/// `{Name}Request { days }`, output `MirrorReport`).
+fn mirror_use_case(mirror: &crate::parser::MirrorDeclaration, env: &MirrorEnv) -> Result<(UseCaseService, Ast), String> {
+    use crate::parser::{MapValue, MirrorScope};
+    use heck::ToSnakeCase;
+    let err = |what: String| format!("mirror '{}': {}", mirror.name, what);
+    let entity = env
+        .infra_entities
+        .get(&mirror.into)
+        .ok_or_else(|| err(format!("'{}' is not a psql infra", mirror.into)))?;
+    let fields = env.struct_fields.get(entity).cloned().unwrap_or_default();
+    let owner = env.infra_owners.get(&mirror.into).cloned();
+    for (field, _) in mirror.map.iter() {
+        if !fields.contains(field) {
+            return Err(err(format!("'{}' has no field '{}'", entity, field)));
+        }
+        if Some(field) == owner.as_ref() {
+            return Err(err(format!("'{}' is the owner: it is the user running the mirror", field)));
+        }
+    }
+    for field in mirror.key.iter().chain(mirror.scope.iter().map(|(f, _)| f)) {
+        if !fields.contains(field) {
+            return Err(err(format!("'{}' has no field '{}'", entity, field)));
+        }
+    }
+    let key_fields: Vec<&String> = mirror.key.iter().filter(|k| Some(*k) != owner.as_ref()).collect();
+    for key in &key_fields {
+        if !mirror.map.iter().any(|(f, _)| f == *key) {
+            return Err(err(format!("key field '{}' must be set by map {{}}", key)));
+        }
+    }
+
+    let into = mirror.into.to_snake_case();
+    let source_is_infra = env.ics_infras.contains(&mirror.source);
+    let source_is_use_case = env.use_cases.contains(&mirror.source);
+    if !source_is_infra && !source_is_use_case {
+        return Err(err(format!(
+            "source '{}' must be an ics_feed infra or a use case whose output has 'items'",
+            mirror.source
+        )));
+    }
+    let source = mirror.source.to_snake_case();
+    let (configured, items) = if source_is_infra {
+        (
+            format!("self.{}.is_configured()", source),
+            format!("self.{}.occurrences(from, to).await?", source),
+        )
+    } else {
+        (
+            "true".to_string(),
+            format!(
+                "{{
+            let source_input = serde_json::from_value(serde_json::json!({{ \"from\": from, \"to\": to }}))
+                .map_err(|e| format!(\"{source_name} input: {{}}\", e))?;
+            self.{source}.execute(user, source_input).await.map_err(|e| format!(\"{source_name}: {{:?}}\", e))?.items
+        }}",
+                source = source,
+                source_name = mirror.source
+            ),
+        )
+    };
+
+    let zone = mirror.window_zone.clone().or_else(|| env.app_tz.clone());
+    if let Some(zone) = &zone {
+        zone.parse::<chrono_tz::Tz>().map_err(|_| err(format!("unknown time zone '{}'", zone)))?;
+    }
+    let zone_expr = match &zone {
+        Some(zone) => format!("{:?}.parse::<chrono_tz::Tz>().expect(\"time zone checked by trust\")", zone),
+        None => "chrono_tz::UTC".to_string(),
+    };
+    let from_expr = match mirror.window_from.as_str() {
+        "now" => "chrono::Utc::now()".to_string(),
+        which => format!(
+            "{{
+        use chrono::{{Datelike, TimeZone}};
+        let zone = {zone};
+        let today = chrono::Utc::now().with_timezone(&zone).date_naive();
+        let day = {day};
+        zone.from_local_datetime(&day.and_time(chrono::NaiveTime::MIN))
+            .earliest()
+            .map(|t| t.with_timezone(&chrono::Utc))
+            .unwrap_or_else(chrono::Utc::now)
+    }}",
+            zone = zone_expr,
+            day = if which == "week_start" {
+                "today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64)"
+            } else {
+                "today"
+            }
+        ),
+    };
+
+    let mut scope = String::new();
+    for (field, rule) in &mirror.scope {
+        scope.push_str(&match rule {
+            MirrorScope::Equals(serde_json::Value::String(text)) => format!(".eq({:?}, {:?})", field, text),
+            MirrorScope::Equals(other) => format!(".eq({:?}, {:?})", field, other.to_string()),
+            MirrorScope::After(from) => format!(".gt({:?}, {}.to_rfc3339())", field, if *from { "from" } else { "to" }),
+            MirrorScope::Before(from) => format!(".lt({:?}, {}.to_rfc3339())", field, if *from { "from" } else { "to" }),
+        });
+    }
+    let mut inits = String::new();
+    for (field, value) in &mirror.map {
+        let expr = match value {
+            MapValue::Path(path) => format!("TrustMirrorInto::trust_into(item.{}.clone())", path.join(".")),
+            MapValue::Literal(v) => format!(
+                "serde_json::from_str({:?}).map_err(|e| format!(\"map: '{}': {{}}\", e))?",
+                v.to_string(),
+                field
+            ),
+        };
+        inits.push_str(&format!("                {}: {},\n", field, expr));
+    }
+    if let Some(owner) = &owner {
+        inits.push_str(&format!("                {}: user,\n", owner));
+    }
+    let key_of = |var: &str| {
+        format!(
+            "format!(\"{{:?}}\", ({}))",
+            key_fields.iter().map(|k| format!("&{}.{},", var, k)).collect::<String>()
+        )
+    };
+    let (owner_filter, owner_arg) = match &owner {
+        Some(owner) => (format!(".eq({:?}, user)", owner), format!("Some({:?})", owner)),
+        None => (String::new(), "None".to_string()),
+    };
+    let body = format!(
+        r#"// Converts a source value into a field: as is, or into an Option.
+trait TrustMirrorInto<T> {{
+    fn trust_into(self) -> T;
+}}
+impl<T> TrustMirrorInto<T> for T {{
+    fn trust_into(self) -> T {{
+        self
+    }}
+}}
+impl<T> TrustMirrorInto<Option<T>> for T {{
+    fn trust_into(self) -> Option<T> {{
+        Some(self)
+    }}
+}}
+let days = input.days.unwrap_or({days}).clamp(1, 366);
+let from = {from_expr};
+let to = from + chrono::Duration::days(days);
+if !{configured} {{
+    return Ok(MirrorReport {{ configured: false, written: 0, removed: 0, error: None }});
+}}
+let outcome: Result<(i64, i64), String> = async {{
+    let items = {items};
+    let mut keep = std::collections::HashSet::new();
+    let mut written = 0i64;
+    for item in items.iter() {{
+        #[allow(clippy::needless_update)]
+        let row = {entity} {{
+{inits}                ..Default::default()
+        }};
+        keep.insert({key_row});
+        if self.{into}.upsert_one(row, {owner_arg}).await.map_err(|e| format!("{{:?}}", e))?.is_some() {{
+            written += 1;
+        }}
+    }}
+    let local = self
+        .{into}
+        .query(Query::new(){owner_filter}{scope}.limit(100_000))
+        .await
+        .map_err(|e| format!("{{:?}}", e))?;
+    let mut removed = 0i64;
+    for row in local {{
+        if !keep.contains(&{key_local}) {{
+            self.{into}.delete(row.id).await.map_err(|e| format!("{{:?}}", e))?;
+            removed += 1;
+        }}
+    }}
+    Ok((written, removed))
+}}
+.await;
+if let Err(error) = &outcome {{
+    tracing::warn!(mirror = "{name}", %error, "mirror failed");
+}}
+Ok(match outcome {{
+    Ok((written, removed)) => MirrorReport {{ configured: true, written, removed, error: None }},
+    Err(error) => MirrorReport {{ configured: true, written: 0, removed: 0, error: Some(error) }},
+}})
+"#,
+        days = mirror.window_days,
+        from_expr = from_expr,
+        configured = configured,
+        items = items,
+        entity = entity,
+        inits = inits,
+        key_row = key_of("row"),
+        key_local = key_of("row"),
+        into = into,
+        owner_arg = owner_arg,
+        owner_filter = owner_filter,
+        scope = scope,
+        name = mirror.name,
+    );
+    let name = format!("{}UseCase", mirror.name);
+    let input = format!("{}Request", mirror.name);
+    let mut uc = use_case(name, &mirror.into, "list", None);
+    uc.calls.clear();
+    uc.input = Some(AllowedType::DefinedType(input.clone()));
+    uc.output = Some(AllowedType::DefinedType("MirrorReport".to_string()));
+    let mut infras = vec![mirror.into.clone()];
+    let mut use_cases = Vec::new();
+    if source_is_infra {
+        infras.push(mirror.source.clone());
+    } else {
+        use_cases.push(mirror.source.clone());
+    }
+    uc.code = Some(CodeSpec {
+        file: format!("(generated by trust for mirror {})", mirror.name),
+        infras,
+        use_cases,
+        deps: vec![("chrono-tz".to_string(), "0.10".to_string()), ("tracing".to_string(), "0.1".to_string())],
+        inline: Some(body),
+        ..Default::default()
+    });
+    let input_type = Ast::TypeDecl(TypeDeclaration::Struct(StructDeclaration {
+        name: input,
+        fields: vec![StructField { name: "days".to_string(), field_type: AllowedType::Option(Box::new(AllowedType::Int)) }],
+        export: None,
+    }));
+    Ok((uc, input_type))
+}
+
 pub fn desugar(asts: Vec<Ast>) -> Result<Vec<Ast>, String> {
     let mut infra_entities: HashMap<String, String> = HashMap::new();
     let mut infra_owners: HashMap<String, String> = HashMap::new();
@@ -180,6 +417,41 @@ pub fn desugar(asts: Vec<Ast>) -> Result<Vec<Ast>, String> {
         })
         .collect();
 
+    let mirror_env = MirrorEnv {
+        infra_entities: &infra_entities,
+        infra_owners: &infra_owners,
+        ics_infras: asts
+            .iter()
+            .filter_map(|ast| match ast {
+                Ast::Infra(i) if matches!(&i.service_type, InfraServiceType::HttpClient(c) if c.ics.is_some()) => Some(i.name.clone()),
+                _ => None,
+            })
+            .collect(),
+        use_cases: asts
+            .iter()
+            .filter_map(|ast| match ast {
+                Ast::UseCase(u) => Some(u.name.clone()),
+                _ => None,
+            })
+            .collect(),
+        struct_fields: asts
+            .iter()
+            .filter_map(|ast| match ast {
+                Ast::TypeDecl(TypeDeclaration::Struct(s)) => Some((s.name.clone(), s.fields.iter().map(|f| f.name.clone()).collect())),
+                _ => None,
+            })
+            .collect(),
+        app_tz: asts.iter().rev().find_map(|ast| match ast {
+            Ast::Config(c) => c.tz.clone(),
+            _ => None,
+        }),
+    };
+    let has_mirror_report = asts
+        .iter()
+        .any(|ast| matches!(ast, Ast::TypeDecl(TypeDeclaration::Struct(s)) if s.name == "MirrorReport"));
+    let mut mirror_report_added = false;
+    // (infra, key) of mirrors: the key becomes the infra's upsert key.
+    let mut mirror_keys: Vec<(String, Vec<String>)> = Vec::new();
     let mut resource_routes: HashMap<String, Vec<HttpRoute>> = HashMap::new();
     // (infra, owner, defaults) of singleton resources.
     let mut singletons: Vec<(String, String, Vec<(String, serde_json::Value)>)> = Vec::new();
@@ -221,6 +493,26 @@ pub fn desugar(asts: Vec<Ast>) -> Result<Vec<Ast>, String> {
                 resource_routes.insert(resource.name.clone(), routes);
             }
             Ast::InfraSet(..) => {}
+            Ast::Mirror(mirror) => {
+                let (uc, input) = mirror_use_case(&mirror, &mirror_env)?;
+                out.push(Ast::UseCase(uc));
+                out.push(input);
+                if !has_mirror_report && !mirror_report_added {
+                    mirror_report_added = true;
+                    let field = |name: &str, field_type: AllowedType| StructField { name: name.to_string(), field_type };
+                    out.push(Ast::TypeDecl(TypeDeclaration::Struct(StructDeclaration {
+                        name: "MirrorReport".to_string(),
+                        fields: vec![
+                            field("configured", AllowedType::Bool),
+                            field("written", AllowedType::Int),
+                            field("removed", AllowedType::Int),
+                            field("error", AllowedType::Option(Box::new(AllowedType::String))),
+                        ],
+                        export: None,
+                    })));
+                }
+                mirror_keys.push((mirror.into.clone(), mirror.key.clone()));
+            }
             other => out.push(other),
         }
     }
@@ -230,6 +522,12 @@ pub fn desugar(asts: Vec<Ast>) -> Result<Vec<Ast>, String> {
             // A singleton's infra: one row per owner, the resource's defaults.
             Ast::Infra(infra) => {
                 if let InfraServiceType::Storage(StorageType::Psql(psql)) = &mut infra.service_type {
+                    for (target, key) in &mirror_keys {
+                        if target == &infra.name && psql.unique.first() != Some(key) {
+                            psql.unique.retain(|existing| existing != key);
+                            psql.unique.insert(0, key.clone());
+                        }
+                    }
                     for (target, owner, defaults) in &singletons {
                         if target != &infra.name {
                             continue;

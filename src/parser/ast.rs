@@ -380,6 +380,31 @@ pub struct HttpClientInfraService {
     pub retry: u32,
     /// `timeout: 10` — seconds before a request gives up (30 by default).
     pub timeout_secs: u64,
+    /// `oauth2 { token_url client_id client_secret refresh_token }` — a
+    /// bearer token from a refresh token, renewed when it expires.
+    pub oauth2: Option<OAuth2Config>,
+    /// `ics_feed { ... }` — the URL serves an iCalendar feed, read with
+    /// `occurrences(from, to)`.
+    pub ics: Option<IcsOptions>,
+}
+
+/// `${VAR}` templates, resolved at startup.
+#[derive(Debug, Clone)]
+pub struct OAuth2Config {
+    pub token_url: String,
+    pub client_id: String,
+    pub client_secret: String,
+    pub refresh_token: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct IcsOptions {
+    /// Zone of times whose TZID isn't an IANA name (Outlook's Windows
+    /// names) and of floating times.
+    pub timezone_fallback: String,
+    /// `all_day: include` — all-day events as local-midnight spans
+    /// (skipped by default).
+    pub include_all_day: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -892,6 +917,39 @@ pub enum Ast {
     InfraSet(String, Vec<String>),
     Journal(JournalDeclaration),
     Map(MapDeclaration),
+    /// Expanded into a use case before generation.
+    Mirror(MirrorDeclaration),
+}
+
+/// `mirror OutlookMirror { source: OutlookIcs into: EventInfra key: [...] scope {...} map {...} window {...} }`:
+/// a use case copying a source's items into a psql infra over a time
+/// window — upserting on `key`, deleting the rows of `scope` the source no
+/// longer has — and reporting `{ configured, written, removed, error }`.
+#[derive(Debug, Clone)]
+pub struct MirrorDeclaration {
+    pub name: String,
+    /// An `ics_feed {}` infra, or a use case whose output has `items`.
+    pub source: String,
+    pub into: String,
+    pub key: Vec<String>,
+    pub scope: Vec<(String, MirrorScope)>,
+    /// `field: item.path | literal`.
+    pub map: Vec<(String, MapValue)>,
+    /// `now`, `today` or `week_start`.
+    pub window_from: String,
+    /// `week_start("Europe/Paris")` — the zone of `today` / `week_start`
+    /// (the app's `config { tz }`, else UTC).
+    pub window_zone: Option<String>,
+    pub window_days: i64,
+}
+
+#[derive(Debug, Clone)]
+pub enum MirrorScope {
+    Equals(serde_json::Value),
+    /// `field > window.from` (`true`) / `window.to` (`false`).
+    After(bool),
+    /// `field < window.from` / `window.to`.
+    Before(bool),
 }
 
 /// `map InboxItem -> Task { title: title  due: suggestion.due  status: "todo" }`:
