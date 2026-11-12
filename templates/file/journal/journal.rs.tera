@@ -150,8 +150,8 @@ pub async fn trust_write_{{ j.fn_name }}(tx: &TrustTx, user: i64, kind: &str, te
 }
 
 /// Undoes entry `id` of user `user` (or redoes it when already undone):
-/// every row it touched goes back to its state before (after). A row that
-/// changed since is a conflict{% if j.overwrite %} — overwritten here (`conflict: overwrite`){% endif %}.
+/// every row it touched goes back to its state before (after). A row already
+/// in that state is left alone; one in neither state is a conflict{% if j.overwrite %} — overwritten here (`conflict: overwrite`){% endif %}.
 pub async fn trust_toggle_{{ j.fn_name }}(tx: &TrustTx, user: i64, id: i64) -> Result<{{ j.entity }}, TrustToggleError> {
     let entry = sqlx::query_as::<_, (serde_json::Value, bool)>(
         "SELECT changes, undone FROM {{ j.table }} WHERE id = $1 AND {{ j.owner }} = $2 FOR UPDATE",
@@ -161,9 +161,31 @@ pub async fn trust_toggle_{{ j.fn_name }}(tx: &TrustTx, user: i64, id: i64) -> R
     let (changes, undone) = on_tx!(tx, entry, fetch_optional)?.ok_or(TrustToggleError::NotFound)?;
     let changes: Vec<TrustChange> = serde_json::from_value(changes).map_err(|e| TrustToggleError::Database(e.to_string()))?;
     let steps: Vec<&TrustChange> = if undone { changes.iter().collect() } else { changes.iter().rev().collect() };
+    // Where each row ends up: a row already there (e.g. a block another
+    // action deleted, when undoing its creation) is left alone, not a conflict.
+    let mut final_targets: Vec<(&str, i64, Option<&serde_json::Value>)> = Vec::new();
+    for change in &steps {
+        let target = if undone { change.after.as_ref() } else { change.before.as_ref() };
+        match final_targets.iter_mut().find(|(t, i, _)| *t == change.table.as_str() && *i == change.id) {
+            Some(entry) => entry.2 = target,
+            None => final_targets.push((change.table.as_str(), change.id, target)),
+        }
+    }
+    let mut settled: Vec<(&str, i64)> = Vec::new();
     for change in steps {
+        if settled.iter().any(|(t, i)| *t == change.table.as_str() && *i == change.id) {
+            continue;
+        }
         let (expected, target) = if undone { (&change.before, &change.after) } else { (&change.after, &change.before) };
         let current = current_row(tx, &change.table, change.id).await?;
+        let final_target = final_targets
+            .iter()
+            .find(|(t, i, _)| *t == change.table.as_str() && *i == change.id)
+            .and_then(|(_, _, target)| *target);
+        if current.as_ref() == final_target {
+            settled.push((change.table.as_str(), change.id));
+            continue;
+        }
 {%- if not j.overwrite %}
         if current.as_ref() != expected.as_ref() {
             return Err(TrustToggleError::Conflict(format!(
