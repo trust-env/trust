@@ -64,6 +64,8 @@ fn the_journal_module_writes_entries_and_toggles_them() {
     assert!(journal.contains(r#""requires_ack" => {"#), "{journal}");
     assert!(journal.contains(r#""tasks" => Some("user_id, title"),"#), "{journal}");
     assert!(journal.contains("changed since this action"), "{journal}");
+    // A row already where the toggle would put it is not a conflict.
+    assert!(journal.contains("if current.as_ref() == final_target {"), "{journal}");
 
     let adapter = p.read("main/src/adapters/http/api.rs");
     assert!(adapter.contains(r#".route("/actions/{id}/toggle", post(Self::toggle_actions_use_case_post))"#), "{adapter}");
