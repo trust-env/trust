@@ -159,6 +159,11 @@ pub struct ConfigDeclaration {
     /// `deps { name: "version" }` — crates every app of the project gets
     /// (for code shared by several `code {}` bodies).
     pub deps: Vec<(String, String)>,
+    /// `tz: "Europe/Paris"` — the app's time zone: `crate::tz::*` helpers,
+    /// and the default of `today()` filters and `schedule`s.
+    pub tz: Option<String>,
+    /// `locale: "fr"` (or `"en"`) — `crate::fmt::*` date and plural helpers.
+    pub locale: Option<String>,
 }
 
 /// One `rpc Name { input: X output: Y use_case: Z }` inside a `grpc {
@@ -886,6 +891,25 @@ pub enum Ast {
     /// several infras in `code { infra: ... }`. Expanded before generation.
     InfraSet(String, Vec<String>),
     Journal(JournalDeclaration),
+    Map(MapDeclaration),
+}
+
+/// `map InboxItem -> Task { title: title  due: suggestion.due  status: "todo" }`:
+/// a conversion, generated as `Task::from_inbox_item(&item)` /
+/// `item.to_task()`. Unlisted fields take the target's `defaults {}` (or
+/// their type's default).
+#[derive(Debug, Clone)]
+pub struct MapDeclaration {
+    pub from: String,
+    pub to: String,
+    pub fields: Vec<(String, MapValue)>,
+}
+
+#[derive(Debug, Clone)]
+pub enum MapValue {
+    /// A field of the source, possibly nested (`suggestion.domain`).
+    Path(Vec<String>),
+    Literal(serde_json::Value),
 }
 
 /// `journal Actions { infra: ActionInfra owner: user_id undo: "/actions/:id/toggle" conflict: refuse }`:

@@ -511,6 +511,17 @@ Sets output type. Determined by the **last** declared `call` if multiple
 calls are present (see [`call`](#call) below), or inferred if omitted.
 Authoritative for the same reason as `input`.
 
+On a `call:` use case, `output:` may also name a type keeping some of the
+entity's fields (same types) — and, with `journal:`, an `action_id`
+(`Int` / `Option<Int>`) filled with the entry written:
+
+```tr
+type SaveTaskResult = Omit<Task, user_id> + { action_id: Option<Int> }
+use_case SaveTaskUseCase { call: TaskInfra.save_or_patch output: SaveTaskResult journal: Actions }
+```
+
+The response is then that type, flat, instead of `{ "task": { ... } }`.
+
 ### `call`
 Binds use case logic to infra operations.
 
@@ -1091,6 +1102,7 @@ Structs computed from another one, with optional extra fields:
 ```tr
 type NewTask = Omit<Task, id, user_id, done_at>
 type TaskDraft = Partial<Omit<Task, user_id>> + { clear: Option<List<String>> }
+type TaskWithAction = Task + { action_id: Option<Int> }
 ```
 
 `Omit<T, a, b>` drops fields, `Pick<T, a, b>` keeps only those,
@@ -1139,6 +1151,47 @@ several `code {}` bodies).
 `json_case: "camel"` renames every generated JSON field to camelCase
 (`weekly_budget_h` → `weeklyBudgetH`) in requests, responses, query strings
 and JSONB columns. Path parameters keep the names written in the route.
+
+`tz: "Europe/Paris"` is the app's time zone: `today()` in `filters {}` and
+psql `defaults {}`, and `schedule`s without their own `tz`, use it. Code
+gets `crate::tz::*`:
+
+| Helper | |
+|---|---|
+| `now_local()`, `today()` | now / today in the zone |
+| `local(t)`, `local_date(t)`, `local_time(t)` | an instant seen in the zone |
+| `local_to_utc(naive)`, `at(date, time)`, `midnight(date)` | a wall-clock time as an instant — an ambiguous time (clocks back) is its first occurrence, a time in the gap (clocks forward) keeps the offset before it (02:30 → 03:30) |
+| `day_bounds(date)`, `week_start(t)`, `week_bounds(t)` | `[start, end)` instants of a local day / Monday-based week |
+
+`locale: "fr"` (or `"en"`) adds `crate::fmt::*`, in the app's zone (UTC
+without `tz`), taking a `DateTime<Utc>`, a `NaiveDateTime` or a `NaiveDate`:
+
+- `fmt_date(t, "EEEE d MMMM")` → "mardi 10 novembre"; `EEE dd/MM H:mm` →
+  "mar. 10/11 14:30" (`EEEE`/`EEE` weekday, `d`/`dd`, `M`/`MM`/`MMM`/`MMMM`,
+  `yy`/`yyyy`, `H`/`HH`, `mm`, `ss`, `'literal'`);
+- `fmt_time(t)` → "14h30", "9h" (en: "14:30");
+- `fmt_relative_day(t)` → "aujourd'hui", "demain", the weekday within the
+  week, "en retard" before today, else the date;
+- `plural(n, "réunion", "réunions")` → "1 réunion", "3 réunions" (0 and 1
+  are singular in French).
+
+### `map`
+A conversion between two types:
+
+```tr
+map InboxItem -> Task {
+    title: title
+    domain: suggestion.domain        // nested fields; through an Option too
+    due: suggestion.due
+    source: source                   // T into an Option<T> field: Some(...)
+    note: "from the inbox"           // literals
+}
+```
+
+generates `Task::from_inbox_item(&item)`, `item.to_task()` and
+`From<&InboxItem> for Task`. Unlisted fields take the target's psql
+`defaults {}`, else their type's default. Types must match; an optional
+value can't fill a required field.
 
 ### `schedule`
 Runs use cases on a timer, inside the app that lists the schedule in its

@@ -96,9 +96,15 @@ impl PsqlStorageFile {
         mut self,
         defaults: &[(String, crate::parser::DefaultValue)],
         stamps: &[crate::parser::Stamp],
+        local_tz: bool,
     ) -> Result<Self, String> {
         for (field, value) in defaults {
-            self.defaults.push(DefaultView { field: field.clone(), expr: default_expr(&self.entity, field, value)? });
+            let mut expr = default_expr(&self.entity, field, value)?;
+            if local_tz {
+                // `today()` is the app's local date (`config { tz }`).
+                expr = expr.replace("chrono::Utc::now().date_naive()", "crate::tz::today()");
+            }
+            self.defaults.push(DefaultView { field: field.clone(), expr });
         }
         for stamp in stamps {
             self.stamps.push(StampView { set_sql: stamp_set_sql(&self.entity, stamp)? });
@@ -203,7 +209,7 @@ pub struct StampView {
     pub set_sql: String,
 }
 
-fn literal_expr(entity: &str, field: &str, t: &RustType, value: &serde_json::Value) -> Result<String, String> {
+pub(crate) fn literal_expr(entity: &str, field: &str, t: &RustType, value: &serde_json::Value) -> Result<String, String> {
     use serde_json::Value;
     if t.is_option() {
         return match value {

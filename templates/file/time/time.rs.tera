@@ -1,0 +1,236 @@
+//! Local time in {{ tz }} (`config { tz }`){% if locale %} and dates / plurals in "{{ locale }}" (`config { locale }`){% endif %}.
+
+pub mod tz {
+    use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Offset, TimeZone, Utc};
+    pub use chrono_tz::Tz;
+
+    /// The app's time zone.
+    pub fn zone() -> Tz {
+        static ZONE: std::sync::LazyLock<Tz> =
+            std::sync::LazyLock::new(|| "{{ tz }}".parse().expect("time zone checked by trust"));
+        *ZONE
+    }
+
+    /// Now, in the app's time zone.
+    pub fn now_local() -> DateTime<Tz> {
+        Utc::now().with_timezone(&zone())
+    }
+
+    /// Today's date in the app's time zone.
+    pub fn today() -> NaiveDate {
+        now_local().date_naive()
+    }
+
+    /// An instant in the app's time zone.
+    pub fn local(t: DateTime<Utc>) -> DateTime<Tz> {
+        t.with_timezone(&zone())
+    }
+
+    /// The local date of an instant.
+    pub fn local_date(t: DateTime<Utc>) -> NaiveDate {
+        local(t).date_naive()
+    }
+
+    /// The local wall-clock time of an instant.
+    pub fn local_time(t: DateTime<Utc>) -> NaiveTime {
+        local(t).time()
+    }
+
+    /// A local wall-clock time as an instant. When clocks go back, an
+    /// ambiguous time is its first occurrence; when they go forward, a time
+    /// inside the gap keeps the offset in effect before it (02:30 → 03:30).
+    pub fn local_to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
+        let zone = zone();
+        match zone.from_local_datetime(&naive) {
+            chrono::LocalResult::Single(t) => t.with_timezone(&Utc),
+            chrono::LocalResult::Ambiguous(first, _) => first.with_timezone(&Utc),
+            chrono::LocalResult::None => {
+                let before = zone
+                    .from_local_datetime(&(naive - Duration::hours(3)))
+                    .earliest()
+                    .map(|t| t.offset().fix().local_minus_utc())
+                    .unwrap_or(0);
+                Utc.from_utc_datetime(&(naive - Duration::seconds(before as i64)))
+            }
+        }
+    }
+
+    /// `date` at local time `time`, as an instant.
+    pub fn at(date: NaiveDate, time: NaiveTime) -> DateTime<Utc> {
+        local_to_utc(date.and_time(time))
+    }
+
+    /// Local midnight starting `date`, as an instant.
+    pub fn midnight(date: NaiveDate) -> DateTime<Utc> {
+        at(date, NaiveTime::MIN)
+    }
+
+    /// The instants starting `date` and the next day (local midnights).
+    pub fn day_bounds(date: NaiveDate) -> (DateTime<Utc>, DateTime<Utc>) {
+        (midnight(date), midnight(date + Duration::days(1)))
+    }
+
+    /// The Monday of `t`'s local week.
+    pub fn week_start(t: DateTime<Utc>) -> NaiveDate {
+        let date = local_date(t);
+        date - Duration::days(date.weekday().num_days_from_monday() as i64)
+    }
+
+    /// The instants starting `t`'s local week (Monday 00:00) and the next.
+    pub fn week_bounds(t: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
+        let start = week_start(t);
+        (midnight(start), midnight(start + Duration::days(7)))
+    }
+}
+{% if locale %}
+pub mod fmt {
+    use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Utc};
+
+    /// What the helpers format: an instant (shown in the app's time zone),
+    /// a local date-time or a date.
+    pub trait LocalDateTime {
+        fn local_naive(&self) -> NaiveDateTime;
+    }
+    impl LocalDateTime for DateTime<Utc> {
+        fn local_naive(&self) -> NaiveDateTime {
+            crate::tz::local(*self).naive_local()
+        }
+    }
+    impl LocalDateTime for DateTime<chrono_tz::Tz> {
+        fn local_naive(&self) -> NaiveDateTime {
+            self.with_timezone(&crate::tz::zone()).naive_local()
+        }
+    }
+    impl LocalDateTime for NaiveDateTime {
+        fn local_naive(&self) -> NaiveDateTime {
+            *self
+        }
+    }
+    impl LocalDateTime for NaiveDate {
+        fn local_naive(&self) -> NaiveDateTime {
+            self.and_time(NaiveTime::MIN)
+        }
+    }
+    impl<T: LocalDateTime> LocalDateTime for &T {
+        fn local_naive(&self) -> NaiveDateTime {
+            (*self).local_naive()
+        }
+    }
+{% if locale == "fr" %}
+    const DAYS: [&str; 7] = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"];
+    const DAYS_SHORT: [&str; 7] = ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."];
+    const MONTHS: [&str; 12] = [
+        "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+    ];
+    const MONTHS_SHORT: [&str; 12] =
+        ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
+    const TODAY: &str = "aujourd'hui";
+    const TOMORROW: &str = "demain";
+    const OVERDUE: &str = "en retard";
+{% else %}
+    const DAYS: [&str; 7] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    const DAYS_SHORT: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const MONTHS: [&str; 12] = [
+        "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December",
+    ];
+    const MONTHS_SHORT: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const TODAY: &str = "today";
+    const TOMORROW: &str = "tomorrow";
+    const OVERDUE: &str = "overdue";
+{% endif %}
+    /// Formats with a pattern: `EEEE` weekday, `EEE` short weekday, `d` /
+    /// `dd` day, `M` / `MM` month number, `MMM` short month, `MMMM` month,
+    /// `yy` / `yyyy` year, `H` / `HH` hour, `mm` minutes, `ss` seconds;
+    /// `'text'` is literal and anything else is copied.
+    /// `fmt_date(t, "EEEE d MMMM")` → "mardi 10 novembre".
+    pub fn fmt_date(t: impl LocalDateTime, pattern: &str) -> String {
+        let t = t.local_naive();
+        let chars: Vec<char> = pattern.chars().collect();
+        let mut out = String::new();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if c == '\'' {
+                i += 1;
+                if chars.get(i) == Some(&'\'') {
+                    out.push('\'');
+                    i += 1;
+                    continue;
+                }
+                while i < chars.len() && chars[i] != '\'' {
+                    out.push(chars[i]);
+                    i += 1;
+                }
+                i += 1;
+                continue;
+            }
+            let mut run = 1;
+            while chars.get(i + run) == Some(&c) {
+                run += 1;
+            }
+            let weekday = t.weekday().num_days_from_monday() as usize;
+            let month = t.month0() as usize;
+            match (c, run) {
+                ('E', 4..) => out.push_str(DAYS[weekday]),
+                ('E', _) => out.push_str(DAYS_SHORT[weekday]),
+                ('d', 1) => out.push_str(&t.day().to_string()),
+                ('d', _) => out.push_str(&format!("{:02}", t.day())),
+                ('M', 1) => out.push_str(&t.month().to_string()),
+                ('M', 2) => out.push_str(&format!("{:02}", t.month())),
+                ('M', 3) => out.push_str(MONTHS_SHORT[month]),
+                ('M', _) => out.push_str(MONTHS[month]),
+                ('y', 2) => out.push_str(&format!("{:02}", t.year() % 100)),
+                ('y', _) => out.push_str(&t.year().to_string()),
+                ('H', 1) => out.push_str(&t.hour().to_string()),
+                ('H', _) => out.push_str(&format!("{:02}", t.hour())),
+                ('m', 1) => out.push_str(&t.minute().to_string()),
+                ('m', _) => out.push_str(&format!("{:02}", t.minute())),
+                ('s', 1) => out.push_str(&t.second().to_string()),
+                ('s', _) => out.push_str(&format!("{:02}", t.second())),
+                (other, n) => out.extend(std::iter::repeat_n(other, n)),
+            }
+            i += run;
+        }
+        out
+    }
+
+    /// The time of day: {% if locale == "fr" %}"14h30", "9h" on the hour{% else %}"14:30"{% endif %}.
+    pub fn fmt_time(t: impl LocalDateTime) -> String {
+        let t = t.local_naive();
+{%- if locale == "fr" %}
+        if t.minute() == 0 {
+            format!("{}h", t.hour())
+        } else {
+            format!("{}h{:02}", t.hour(), t.minute())
+        }
+{%- else %}
+        format!("{}:{:02}", t.hour(), t.minute())
+{%- endif %}
+    }
+
+    /// A due day relative to today: today, tomorrow, the weekday name within
+    /// the week, overdue before today, else the date ("EEEE d MMMM").
+    pub fn fmt_relative_day(t: impl LocalDateTime) -> String {
+        let date = t.local_naive().date();
+        let days = (date - crate::tz::today()).num_days();
+        match days {
+            ..0 => OVERDUE.to_string(),
+            0 => TODAY.to_string(),
+            1 => TOMORROW.to_string(),
+            2..=6 => DAYS[date.weekday().num_days_from_monday() as usize].to_string(),
+            _ => fmt_date(date, "EEEE d MMMM"),
+        }
+    }
+
+    /// `plural(3, "meeting", "meetings")` → "3 meetings"{% if locale == "fr" %} (0 and 1 are singular in French){% endif %}.
+    pub fn plural(n: impl TryInto<i64>, one: &str, many: &str) -> String {
+        let n: i64 = n.try_into().unwrap_or(i64::MAX);
+{%- if locale == "fr" %}
+        let word = if n.abs() <= 1 { one } else { many };
+{%- else %}
+        let word = if n.abs() == 1 { one } else { many };
+{%- endif %}
+        format!("{} {}", n, word)
+    }
+}
+{% endif -%}
