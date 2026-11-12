@@ -525,9 +525,11 @@ infra OutlookIcs { ics_feed { url: "${OUTLOOK_ICS_URL}" timezone_fallback: "Euro
 overlapping `[from, to)`, sorted by start: RRULEs expanded (EXDATE
 honoured, a RECURRENCE-ID replaces its occurrence, cancelled events
 dropped), `instance_id` = the UID, plus `#<start in UTC>` for an
-occurrence of a recurring event. TZIDs that are IANA names are used; common
-Windows names (Outlook's "Romance Standard Time") are mapped; others, and
-floating times, read in `timezone_fallback` (UTC by default).
+occurrence of a recurring event. TZIDs that are IANA names are used;
+Windows names (Outlook writes the organizer's: "Romance Standard Time",
+"Azerbaijan Standard Time") are mapped with CLDR's full table; others, and
+floating times, read in `timezone_fallback` (UTC by default) — an unknown
+TZID is reported as a warning (logged by `occurrences`).
 `all_day: include` keeps all-day events as local-midnight spans (skipped by
 default). `occurrences_with_warnings` also returns what couldn't be read.
 Also takes `retry` and `timeout`. Pulls in `rrule`.
