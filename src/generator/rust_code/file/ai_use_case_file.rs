@@ -166,6 +166,7 @@ impl AiUseCaseFile {
         context.insert("user_param", "_user");
         context.insert("transaction", &false);
         context.insert("publish", &false);
+        context.insert("journal", &None::<String>);
         render("file/ai_use_case/impl.rs.tera", &context)
     }
 

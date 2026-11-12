@@ -58,6 +58,7 @@ pub struct CodeUseCaseFile {
     pub transaction: bool,
     /// Announce successful runs to `events:` streams.
     pub publish: bool,
+    pub journal: Option<crate::generator::journal::JournalUse>,
     /// `module:` — `body` is a whole module (`applications/<name>/logic.rs`)
     /// and `execute` calls its `execute(self, user, input)`.
     pub module: bool,
@@ -182,6 +183,7 @@ impl CodeUseCaseFile {
         context.insert("fields", &fields);
         context.insert("params", &params);
         context.insert("ctor_fields", &ctor_fields);
+        context.insert("journal_handle", &self.journal.is_some());
         render("file/code_use_case/struct.rs.tera", &context)
     }
 
@@ -232,6 +234,7 @@ impl CodeUseCaseFile {
         context.insert("generics", &self.generics());
         context.insert("where_clause", &self.where_clause());
         context.insert("accessors", &accessors);
+        context.insert("journal_handle", &self.journal.is_some());
         render("file/code_use_case/deps_trait.rs.tera", &context)
     }
 
@@ -273,8 +276,9 @@ impl CodeUseCaseFile {
                 storage: matches!(d, CodeDependency::Storage { .. }),
             })
             .collect();
-        context.insert("transaction", &self.transaction);
+        context.insert("transaction", &(self.transaction || self.journal.is_some()));
         context.insert("publish", &self.publish);
+        context.insert("journal", &self.journal);
         context.insert(
             "tx_first",
             &tx_fields.iter().find(|f| f.storage).map(|f| f.field.clone()).unwrap_or_default(),

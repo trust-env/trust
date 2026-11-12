@@ -1,0 +1,185 @@
+{%- macro bind(var, f) -%}
+{% if f.json == "plain" %}sqlx::types::Json({{ var }}.{{ f.name }}){% elif f.json == "nullable" %}{{ var }}.{{ f.name }}.map(sqlx::types::Json){% else %}{{ var }}.{{ f.name }}{% endif %}
+{%- endmacro bind -%}
+//! Undoable journals: entries written by `journal:` use cases, and undo /
+//! redo of an entry (every row it touched back to its state before / after),
+//! generic over tables through `to_jsonb` / `jsonb_populate_record`.
+
+use crate::{TrustChange, TrustJournal, TrustTx};
+{%- for j in journals %}
+use crate::{{ j.entity }};
+{%- endfor %}
+
+#[derive(Debug)]
+pub enum TrustToggleError {
+    NotFound,
+    /// A row changed since the entry: undoing would overwrite it.
+    Conflict(String),
+    Database(String),
+}
+
+impl From<sqlx::Error> for TrustToggleError {
+    fn from(error: sqlx::Error) -> Self {
+        TrustToggleError::Database(error.to_string())
+    }
+}
+
+/// Runs `$query.$fetch` on the shared transaction.
+macro_rules! on_tx {
+    ($tx:ident, $query:expr, $fetch:ident) => { {
+        let mut guard = $tx.lock().await;
+        match guard.as_mut() {
+            Some(conn) => $query.$fetch(&mut **conn).await,
+            None => Err(sqlx::Error::Protocol("transaction already finished".to_string())),
+        }
+    } };
+}
+
+/// `{input.x}` / `{output.a.b}` placeholders of a journal text.
+pub fn trust_journal_text(template: &str, input: &serde_json::Value, output: &serde_json::Value) -> String {
+    let mut text = String::new();
+    let mut rest = template;
+    while let Some(start) = rest.find('{') {
+        text.push_str(&rest[..start]);
+        let Some(end) = rest[start..].find('}') else {
+            text.push_str(&rest[start..]);
+            return text;
+        };
+        let path = &rest[start + 1..start + end];
+        let mut parts = path.split('.');
+        let root = match parts.next() {
+            Some("input") => Some(input),
+            Some("output") => Some(output),
+            _ => None,
+        };
+        let value = root.and_then(|mut v| {
+            for part in parts {
+                v = v.get(part)?;
+            }
+            Some(v)
+        });
+        match value {
+            Some(serde_json::Value::String(s)) => text.push_str(s),
+            Some(serde_json::Value::Null) | None => {}
+            Some(other) => text.push_str(&other.to_string()),
+        }
+        rest = &rest[start + end + 1..];
+    }
+    text.push_str(rest);
+    text
+}
+
+/// `table` → its columns but `id` (rows restored by undo / redo).
+fn restorable_columns(table: &str) -> Option<&'static str> {
+    match table {
+{%- for t in tables %}
+        "{{ t.table }}" => Some("{{ t.columns }}"),
+{%- endfor %}
+        _ => None,
+    }
+}
+
+async fn current_row(tx: &TrustTx, table: &str, id: i64) -> Result<Option<serde_json::Value>, sqlx::Error> {
+    let sql = format!("SELECT to_jsonb(t) FROM {} t WHERE id = $1", table);
+    let query = sqlx::query_scalar::<_, serde_json::Value>(sqlx::AssertSqlSafe(sql)).bind(id);
+    on_tx!(tx, query, fetch_optional)
+}
+
+/// Puts row `id` of `table` in `target` state (`None`: absent).
+async fn restore_row(tx: &TrustTx, table: &str, id: i64, current: Option<&serde_json::Value>, target: Option<&serde_json::Value>) -> Result<(), sqlx::Error> {
+    let columns = restorable_columns(table).ok_or_else(|| sqlx::Error::Protocol(format!("unknown journaled table {}", table)))?;
+    match (current, target) {
+        (_, None) => {
+            let sql = format!("DELETE FROM {} WHERE id = $1", table);
+            let query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(id);
+            on_tx!(tx, query, execute)?;
+        }
+        (None, Some(row)) => {
+            let sql = format!("INSERT INTO {t} (id, {c}) SELECT id, {c} FROM jsonb_populate_record(NULL::{t}, $1)", t = table, c = columns);
+            let query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(row.clone());
+            on_tx!(tx, query, execute)?;
+        }
+        (Some(_), Some(row)) => {
+            let sql = format!(
+                "UPDATE {t} SET ({c}) = (SELECT {c} FROM jsonb_populate_record(NULL::{t}, $1)) WHERE id = $2",
+                t = table,
+                c = columns
+            );
+            let query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(row.clone()).bind(id);
+            on_tx!(tx, query, execute)?;
+        }
+    }
+    Ok(())
+}
+{%- for j in journals %}
+
+/// Writes the entries `journal` collected (those that changed something)
+/// as `{{ j.entity }}` rows; returns the id of the last one.
+pub async fn trust_write_{{ j.fn_name }}(tx: &TrustTx, user: i64, kind: &str, text: &str, journal: &TrustJournal) -> Result<Option<i64>, sqlx::Error> {
+    let mut last = None;
+    for draft in journal.take() {
+        #[allow(unused_mut)]
+        let mut entry = {{ j.entity }} {
+            {{ j.owner }}: user,
+            kind: kind.to_string(),
+            text: draft.text.clone().unwrap_or_else(|| text.to_string()),
+            changes: serde_json::to_value(&draft.changes).unwrap_or_default(),
+            undone: false,
+            at: chrono::Utc::now(),
+            ..Default::default()
+        };
+        for (field, value) in draft.fields {
+            match field.as_str() {
+{%- for f in j.extra_fields %}
+                "{{ f }}" => {
+                    if let Ok(value) = serde_json::from_value(value) {
+                        entry.{{ f }} = value;
+                    }
+                }
+{%- endfor %}
+                _ => {}
+            }
+        }
+        let query = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO {{ j.table }} ({% for f in j.fields %}{{ f.name }}{% if not loop.last %}, {% endif %}{% endfor %}) VALUES ({% for f in j.fields %}${{ loop.index }}{% if not loop.last %}, {% endif %}{% endfor %}) RETURNING id",
+        ){% for f in j.fields %}
+        .bind({{ self::bind(var="entry", f=f) }}){% endfor %};
+        last = Some(on_tx!(tx, query, fetch_one)?);
+    }
+    Ok(last)
+}
+
+/// Undoes entry `id` of user `user` (or redoes it when already undone):
+/// every row it touched goes back to its state before (after). A row that
+/// changed since is a conflict{% if j.overwrite %} — overwritten here (`conflict: overwrite`){% endif %}.
+pub async fn trust_toggle_{{ j.fn_name }}(tx: &TrustTx, user: i64, id: i64) -> Result<{{ j.entity }}, TrustToggleError> {
+    let entry = sqlx::query_as::<_, (serde_json::Value, bool)>(
+        "SELECT changes, undone FROM {{ j.table }} WHERE id = $1 AND {{ j.owner }} = $2 FOR UPDATE",
+    )
+    .bind(id)
+    .bind(user);
+    let (changes, undone) = on_tx!(tx, entry, fetch_optional)?.ok_or(TrustToggleError::NotFound)?;
+    let changes: Vec<TrustChange> = serde_json::from_value(changes).map_err(|e| TrustToggleError::Database(e.to_string()))?;
+    let steps: Vec<&TrustChange> = if undone { changes.iter().collect() } else { changes.iter().rev().collect() };
+    for change in steps {
+        let (expected, target) = if undone { (&change.before, &change.after) } else { (&change.after, &change.before) };
+        let current = current_row(tx, &change.table, change.id).await?;
+{%- if not j.overwrite %}
+        if current.as_ref() != expected.as_ref() {
+            return Err(TrustToggleError::Conflict(format!(
+                "{} #{} changed since this action",
+                change.table, change.id
+            )));
+        }
+{%- else %}
+        let _ = expected;
+{%- endif %}
+        restore_row(tx, &change.table, change.id, current.as_ref(), target.as_ref()).await?;
+    }
+    let updated = sqlx::query_as::<_, {{ j.entity }}>(
+        "UPDATE {{ j.table }} SET undone = NOT undone WHERE id = $1 RETURNING {{ j.all_columns }}",
+    )
+    .bind(id);
+    Ok(on_tx!(tx, updated, fetch_one)?)
+}
+{%- endfor %}

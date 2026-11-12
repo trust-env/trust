@@ -590,6 +590,8 @@ impl Parser {
         let mut order_by = Vec::new();
         let mut transaction = false;
         let mut notify = None;
+        let mut journal = None;
+        let mut journal_text = None;
         let pos = self.current;
 
         loop {
@@ -648,6 +650,20 @@ impl Parser {
                 Some(Token::Identifier(k)) if k == "order_by" => {
                     order_by = self.try_order_by()?;
                 }
+                Some(Token::Identifier(k)) if k == "journal" => match (self.next_token(), self.next_token()) {
+                    (Some(Token::Colon), Some(Token::Identifier(v))) => journal = Some(v),
+                    _ => {
+                        self.reset(pos);
+                        return Err("Expected ': <Journal>' after 'journal'".to_string());
+                    }
+                },
+                Some(Token::Identifier(k)) if k == "text" => match (self.next_token(), self.next_token()) {
+                    (Some(Token::Colon), Some(Token::StringLiteral(v))) => journal_text = Some(v),
+                    _ => {
+                        self.reset(pos);
+                        return Err("Expected ': \"...\"' after 'text'".to_string());
+                    }
+                },
                 Some(Token::Identifier(k)) if k == "notify" => {
                     match (self.next_token(), self.next_token()) {
                         (Some(Token::Colon), Some(Token::Identifier(v))) if v == "true" || v == "false" => {
@@ -689,6 +705,8 @@ impl Parser {
             order_by,
             transaction,
             notify,
+            journal,
+            journal_text,
         })
     }
 

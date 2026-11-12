@@ -149,6 +149,7 @@ pub struct UseCaseFile {
     transaction: bool,
     /// Announce successful runs to `events:` streams.
     publish: bool,
+    journal: Option<crate::generator::journal::JournalUse>,
     /// `config { json_case: "camel" }`.
     json_camel: bool,
     file: File,
@@ -181,7 +182,17 @@ impl UseCaseFile {
             transaction,
             publish: false,
             json_camel: false,
+            journal: None,
         })
+    }
+
+    /// A journaled run (always in a transaction).
+    pub fn with_journal(mut self, journal: Option<crate::generator::journal::JournalUse>) -> Self {
+        if journal.is_some() {
+            self.transaction = true;
+        }
+        self.journal = journal;
+        self
     }
 
     pub fn with_publish(mut self, publish: bool) -> Self {
@@ -749,6 +760,7 @@ impl UseCaseFile {
             .collect();
         context.insert("transaction", &self.transaction);
         context.insert("publish", &self.publish);
+        context.insert("journal", &self.journal);
         context.insert("tx_first", &tx_fields.first().map(|f| f.field.clone()).unwrap_or_default());
         context.insert("tx_fields", &tx_fields);
         // Shares the exact same shape as the ai-use-case impl block.

@@ -1,7 +1,7 @@
 use crate::{
     lexer::{Keyword, Token},
     parser::{
-        Ast, DatabaseDeclaration, DerivedDeclaration, DerivedType, Parser, ResourceDeclaration,
+        Ast, DatabaseDeclaration, DerivedDeclaration, DerivedType, JournalDeclaration, Parser, ResourceDeclaration,
         ResourceOperation, TypeDeclaration,
     },
 };
@@ -9,6 +9,49 @@ use crate::{
 const OPERATIONS: &[&str] = &["list", "get", "create", "update", "patch", "upsert", "delete"];
 
 impl Parser {
+    /// `journal Actions { infra: ActionInfra owner: user_id undo: "/actions/:id/toggle" conflict: refuse }`.
+    pub(super) fn try_journal_declaration(&mut self) -> Result<Ast, String> {
+        let start = self.current;
+        let name = match (self.next_token(), self.next_token(), self.next_token()) {
+            (Some(Token::Identifier(kw)), Some(Token::Identifier(name)), Some(Token::OpenBrace)) if kw == "journal" => name,
+            _ => {
+                self.reset(start);
+                return Err("Expected 'journal <Name> {'".to_string());
+            }
+        };
+        let (mut infra, mut owner, mut undo_path, mut overwrite) = (None, None, None, false);
+        loop {
+            match self.next_token() {
+                Some(Token::CloseBrace) => break,
+                Some(Token::Comma) => continue,
+                Some(Token::Keyword(Keyword::Infra)) => match (self.next_token(), self.next_token()) {
+                    (Some(Token::Colon), Some(Token::Identifier(v))) => infra = Some(v),
+                    _ => return Err(format!("journal '{}': expected infra: <Infra>", name)),
+                },
+                Some(Token::Identifier(k)) if k == "owner" => match (self.next_token(), self.next_token()) {
+                    (Some(Token::Colon), Some(Token::Identifier(v))) => owner = Some(v),
+                    _ => return Err(format!("journal '{}': expected owner: <field>", name)),
+                },
+                Some(Token::Identifier(k)) if k == "undo" => match (self.next_token(), self.next_token()) {
+                    (Some(Token::Colon), Some(Token::StringLiteral(v))) => undo_path = Some(v),
+                    _ => return Err(format!("journal '{}': expected undo: \"/path/:id\"", name)),
+                },
+                Some(Token::Identifier(k)) if k == "conflict" => match (self.next_token(), self.next_token()) {
+                    (Some(Token::Colon), Some(Token::Identifier(v))) if v == "refuse" || v == "overwrite" => overwrite = v == "overwrite",
+                    _ => return Err(format!("journal '{}': expected conflict: refuse | overwrite", name)),
+                },
+                other => return Err(format!("journal '{}': unexpected {:?} (expected infra, owner, undo, conflict)", name, other)),
+            }
+        }
+        Ok(Ast::Journal(JournalDeclaration {
+            infra: infra.ok_or(format!("journal '{}' must declare 'infra'", name))?,
+            owner: owner.ok_or(format!("journal '{}' must declare 'owner'", name))?,
+            name,
+            undo_path,
+            overwrite,
+        }))
+    }
+
     /// `infra_set DayData { TaskInfra EventInfra }`.
     pub(super) fn try_infra_set(&mut self) -> Result<Ast, String> {
         let start = self.current;
@@ -78,6 +121,7 @@ impl Parser {
         let mut path = None;
         let mut owner = None;
         let mut singular = None;
+        let mut journal = None;
         let mut operations: Vec<ResourceOperation> = Vec::new();
         loop {
             match self.next_token() {
@@ -90,6 +134,10 @@ impl Parser {
                 Some(Token::Identifier(k)) if k == "path" => match (self.next_token(), self.next_token()) {
                     (Some(Token::Colon), Some(Token::StringLiteral(v))) => path = Some(v),
                     _ => return Err(format!("resource '{}': expected path: \"/...\"", name)),
+                },
+                Some(Token::Identifier(k)) if k == "journal" => match (self.next_token(), self.next_token()) {
+                    (Some(Token::Colon), Some(Token::Identifier(v))) => journal = Some(v),
+                    _ => return Err(format!("resource '{}': expected journal: <Journal>", name)),
                 },
                 Some(Token::Identifier(k)) if k == "name" => match (self.next_token(), self.next_token()) {
                     (Some(Token::Colon), Some(Token::Identifier(v))) => singular = Some(v),
@@ -145,7 +193,7 @@ impl Parser {
         if operations.is_empty() {
             return Err(format!("resource '{}' must declare at least one operation ({})", name, OPERATIONS.join(", ")));
         }
-        Ok(Ast::Resource(ResourceDeclaration { name, infra, path, owner, singular, operations }))
+        Ok(Ast::Resource(ResourceDeclaration { name, infra, path, owner, singular, journal, operations }))
     }
 
     /// After `type Name =`: `Omit<...>` / `Pick<...>` / `Partial<...>`.

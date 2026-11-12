@@ -204,6 +204,7 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
             Ast::Import(_) | Ast::Plugin(_) | Ast::Config(_) | Ast::Include(_) | Ast::Database(_) => true,
             // Expanded before partitioning.
             Ast::Resource(_) | Ast::InfraSet(..) => false,
+            Ast::Journal(_) => true,
             Ast::App(a) => a.name == app.name,
             Ast::Adapter(a) => adapter_names.contains(&a.name),
             Ast::UseCase(u) => use_case_names.contains(&u.name),
@@ -341,6 +342,8 @@ mod tests {
             order_by: vec![],
             transaction: false,
             notify: None,
+            journal: None,
+            journal_text: None,
         })
     }
 

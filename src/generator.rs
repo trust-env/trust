@@ -2,6 +2,7 @@ pub mod adapter;
 pub mod app;
 pub mod desugar;
 pub mod domains;
+pub(crate) mod journal;
 mod emit;
 pub mod import;
 pub mod infra;
@@ -201,6 +202,10 @@ pub struct CodeGenContext {
     psql_databases: HashMap<String, String>,
     /// Use cases each `code {}` use case runs (`code { use_case: X }`).
     use_case_deps: HashMap<String, Vec<String>>,
+    /// `journal {}` declarations, by name.
+    journals: HashMap<String, crate::parser::JournalDeclaration>,
+    /// The journal each use case writes to (`journal: X`).
+    use_case_journals: HashMap<String, String>,
 }
 
 impl CodeGenContext {
@@ -246,7 +251,40 @@ impl CodeGenContext {
             databases: HashMap::new(),
             psql_databases: HashMap::new(),
             use_case_deps: HashMap::new(),
+            journals: HashMap::new(),
+            use_case_journals: HashMap::new(),
         }
+    }
+
+    pub fn find_journal(&self, name: &str) -> Option<&crate::parser::JournalDeclaration> {
+        self.journals.get(name)
+    }
+
+    /// The journal a use case writes to.
+    pub fn find_use_case_journal(&self, use_case: &str) -> Option<&crate::parser::JournalDeclaration> {
+        self.use_case_journals.get(use_case).and_then(|j| self.journals.get(j))
+    }
+
+    /// Entities stored by this crate's psql infras.
+    pub fn psql_entity_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .infra_entities
+            .iter()
+            .filter(|(infra, _)| !self.infra_target_addresses.contains_key(*infra))
+            .filter_map(|(_, entity)| match entity {
+                AllowedType::DefinedType(name) => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    pub fn journal_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.journals.keys().cloned().collect();
+        names.sort();
+        names
     }
 
     pub fn find_use_case_deps(&self, use_case: &str) -> &[String] {
@@ -820,6 +858,9 @@ impl CodeGen {
                 },
                 Ast::UseCase(use_case) => {
                     context.register_known_use_case(use_case.name.clone());
+                    if let Some(journal) = &use_case.journal {
+                        context.use_case_journals.insert(use_case.name.clone(), journal.clone());
+                    }
                     // A `list` primary call (always the last one) with
                     // `filters {}`/`owner:` queries by those columns.
                     // Equality columns first, then the first range/sort
@@ -916,6 +957,9 @@ impl CodeGen {
                             .collect();
                         context.register_use_case_errors(use_case.name.clone(), errors);
                     }
+                }
+                Ast::Journal(journal) => {
+                    context.journals.insert(journal.name.clone(), journal.clone());
                 }
                 Ast::Database(database) => {
                     context.databases.insert(database.name.clone(), database.clone());
@@ -1036,7 +1080,7 @@ impl CodeGen {
                 ),
                 Ast::TypeDecl(t) => self.gen_domain(&mut context, t, domain_path.clone()),
                 // Generated with the app that runs them.
-                Ast::App(_) | Ast::Schedule(_) | Ast::Config(_) | Ast::Include(_) | Ast::Database(_) | Ast::Resource(_) | Ast::InfraSet(..) => Ok(()),
+                Ast::App(_) | Ast::Schedule(_) | Ast::Config(_) | Ast::Include(_) | Ast::Database(_) | Ast::Resource(_) | Ast::InfraSet(..) | Ast::Journal(_) => Ok(()),
                 Ast::Plugin(plugin_ast) => self.generate_plugin(
                     &mut context,
                     plugin_ast,
@@ -1181,6 +1225,9 @@ impl CodeGen {
             )
             .map_err(|e| format!("Failed to write the events module: {}", e))?;
             lib_mods.push("trust_events".to_string());
+        }
+        if self.write_journal_module(&mut context, &src_path)? {
+            lib_mods.push("trust_journal".to_string());
         }
         // Typed list queries, named by every storage trait.
         if !context.infra_entity_modules.is_empty() || !context.grpc_client_entity_modules.is_empty() {

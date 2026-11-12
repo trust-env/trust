@@ -15,6 +15,45 @@ use crate::generator::rust_code::{
 /// `NotFound`.
 pub const STORAGE_ERROR_VARIANTS: &[&str] = &["ConversionError", "DatabaseError"];
 
+/// The entity's columns and its non-`id` fields as bound by an INSERT.
+fn column_views(entity: &RustType) -> Result<(Vec<ColumnView>, Vec<DataFieldView>), String> {
+        let mut columns = Vec::new();
+        for field in &entity.fields {
+            let (sql_type, _) = migration::sql_type(&entity.name, &field.name, &field.field_type)?;
+            columns.push(ColumnView { name: field.name.clone(), sql_type });
+        }
+        let column_type = |name: &str| {
+            columns
+                .iter()
+                .find(|c| c.name == name)
+                .map(|c| c.sql_type.clone())
+                .unwrap_or_else(|| "TEXT".to_string())
+        };
+        let data_fields: Vec<DataFieldView> = entity
+            .fields
+            .iter()
+            .filter(|f| f.name != "id")
+            .map(|f| DataFieldView {
+                name: f.name.clone(),
+                sql_type: column_type(&f.name),
+                rust_type: f.field_type.to_call_string(Vec::new()),
+                json: match (f.field_type.is_json_wrapped(), f.field_type.is_option()) {
+                    (true, true) => "nullable",
+                    (true, false) => "plain",
+                    _ => "",
+                },
+            })
+            .collect();
+    Ok((columns, data_fields))
+}
+
+/// The non-`id` fields of `entity` as an INSERT binds them, as JSON values
+/// for a template (`name`, `sql_type`, `rust_type`, `json`).
+pub fn insert_field_views(entity: &RustType) -> Result<Vec<serde_json::Value>, String> {
+    let (_, data_fields) = column_views(entity)?;
+    Ok(data_fields.iter().map(|f| serde_json::to_value(f).expect("serializable")).collect())
+}
+
 #[derive(Serialize)]
 struct DataFieldView {
     name: String,
@@ -60,33 +99,7 @@ impl PsqlStorageFile {
 
     pub fn write(&mut self) -> Result<(), String> {
         let entity = &self.entity;
-        let mut columns = Vec::new();
-        for field in &entity.fields {
-            let (sql_type, _) = migration::sql_type(&entity.name, &field.name, &field.field_type)?;
-            columns.push(ColumnView { name: field.name.clone(), sql_type });
-        }
-        let column_type = |name: &str| {
-            columns
-                .iter()
-                .find(|c| c.name == name)
-                .map(|c| c.sql_type.clone())
-                .unwrap_or_else(|| "TEXT".to_string())
-        };
-        let data_fields: Vec<DataFieldView> = entity
-            .fields
-            .iter()
-            .filter(|f| f.name != "id")
-            .map(|f| DataFieldView {
-                name: f.name.clone(),
-                sql_type: column_type(&f.name),
-                rust_type: f.field_type.to_call_string(Vec::new()),
-                json: match (f.field_type.is_json_wrapped(), f.field_type.is_option()) {
-                    (true, true) => "nullable",
-                    (true, false) => "plain",
-                    _ => "",
-                },
-            })
-            .collect();
+        let (columns, data_fields) = column_views(entity)?;
         let owner_columns: Vec<String> = entity
             .fields
             .iter()
@@ -117,6 +130,8 @@ impl PsqlStorageFile {
             "Query".to_string(),
             "TrustTx".to_string(),
             "TrustTransactional".to_string(),
+            "TrustJournal".to_string(),
+            "TrustChange".to_string(),
         ];
         crate_items.extend(imports.types.iter().cloned());
         let uses = imports.external_use_statements() + &crate_use(&crate_items);
