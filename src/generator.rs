@@ -203,6 +203,8 @@ pub struct CodeGenContext {
     maps: Vec<crate::parser::MapDeclaration>,
     /// Some `ics_feed {}` infra: write `trust_ics.rs`.
     needs_ics: bool,
+    /// Some notify-mode client: write `trust_notify.rs`.
+    needs_notify: bool,
     /// Some HTTP adapter of this crate declares `events:`, so use cases
     /// with `notify` publish to `crate::trust_publish`.
     has_events: bool,
@@ -263,6 +265,7 @@ impl CodeGenContext {
             locale: None,
             maps: Vec::new(),
             needs_ics: false,
+            needs_notify: false,
             has_events: false,
             databases: HashMap::new(),
             psql_databases: HashMap::new(),
@@ -1131,7 +1134,7 @@ impl CodeGen {
                 ),
                 Ast::TypeDecl(t) => self.gen_domain(&mut context, t, domain_path.clone()),
                 // Generated with the app that runs them.
-                Ast::App(_) | Ast::Schedule(_) | Ast::Config(_) | Ast::Include(_) | Ast::Database(_) | Ast::Resource(_) | Ast::InfraSet(..) | Ast::Journal(_) | Ast::Map(_) | Ast::Mirror(_) => Ok(()),
+                Ast::App(_) | Ast::Schedule(_) | Ast::Config(_) | Ast::Include(_) | Ast::Database(_) | Ast::Resource(_) | Ast::InfraSet(..) | Ast::Journal(_) | Ast::Map(_) | Ast::Mirror(_) | Ast::Channel(_) | Ast::Notifications(_) | Ast::Bot(_) => Ok(()),
                 Ast::Plugin(plugin_ast) => self.generate_plugin(
                     &mut context,
                     plugin_ast,
@@ -1282,6 +1285,14 @@ impl CodeGen {
         }
         if crate::generator::time::write_time_module(&mut context, &src_path)? {
             lib_mods.push("trust_time".to_string());
+        }
+        if context.needs_notify {
+            std::fs::write(
+                src_path.join("trust_notify.rs"),
+                crate::generator::rust_code::render::render("file/http_client/notify.rs.tera", &tera::Context::new()),
+            )
+            .map_err(|e| format!("Failed to write the notify module: {}", e))?;
+            lib_mods.push("trust_notify".to_string());
         }
         if context.needs_ics {
             std::fs::write(

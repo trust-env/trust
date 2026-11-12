@@ -393,6 +393,259 @@ Ok(match outcome {{
     Ok((uc, input_type))
 }
 
+/// A notify-mode `http_client` infra sending on `channels`.
+fn notify_infra(
+    name: String,
+    channels: Vec<crate::parser::ChannelDeclaration>,
+    default: Vec<String>,
+    fallback: Option<String>,
+    routing: Vec<(String, Vec<String>)>,
+    record: Option<String>,
+    record_owner: Option<String>,
+) -> Ast {
+    Ast::Infra(crate::parser::InfraService {
+        name,
+        service_type: InfraServiceType::HttpClient(crate::parser::HttpClientInfraService {
+            base_url: String::new(),
+            headers: Vec::new(),
+            retry: 2,
+            timeout_secs: 15,
+            oauth2: None,
+            ics: None,
+            notify: Some(crate::parser::NotifyOptions { channels, default, fallback, routing, record, record_owner }),
+        }),
+    })
+}
+
+/// `{result.a.b}` templates as Rust statements appending to `reply`.
+fn reply_code(template: &str, camel: bool) -> String {
+    let re = regex::Regex::new(r"\{result((?:\.[A-Za-z0-9_]+)*)\}").expect("valid regex");
+    let mut code = String::new();
+    let mut last = 0;
+    for caps in re.captures_iter(template) {
+        let whole = caps.get(0).expect("match");
+        if whole.start() > last {
+            code.push_str(&format!("        reply.push_str({:?});\n", &template[last..whole.start()]));
+        }
+        let mut access = "result".to_string();
+        for part in caps[1].split('.').filter(|p| !p.is_empty()) {
+            access.push_str(&format!("[{:?}]", crate::generator::schema::wire_name(part, camel)));
+        }
+        code.push_str(&format!(
+            "        reply.push_str(&match &{} {{ serde_json::Value::String(text) => text.clone(), serde_json::Value::Null => String::new(), other => other.to_string() }});\n",
+            access
+        ));
+        last = whole.end();
+    }
+    if last < template.len() {
+        code.push_str(&format!("        reply.push_str({:?});\n", &template[last..]));
+    }
+    code
+}
+
+/// `bot Name {...}`: its channel infra, its webhook use case and route.
+fn bot_parts(
+    bot: &crate::parser::BotDeclaration,
+    channels: &HashMap<String, crate::parser::ChannelDeclaration>,
+    notifications: &[crate::parser::NotificationsDeclaration],
+    infra_owners: &HashMap<String, String>,
+    use_cases: &[String],
+    camel: bool,
+) -> Result<(Vec<Ast>, HttpRoute), String> {
+    use heck::ToSnakeCase;
+    let err = |what: String| format!("bot '{}': {}", bot.name, what);
+    let channel = channels.get(&bot.channel).ok_or_else(|| err(format!("unknown channel '{}'", bot.channel)))?;
+    if channel.kind != "telegram" {
+        return Err(err(format!("channel '{}' must be a telegram channel", bot.channel)));
+    }
+    for uc in bot.commands.iter().chain(bot.on_reply.iter()).map(|(_, u)| u).chain(bot.default.iter()) {
+        if !use_cases.contains(uc) {
+            return Err(err(format!("unknown use_case '{}'", uc)));
+        }
+    }
+    let channel_infra = format!("{}Channel", bot.name);
+    let client = channel_infra.to_snake_case();
+    let error = format!("{}UseCaseError", bot.name);
+    let record = if bot.on_reply.is_empty() {
+        None
+    } else {
+        let notify = notifications
+            .iter()
+            .find(|n| {
+                n.infra.is_some()
+                    && (n.default.contains(&bot.channel)
+                        || n.fallback.as_ref() == Some(&bot.channel)
+                        || n.routing.iter().any(|(_, c)| c.contains(&bot.channel)))
+            })
+            .ok_or_else(|| err(format!("on_reply needs a notifications {{ infra: ... }} sending on '{}'", bot.channel)))?;
+        notify.infra.clone()
+    };
+    let mut code = String::new();
+    code.push_str(&format!(
+        r#"let _ = user;
+let user: i64 = {user};
+// Telegram resends an update until it gets a 2xx: failures are reported, not raised.
+let secret: String = {secret};
+if !secret.is_empty() && input.headers.get("x-telegram-bot-api-secret-token") != Some(&secret) {{
+    return Err({error}::Forbidden("wrong webhook secret".to_string()));
+}}
+let update: serde_json::Value = serde_json::from_str(&input.body).unwrap_or_default();
+let message = &update["message"];
+let text = message["text"].as_str().unwrap_or_default().trim().to_string();
+let chat = message["chat"]["id"].as_i64().map(|id| id.to_string());
+if text.is_empty() || chat.is_none() || chat != self.{client}.chat_of({channel:?}) {{
+    return Ok(BotAck {{ handled: false, reply: None, error: None }});
+}}
+let message_id = message["message_id"].as_i64().map(|id| id.to_string());
+let reply_to = message["reply_to_message"]["message_id"].as_i64();
+let (command, rest) = match text.strip_prefix('/') {{
+    Some(after) => {{
+        let (head, rest) = after.split_once(char::is_whitespace).unwrap_or((after, ""));
+        (Some(head.split('@').next().unwrap_or_default().to_lowercase()), rest.trim().to_string())
+    }}
+    None => (None, text.clone()),
+}};
+let mut replied_kind: Option<&str> = None;
+"#,
+        user = bot.user,
+        secret = bot
+            .secret
+            .as_deref()
+            .map(crate::generator::rust_code::env_template::to_rust_expr_lenient)
+            .unwrap_or_else(|| "String::new()".to_string()),
+        error = error,
+        client = client,
+        channel = bot.channel,
+    ));
+    if let Some(record) = &record {
+        let owner = infra_owners.get(record).cloned();
+        let kinds: Vec<String> = bot.on_reply.iter().map(|(k, _)| format!("{:?}", k)).collect();
+        code.push_str(&format!(
+            r#"if let (None, Some(id)) = (&command, reply_to) {{
+    for kind in [{kinds}] {{
+        let found = self
+            .{record}
+            .query(Query::new(){owner}.eq("kind", kind).eq("external_id", id).limit(1))
+            .await
+            .map_err(|e| {error}::StorageError(format!("{{:?}}", e)))?;
+        if !found.is_empty() {{
+            replied_kind = Some(kind);
+            break;
+        }}
+    }}
+}}
+"#,
+            kinds = kinds.join(", "),
+            record = record.to_snake_case(),
+            owner = owner.map(|o| format!(".eq({:?}, user)", o)).unwrap_or_default(),
+            error = error,
+        ));
+    }
+    let reply = bot.reply.as_deref().map(|t| reply_code(t, camel));
+    let run = |uc: &str, input: &str| {
+        format!(
+            r#"{{
+        let use_case_input = serde_json::from_value(serde_json::json!({{ "text": {input} }}))
+            .map_err(|e| format!("{uc} input: {{}}", e));
+        match use_case_input {{
+            Ok(use_case_input) => self
+                .{field}
+                .execute(user, use_case_input)
+                .await
+                .map(|output| serde_json::to_value(&output).unwrap_or_default())
+                .map_err(|e| format!("{uc}: {{:?}}", e)),
+            Err(e) => Err(e),
+        }}
+    }}"#,
+            uc = uc,
+            field = uc.to_snake_case(),
+            input = input
+        )
+    };
+    code.push_str("let outcome: Option<Result<serde_json::Value, String>> = match (replied_kind, command.as_deref()) {
+");
+    for (kind, uc) in &bot.on_reply {
+        code.push_str(&format!("    (Some({:?}), _) => Some({}),
+", kind, run(uc, "text")));
+    }
+    for (name, uc) in &bot.commands {
+        code.push_str(&format!("    (_, Some({:?})) => Some({}),
+", name.to_lowercase(), run(uc, "rest")));
+    }
+    code.push_str("    (_, Some(_)) => None,
+");
+    match &bot.default {
+        Some(uc) => code.push_str(&format!("    (_, None) => Some({}),
+", run(uc, "text"))),
+        None => code.push_str("    (_, None) => None,
+"),
+    }
+    code.push_str("};
+");
+    code.push_str(&format!(
+        r#"let Some(outcome) = outcome else {{
+    return Ok(BotAck {{ handled: false, reply: None, error: None }});
+}};
+let (reply, error) = match outcome {{
+    Ok(result) => {{
+        let _ = &result;
+        let mut reply = String::new();
+{reply}        (Some(reply).filter(|r| !r.trim().is_empty()), None)
+    }}
+    Err(error) => {{
+        tracing::warn!(bot = {name:?}, %error, "bot command failed");
+        (None, Some(error))
+    }}
+}};
+if let Some(reply) = &reply {{
+    if let Err(error) = self.{client}.send_to({channel:?}, "reply", reply, message_id.as_deref()).await {{
+        tracing::warn!(bot = {name:?}, %error, "bot reply not sent");
+    }}
+}}
+Ok(BotAck {{ handled: true, reply, error }})
+"#,
+        reply = reply.unwrap_or_default(),
+        name = bot.name,
+        client = client,
+        channel = bot.channel,
+    ));
+
+    let name = format!("{}UseCase", bot.name);
+    let mut uc = use_case(name.clone(), &channel_infra, "list", None);
+    uc.calls.clear();
+    uc.input = Some(AllowedType::DefinedType("RawRequest".to_string()));
+    uc.output = Some(AllowedType::DefinedType("BotAck".to_string()));
+    let mut infras = vec![channel_infra.clone()];
+    infras.extend(record.clone());
+    let mut called: Vec<String> = Vec::new();
+    for uc in bot.commands.iter().chain(bot.on_reply.iter()).map(|(_, u)| u).chain(bot.default.iter()) {
+        if !called.contains(uc) {
+            called.push(uc.clone());
+        }
+    }
+    uc.code = Some(CodeSpec {
+        file: format!("(generated by trust for bot {})", bot.name),
+        infras,
+        use_cases: called,
+        errors: vec!["Forbidden".to_string()],
+        deps: vec![("tracing".to_string(), "0.1".to_string())],
+        inline: Some(code),
+        ..Default::default()
+    });
+    let infra = notify_infra(channel_infra, vec![channel.clone()], vec![bot.channel.clone()], None, Vec::new(), None, None);
+    let route = HttpRoute {
+        method: HttpMethod::Post,
+        path: bot.path.clone(),
+        input: None,
+        output: None,
+        use_case: name,
+        status: vec![StatusMapping { target: "Forbidden".to_string(), status: 403 }],
+        auth: None,
+        auth_explicit: true,
+    };
+    Ok((vec![infra, Ast::UseCase(uc)], route))
+}
+
 pub fn desugar(asts: Vec<Ast>) -> Result<Vec<Ast>, String> {
     let mut infra_entities: HashMap<String, String> = HashMap::new();
     let mut infra_owners: HashMap<String, String> = HashMap::new();
@@ -446,6 +699,25 @@ pub fn desugar(asts: Vec<Ast>) -> Result<Vec<Ast>, String> {
             _ => None,
         }),
     };
+    let channels: HashMap<String, crate::parser::ChannelDeclaration> = asts
+        .iter()
+        .filter_map(|ast| match ast {
+            Ast::Channel(c) => Some((c.name.clone(), c.clone())),
+            _ => None,
+        })
+        .collect();
+    let notifications: Vec<crate::parser::NotificationsDeclaration> = asts
+        .iter()
+        .filter_map(|ast| match ast {
+            Ast::Notifications(n) => Some(n.clone()),
+            _ => None,
+        })
+        .collect();
+    let camel = asts.iter().any(|ast| matches!(ast, Ast::Config(c) if c.json_case.as_deref() == Some("camel")));
+    let has_bot_ack = asts
+        .iter()
+        .any(|ast| matches!(ast, Ast::TypeDecl(TypeDeclaration::Struct(s)) if s.name == "BotAck"));
+    let mut bot_ack_added = false;
     let has_mirror_report = asts
         .iter()
         .any(|ast| matches!(ast, Ast::TypeDecl(TypeDeclaration::Struct(s)) if s.name == "MirrorReport"));
@@ -493,6 +765,44 @@ pub fn desugar(asts: Vec<Ast>) -> Result<Vec<Ast>, String> {
                 resource_routes.insert(resource.name.clone(), routes);
             }
             Ast::InfraSet(..) => {}
+            Ast::Channel(_) => {}
+            Ast::Notifications(n) => {
+                let mut used: Vec<crate::parser::ChannelDeclaration> = Vec::new();
+                let named = n.default.iter().chain(n.fallback.iter()).chain(n.routing.iter().flat_map(|(_, c)| c.iter()));
+                for channel in named {
+                    if channel == "log" || used.iter().any(|c| &c.name == channel) {
+                        continue;
+                    }
+                    let decl = channels
+                        .get(channel)
+                        .ok_or_else(|| format!("notifications '{}': unknown channel '{}' (declare it with `channel {} {{ ... }}`, or use log)", n.name, channel, channel))?;
+                    used.push(decl.clone());
+                }
+                if let Some(infra) = &n.infra
+                    && !infra_entities.contains_key(infra)
+                {
+                    return Err(format!("notifications '{}': '{}' is not a psql infra", n.name, infra));
+                }
+                out.push(notify_infra(n.name.clone(), used, n.default.clone(), n.fallback.clone(), n.routing.clone(), n.infra.clone(), n.infra.as_ref().and_then(|i| infra_owners.get(i).cloned())));
+            }
+            Ast::Bot(bot) => {
+                let (parts, route) = bot_parts(&bot, &channels, &notifications, &infra_owners, &mirror_env.use_cases, camel)?;
+                out.extend(parts);
+                if !has_bot_ack && !bot_ack_added {
+                    bot_ack_added = true;
+                    let field = |name: &str, field_type: AllowedType| StructField { name: name.to_string(), field_type };
+                    out.push(Ast::TypeDecl(TypeDeclaration::Struct(StructDeclaration {
+                        name: "BotAck".to_string(),
+                        fields: vec![
+                            field("handled", AllowedType::Bool),
+                            field("reply", AllowedType::Option(Box::new(AllowedType::String))),
+                            field("error", AllowedType::Option(Box::new(AllowedType::String))),
+                        ],
+                        export: None,
+                    })));
+                }
+                resource_routes.insert(bot.name.clone(), vec![route]);
+            }
             Ast::Mirror(mirror) => {
                 let (uc, input) = mirror_use_case(&mirror, &mirror_env)?;
                 out.push(Ast::UseCase(uc));
@@ -547,11 +857,14 @@ pub fn desugar(asts: Vec<Ast>) -> Result<Vec<Ast>, String> {
                 if let AdapterType::Http(http) = &mut adapter.adapter_type {
                     for name in &http.resources {
                         let routes = resource_routes.get(name).ok_or_else(|| {
-                            format!("adapter '{}' lists unknown resource or journal (with undo) '{}'", adapter.name, name)
+                            format!("adapter '{}' lists unknown resource, bot or journal (with undo) '{}'", adapter.name, name)
                         })?;
                         for route in routes {
                             let mut route = route.clone();
-                            route.auth = http.default_auth.clone();
+                            // A bot's webhook checks its own secret.
+                            if !route.auth_explicit {
+                                route.auth = http.default_auth.clone();
+                            }
                             http.routes.push(route);
                         }
                     }

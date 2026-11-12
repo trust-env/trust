@@ -810,7 +810,7 @@ use_case CheckoutUseCase {
   names with a dash) for the generated `Cargo.toml`.
 - `infra: [A, B]` lists several infras at once, and `infra_set DayData { A B
   C }` (top level) names a group usable as `infra: DayData`.
-- `use_case: PlanWeekUseCase` (repeatable): another use case the body runs,
+- `use_case: PlanWeekUseCase` (repeatable, or `use_case: [A, B]`): another use case the body runs,
   `self.plan_week_use_case.execute(user, input).await` — `?` converts its
   error (`NotFound` stays `NotFound`). Use cases are built in dependency
   order; a cycle is an error.
@@ -1180,6 +1180,60 @@ type TaskWithAction = Task + { action_id: Option<Int> }
 `Omit<T, a, b>` drops fields, `Pick<T, a, b>` keeps only those,
 `Partial<T>` makes every field `Option`; they nest. Naming a field the base
 doesn't have is an error.
+
+### `channel` and `notifications`
+Outbound messages, routed by kind, with a fallback, recorded:
+
+```tr
+channel Telegram { telegram { token: "${TELEGRAM_BOT_TOKEN}" chat: "${TELEGRAM_CHAT_ID}" } }
+channel Team { webhook { url: "${TEAM_WEBHOOK}" format: discord } }    // or slack, json
+notifications Notify {
+    infra: NotificationInfra        // optional: where sent notifications are recorded
+    default: Telegram
+    fallback: log                   // `log` only writes the message to the logs
+    routing { conflict: [Team, Telegram] }
+}
+```
+
+`Notify` is an infra: a `code` use case listing it gets `deps.notify()`:
+
+- `send(kind, &text)` tries the kind's channels in order (`routing`, else
+  `default`), then `fallback`; returns
+  `TrustDelivery { channel, status: "sent" | "logged" | "failed", error, external_id }`
+  (Telegram's `message_id`). A channel whose settings are empty is skipped
+  as not configured; the bot token never appears in errors.
+- `send_recorded(deps.notification_infra(), user, kind, &text)` also saves
+  the row and returns it. The entity needs `kind`, `at`, `channel`, `text`,
+  `status`, `error`, `external_id` and the owner (any type that reads those
+  values: `kind` / `status` may be enums such as `enum NotificationStatus
+  { sent failed logged }`); other fields must be optional.
+- `send_to(channel, kind, &text, reply_to)` sends on one channel.
+
+Channel settings support `${VAR}` (read when sending). Telegram also takes
+`api_url`.
+
+### `bot`
+A Telegram bot's webhook, routing messages to use cases:
+
+```tr
+bot TelegramBot {
+    channel: Telegram
+    path: "/webhooks/telegram"
+    secret: "${TELEGRAM_WEBHOOK_SECRET}"    // X-Telegram-Bot-Api-Secret-Token, else 403
+    user: 1                                  // the user the use cases run as
+    commands { journal: AgentJournalUseCase  inbox: CaptureUseCase }   // "/journal <text>"
+    on_reply { review: AgentJournalUseCase } // a reply to a recorded notification of kind review
+    default: CaptureUseCase                  // any other text; other commands are ignored
+    reply: "Noted: {result.summary}"         // sent back as a reply ({result.<field>} reads the output)
+}
+adapter Api { http { ... resources { TelegramBot } } }
+```
+
+Messages from another chat than the channel's are ignored. The use cases
+receive `{ text }` (the text after the command, or the whole message). The
+route always answers 200 with `BotAck { handled, reply, error }` (Telegram
+resends otherwise); a failing use case is reported in `error`. `on_reply`
+needs a `notifications { infra }` sending on the channel.
 
 ### `database`
 One Postgres database, and one connection pool, shared by the `psql` infras

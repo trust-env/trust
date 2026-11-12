@@ -162,30 +162,30 @@ impl {{ name }} {
         }
     }
 
-    async fn send<T: DeserializeOwned>(&self, request: reqwest::RequestBuilder) -> Result<T, String> {
+    async fn send_json<T: DeserializeOwned>(&self, request: reqwest::RequestBuilder) -> Result<T, String> {
         let (_, body) = self.send_raw(request.headers(self.headers.clone())).await?;
         serde_json::from_str(if body.is_empty() { "null" } else { &body })
             .map_err(|e| format!("{} response is not the expected JSON: {} (body: {})", "{{ infra }}", e, body))
     }
 
     pub async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
-        self.send(self.client.get(self.url(path))).await
+        self.send_json(self.client.get(self.url(path))).await
     }
 
     pub async fn post_json<B: Serialize + ?Sized, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T, String> {
-        self.send(self.client.post(self.url(path)).json(body)).await
+        self.send_json(self.client.post(self.url(path)).json(body)).await
     }
 
     pub async fn put_json<B: Serialize + ?Sized, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T, String> {
-        self.send(self.client.put(self.url(path)).json(body)).await
+        self.send_json(self.client.put(self.url(path)).json(body)).await
     }
 
     pub async fn patch_json<B: Serialize + ?Sized, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T, String> {
-        self.send(self.client.patch(self.url(path)).json(body)).await
+        self.send_json(self.client.patch(self.url(path)).json(body)).await
     }
 
     pub async fn delete_json<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
-        self.send(self.client.delete(self.url(path))).await
+        self.send_json(self.client.delete(self.url(path))).await
     }
 
     /// Every item of a paginated JSON list: GETs `path`, reads the array at
@@ -250,7 +250,7 @@ impl {{ name }} {
     /// `application/x-www-form-urlencoded` POST (e.g. OAuth token
     /// refresh), JSON response.
     pub async fn post_form<B: Serialize + ?Sized, T: DeserializeOwned>(&self, path: &str, form: &B) -> Result<T, String> {
-        self.send(self.client.post(self.url(path)).form(form)).await
+        self.send_json(self.client.post(self.url(path)).form(form)).await
     }
 }
 {% if ics %}
@@ -284,5 +284,109 @@ impl {{ name }} {
         }
         Ok(crate::trust_ics_occurrences(&text, from, to, "{{ ics_fallback }}", {{ ics_all_day }}))
     }
+}
+{% endif %}
+{% if notify %}
+impl {{ name }} {
+    /// The channels a notification of `kind` goes to, tried in order.
+    pub fn channels_for(kind: &str) -> &'static [&'static str] {
+        match kind {
+{%- for r in routing %}
+            {{ r.0 }} => &[{{ r.1 }}],
+{%- endfor %}
+            _ => &[{{ default_channels }}],
+        }
+    }
+
+    /// The chat a channel posts to (a bot checks incoming messages against it).
+    pub fn chat_of(&self, channel: &str) -> Option<String> {
+        match channel {
+{%- for c in channels %}{% if c.kind == "telegram" %}
+            {{ c.name | json_encode() }} => Some({{ c.chat }}).map(|chat: String| chat.trim().to_string()).filter(|chat| !chat.is_empty()),
+{%- endif %}{% endfor %}
+            _ => None,
+        }
+    }
+
+    /// Sends on one channel; returns the channel's message id.
+    pub async fn send_to(&self, channel: &str, kind: &str, text: &str, reply_to: Option<&str>) -> Result<Option<String>, String> {
+        let _ = (kind, reply_to);
+        match channel {
+{%- for c in channels %}
+{%- if c.kind == "telegram" %}
+            {{ c.name | json_encode() }} => crate::trust_send_telegram(&self.client, &{{ c.api_url }}, &{{ c.token }}, &{{ c.chat }}, text, reply_to).await.map(Some),
+{%- else %}
+            {{ c.name | json_encode() }} => crate::trust_send_webhook(&self.client, &{{ c.url }}, {{ c.format | json_encode() }}, kind, text).await.map(|_| None),
+{%- endif %}
+{%- endfor %}
+            "log" => {
+                tracing::info!(kind, "notification (log channel):\n{}", text);
+                Ok(None)
+            }
+            other => Err(format!("unknown channel '{}'", other)),
+        }
+    }
+
+    /// Sends a notification of `kind` on its channels (the first that
+    /// works){% if fallback %}, else on {{ fallback }}{% endif %}.
+    pub async fn send(&self, kind: &str, text: &str) -> crate::TrustDelivery {
+        let mut errors: Vec<String> = Vec::new();
+        #[allow(unused_mut)]
+        let mut tried: Vec<&str> = Self::channels_for(kind).to_vec();
+{%- if fallback %}
+        if !tried.contains(&{{ fallback | json_encode() }}) {
+            tried.push({{ fallback | json_encode() }});
+        }
+{%- endif %}
+        let mut last = "log";
+        for channel in tried {
+            last = channel;
+            match self.send_to(channel, kind, text, None).await {
+                Ok(external_id) => {
+                    return crate::TrustDelivery {
+                        channel: channel.to_lowercase(),
+                        status: if channel == "log" { "logged" } else { "sent" }.to_string(),
+                        error: (!errors.is_empty()).then(|| errors.join("; ")),
+                        external_id,
+                    };
+                }
+                Err(error) => {
+                    tracing::warn!(kind, channel, %error, "notification not sent");
+                    errors.push(format!("{}: {}", channel, error));
+                }
+            }
+        }
+        crate::TrustDelivery { channel: last.to_lowercase(), status: "failed".to_string(), error: Some(errors.join("; ")), external_id: None }
+    }
+{%- if record %}
+
+    /// `send`, then records the notification (its channel, status, error
+    /// and message id) with `storage`; returns the recorded row.
+    pub async fn send_recorded(
+        &self,
+        storage: &impl crate::{{ record_entity }}Storage,
+        user: i64,
+        kind: &str,
+        text: &str,
+    ) -> Result<crate::{{ record_entity }}, String> {
+        let delivery = self.send(kind, text).await;
+        let _ = user;
+        let row: crate::{{ record_entity }} = serde_json::from_value(serde_json::json!({
+            "id": 0,
+{%- if record_owner_key %}
+            {{ record_owner_key }}: user,
+{%- endif %}
+            "kind": kind,
+            "at": chrono::Utc::now(),
+            "channel": delivery.channel,
+            "text": text,
+            "status": delivery.status,
+            "error": delivery.error,
+            {{ external_id_key }}: delivery.external_id,
+        }))
+        .map_err(|e| format!("notification row: {}", e))?;
+        storage.save_one(row).await.map_err(|e| format!("{:?}", e))
+    }
+{%- endif %}
 }
 {% endif %}
