@@ -102,3 +102,19 @@ fn mirror_mistakes_are_errors() {
     let err = try_generate(&base.replace("timezone_fallback: \"Europe/Paris\"", "timezone_fallback: \"Nowhere\"")).unwrap_err();
     assert!(err.contains("unknown timezone_fallback 'Nowhere'"), "{err}");
 }
+
+#[test]
+fn every_windows_zone_maps_to_a_known_iana_zone() {
+    let template = include_str!("../templates/file/http_client/ics.rs.tera");
+    let mut count = 0;
+    for line in template.lines() {
+        let Some((windows, iana)) = line.trim().strip_prefix('"').and_then(|l| l.strip_suffix("\",")).and_then(|l| l.split_once("\" => \"")) else {
+            continue;
+        };
+        assert!(iana.parse::<chrono_tz::Tz>().is_ok(), "{windows} → {iana} is not a chrono-tz zone");
+        count += 1;
+    }
+    assert!(count > 130, "only {count} Windows zones");
+    assert!(template.contains(r#""Azerbaijan Standard Time" => "Asia/Baku","#));
+    assert!(template.contains("unknown time zone"));
+}
