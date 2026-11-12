@@ -70,7 +70,8 @@ pub mod tz {
         (midnight(date), midnight(date + Duration::days(1)))
     }
 
-    /// The Monday of `t`'s local week.
+    /// The Monday of `t`'s local week, as a date (`week_bounds(t).0` is
+    /// that Monday's 00:00 as an instant).
     pub fn week_start(t: DateTime<Utc>) -> NaiveDate {
         let date = local_date(t);
         date - Duration::days(date.weekday().num_days_from_monday() as i64)
@@ -211,8 +212,14 @@ pub mod fmt {
     /// A due day relative to today: today, tomorrow, the weekday name within
     /// the week, overdue before today, else the date ("EEEE d MMMM").
     pub fn fmt_relative_day(t: impl LocalDateTime) -> String {
+        fmt_relative_day_from(t, crate::tz::today())
+    }
+
+    /// `fmt_relative_day` relative to `now` instead of the clock (tests,
+    /// messages composed for a given day).
+    pub fn fmt_relative_day_from(t: impl LocalDateTime, now: impl LocalDateTime) -> String {
         let date = t.local_naive().date();
-        let days = (date - crate::tz::today()).num_days();
+        let days = (date - now.local_naive().date()).num_days();
         match days {
             ..0 => OVERDUE.to_string(),
             0 => TODAY.to_string(),

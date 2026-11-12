@@ -213,7 +213,7 @@ fn reachable_asts(asts: &[Ast], app: &AppService) -> Vec<Ast> {
         .filter(|ast| match ast {
             Ast::Import(_) | Ast::Plugin(_) | Ast::Config(_) | Ast::Include(_) | Ast::Database(_) => true,
             // Expanded before partitioning.
-            Ast::Resource(_) | Ast::InfraSet(..) => false,
+            Ast::Resource(_) | Ast::InfraSet(..) | Ast::Mirror(_) => false,
             Ast::Journal(_) => true,
             Ast::Map(m) => type_names.contains(&m.from) && type_names.contains(&m.to),
             Ast::App(a) => a.name == app.name,

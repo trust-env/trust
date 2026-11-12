@@ -483,12 +483,84 @@ body: an ICS feed, HTML, CSV), `post_form` (`x-www-form-urlencoded`, e.g.
 OAuth token refresh), and `request(method, path)` / `send_raw(builder)` for
 anything else (per-request headers, bearer tokens).
 
+`get_json_paged(path, "items", "nextPageToken")` follows a paginated list
+(the token goes back as the query parameter named after the key without
+`next`: `pageToken`; `get_json_paged_with` names it) and returns every item.
+`is_configured()` is false when `base_url` (or an `oauth2` value) resolved
+empty.
+
+`oauth2 { token_url client_id client_secret refresh_token }` (values
+support `${VAR}`) puts a bearer token on every request: obtained from the
+refresh token, cached, renewed a minute before it expires and after a 401
+(the request is then retried once). `access_token()` returns it.
+
+```tr
+infra GoogleCalendar { http_client {
+    base_url: "https://www.googleapis.com/calendar/v3"
+    oauth2 {
+        token_url: "https://oauth2.googleapis.com/token"
+        client_id: "${GOOGLE_CLIENT_ID}" client_secret: "${GOOGLE_CLIENT_SECRET}"
+        refresh_token: "${GOOGLE_REFRESH_TOKEN}"
+    }
+} }
+```
+
 Optional settings: `retry: 3` retries a network error, a 429 or a 5xx up to
 3 times (backoff 200 ms, 400 ms, ...); `timeout: 10` gives up after 10 s
 (30 by default). `base_url` and header values
 support `${VAR}`, resolved when the binary starts, so secrets never live in
 `.tr` source; `--dev` scaffolds each variable as `changeme`. Pulls in
 `reqwest` (`json`) and `serde_json`.
+
+### `ics_feed`
+An `http_client` reading a published iCalendar feed (an Outlook or Google
+"secret address"):
+
+```tr
+infra OutlookIcs { ics_feed { url: "${OUTLOOK_ICS_URL}" timezone_fallback: "Europe/Paris" all_day: skip } }
+```
+
+`deps.outlook_ics().occurrences(from, to)` returns the
+`IcsOccurrence { uid, instance_id, title, start, end, location, description, all_day }`
+overlapping `[from, to)`, sorted by start: RRULEs expanded (EXDATE
+honoured, a RECURRENCE-ID replaces its occurrence, cancelled events
+dropped), `instance_id` = the UID, plus `#<start in UTC>` for an
+occurrence of a recurring event. TZIDs that are IANA names are used; common
+Windows names (Outlook's "Romance Standard Time") are mapped; others, and
+floating times, read in `timezone_fallback` (UTC by default).
+`all_day: include` keeps all-day events as local-midnight spans (skipped by
+default). `occurrences_with_warnings` also returns what couldn't be read.
+Also takes `retry` and `timeout`. Pulls in `rrule`.
+
+### `mirror`
+A use case copying a source into a psql infra over a time window:
+
+```tr
+mirror OutlookMirror {
+    source: OutlookIcs                       // an ics_feed infra, or a use case
+    into: EventInfra
+    key: [user_id, kind, external_id]        // becomes the infra's upsert key
+    scope { kind: "outlook"  end_at > window.from  start_at < window.to }
+    map { kind: "outlook"  external_id: item.instance_id  title: item.title
+          start_at: item.start  end_at: item.end  domain: "pro"  note: item.location }
+    window { from: week_start  days: 28 }    // now | today | week_start [("Europe/Paris")]
+}
+```
+
+generates `OutlookMirrorUseCase` (input `OutlookMirrorRequest { days:
+Option<Int> }` overriding the window length, output
+`MirrorReport { configured, written, removed, error }`), usable in routes,
+tools and `schedule`s. It reads the source over `[from, from + days)`,
+upserts each item on `key` (the owner is the running user), then deletes
+the owner's rows matching `scope` whose key the source no longer has. A
+failure is reported in `error` (nothing is deleted); an `ics_feed` whose URL
+is empty reports `configured: false`. `today` / `week_start` use the
+`config { tz }` zone unless one is given.
+
+A use case source receives `{ from, to }` (its input type's fields of
+those names) and its output's `items` list is mirrored — e.g. a `code` use
+case paging through an API with `get_json_paged`. `map {}` values are
+`item.<field>` (a value goes into an `Option` field as `Some`) or literals.
 
 ### `bucket`
 Inside `s3`, the literal bucket name (a plain string, not env-driven —
@@ -1161,7 +1233,8 @@ gets `crate::tz::*`:
 | `now_local()`, `today()` | now / today in the zone |
 | `local(t)`, `local_date(t)`, `local_time(t)` | an instant seen in the zone |
 | `local_to_utc(naive)`, `at(date, time)`, `midnight(date)` | a wall-clock time as an instant — an ambiguous time (clocks back) is its first occurrence, a time in the gap (clocks forward) keeps the offset before it (02:30 → 03:30) |
-| `day_bounds(date)`, `week_start(t)`, `week_bounds(t)` | `[start, end)` instants of a local day / Monday-based week |
+| `day_bounds(date)`, `week_bounds(t)` | `[start, end)` instants of a local day / Monday-based week |
+| `week_start(t)` | the Monday of `t`'s local week, as a date (`week_bounds(t).0` is its 00:00 instant) |
 
 `locale: "fr"` (or `"en"`) adds `crate::fmt::*`, in the app's zone (UTC
 without `tz`), taking a `DateTime<Utc>`, a `NaiveDateTime` or a `NaiveDate`:
@@ -1171,7 +1244,8 @@ without `tz`), taking a `DateTime<Utc>`, a `NaiveDateTime` or a `NaiveDate`:
   `yy`/`yyyy`, `H`/`HH`, `mm`, `ss`, `'literal'`);
 - `fmt_time(t)` → "14h30", "9h" (en: "14:30");
 - `fmt_relative_day(t)` → "aujourd'hui", "demain", the weekday within the
-  week, "en retard" before today, else the date;
+  week, "en retard" before today, else the date; `fmt_relative_day_from(t,
+  now)` relative to a given day instead of the clock;
 - `plural(n, "réunion", "réunions")` → "1 réunion", "3 réunions" (0 and 1
   are singular in French).
 

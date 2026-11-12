@@ -1,0 +1,392 @@
+//! iCalendar feeds (`ics_feed {}` infras): occurrences of a published
+//! calendar over a window.
+
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Offset, TimeZone, Utc};
+
+/// One occurrence of a calendar event.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct IcsOccurrence {
+    /// The event's UID.
+    pub uid: String,
+    /// The UID, plus `#<start of the occurrence in UTC>` for an occurrence
+    /// of a recurring event: stable across reads, unique per occurrence.
+    pub instance_id: String,
+    pub title: String,
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub location: Option<String>,
+    pub description: Option<String>,
+    pub all_day: bool,
+}
+
+struct Prop {
+    name: String,
+    params: Vec<(String, String)>,
+    value: String,
+}
+
+impl Prop {
+    fn param(&self, key: &str) -> Option<&str> {
+        self.params.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum IcsTime {
+    Utc(DateTime<Utc>),
+    /// A wall-clock time in a zone.
+    Local(NaiveDateTime, chrono_tz::Tz),
+    Date(NaiveDate),
+}
+
+/// Windows zone names (Outlook) of the most common IANA zones.
+fn windows_zone(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "Romance Standard Time" => "Europe/Paris",
+        "W. Europe Standard Time" => "Europe/Berlin",
+        "Central Europe Standard Time" => "Europe/Budapest",
+        "Central European Standard Time" => "Europe/Warsaw",
+        "GMT Standard Time" => "Europe/London",
+        "Greenwich Standard Time" => "Atlantic/Reykjavik",
+        "E. Europe Standard Time" => "Europe/Chisinau",
+        "FLE Standard Time" => "Europe/Kiev",
+        "Russian Standard Time" => "Europe/Moscow",
+        "Eastern Standard Time" => "America/New_York",
+        "Central Standard Time" => "America/Chicago",
+        "Mountain Standard Time" => "America/Denver",
+        "Pacific Standard Time" => "America/Los_Angeles",
+        "Tokyo Standard Time" => "Asia/Tokyo",
+        "China Standard Time" => "Asia/Shanghai",
+        "India Standard Time" => "Asia/Kolkata",
+        "AUS Eastern Standard Time" => "Australia/Sydney",
+        _ => return None,
+    })
+}
+
+fn zone_of(tzid: Option<&str>, fallback: chrono_tz::Tz) -> chrono_tz::Tz {
+    let Some(tzid) = tzid.map(|t| t.trim().trim_start_matches('/')) else { return fallback };
+    tzid.parse::<chrono_tz::Tz>()
+        .ok()
+        .or_else(|| windows_zone(tzid).and_then(|z| z.parse().ok()))
+        .unwrap_or(fallback)
+}
+
+/// A wall-clock time as an instant: an ambiguous time is its first
+/// occurrence, a time in a DST gap keeps the offset before it.
+fn local_to_utc(naive: NaiveDateTime, zone: chrono_tz::Tz) -> DateTime<Utc> {
+    match zone.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(t) => t.with_timezone(&Utc),
+        chrono::LocalResult::Ambiguous(first, _) => first.with_timezone(&Utc),
+        chrono::LocalResult::None => {
+            let before = zone
+                .from_local_datetime(&(naive - Duration::hours(3)))
+                .earliest()
+                .map(|t| t.offset().fix().local_minus_utc())
+                .unwrap_or(0);
+            Utc.from_utc_datetime(&(naive - Duration::seconds(before as i64)))
+        }
+    }
+}
+
+impl IcsTime {
+    /// The instant (all-day dates: local midnight in `fallback`).
+    fn to_utc(self, fallback: chrono_tz::Tz) -> DateTime<Utc> {
+        match self {
+            IcsTime::Utc(t) => t,
+            IcsTime::Local(naive, zone) => local_to_utc(naive, zone),
+            IcsTime::Date(date) => local_to_utc(date.and_time(chrono::NaiveTime::MIN), fallback),
+        }
+    }
+}
+
+#[derive(Default)]
+struct RawEvent {
+    uid: String,
+    summary: String,
+    location: Option<String>,
+    description: Option<String>,
+    start: Option<IcsTime>,
+    end: Option<IcsTime>,
+    duration: Option<Duration>,
+    rrule: Option<String>,
+    exdates: Vec<IcsTime>,
+    recurrence_id: Option<IcsTime>,
+    cancelled: bool,
+}
+
+/// Joins folded lines (a line starting with a space continues the previous one).
+fn unfold(text: &str) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for raw in text.split('\n') {
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        if (line.starts_with(' ') || line.starts_with('\t')) && !lines.is_empty() {
+            if let Some(last) = lines.last_mut() {
+                last.push_str(&line[1..]);
+            }
+        } else if !line.is_empty() {
+            lines.push(line.to_string());
+        }
+    }
+    lines
+}
+
+fn parse_prop(line: &str) -> Option<Prop> {
+    // The first `:` outside quotes separates the name and its parameters from the value.
+    let mut in_quotes = false;
+    let split = line
+        .char_indices()
+        .find(|&(_, c)| {
+            if c == '"' {
+                in_quotes = !in_quotes;
+            }
+            c == ':' && !in_quotes
+        })?
+        .0;
+    let (head, value) = (&line[..split], &line[split + 1..]);
+    let mut parts = head.split(';');
+    let name = parts.next()?.to_ascii_uppercase();
+    let params = parts
+        .filter_map(|p| p.split_once('='))
+        .map(|(k, v)| (k.to_ascii_uppercase(), v.trim_matches('"').to_string()))
+        .collect();
+    Some(Prop { name, params, value: value.to_string() })
+}
+
+fn unescape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') | Some('N') => out.push('\n'),
+            Some(other) => out.push(other),
+            None => {}
+        }
+    }
+    out
+}
+
+fn parse_time_value(value: &str, prop: &Prop, fallback: chrono_tz::Tz) -> Option<IcsTime> {
+    let value = value.trim();
+    if prop.param("VALUE").is_some_and(|v| v.eq_ignore_ascii_case("DATE")) || value.len() == 8 {
+        return NaiveDate::parse_from_str(value, "%Y%m%d").ok().map(IcsTime::Date);
+    }
+    if let Some(utc) = value.strip_suffix('Z') {
+        let naive = NaiveDateTime::parse_from_str(utc, "%Y%m%dT%H%M%S").ok()?;
+        return Some(IcsTime::Utc(Utc.from_utc_datetime(&naive)));
+    }
+    let naive = NaiveDateTime::parse_from_str(value, "%Y%m%dT%H%M%S").ok()?;
+    let tzid = prop.param("TZID");
+    if tzid.is_some_and(|tz| matches!(tz.to_ascii_uppercase().as_str(), "UTC" | "GMT" | "ETC/UTC" | "Z")) {
+        return Some(IcsTime::Utc(Utc.from_utc_datetime(&naive)));
+    }
+    Some(IcsTime::Local(naive, zone_of(tzid, fallback)))
+}
+
+/// ISO 8601 durations: P1D, PT1H30M, P1DT2H, PT45M, PT30S, P1W.
+fn parse_duration(value: &str) -> Option<Duration> {
+    let v = value.trim().trim_start_matches('+');
+    let negative = v.starts_with('-');
+    let v = v.trim_start_matches('-').strip_prefix('P')?;
+    let mut total = 0i64;
+    let mut number = String::new();
+    let mut in_time = false;
+    for c in v.chars() {
+        match c {
+            'T' => in_time = true,
+            '0'..='9' => number.push(c),
+            unit => {
+                let n: i64 = number.parse().ok()?;
+                number.clear();
+                total += n * match (unit, in_time) {
+                    ('W', false) => 7 * 86_400,
+                    ('D', false) => 86_400,
+                    ('H', true) => 3600,
+                    ('M', true) => 60,
+                    ('S', true) => 1,
+                    _ => return None,
+                };
+            }
+        }
+    }
+    Some(Duration::seconds(if negative { -total } else { total }))
+}
+
+fn collect_events(text: &str, fallback: chrono_tz::Tz) -> Vec<RawEvent> {
+    let mut events = Vec::new();
+    let mut current: Option<RawEvent> = None;
+    // Depth of sub-components (VALARM, ...) to skip inside a VEVENT.
+    let mut nested = 0usize;
+    for line in unfold(text) {
+        let Some(prop) = parse_prop(&line) else { continue };
+        match (prop.name.as_str(), prop.value.to_ascii_uppercase().as_str()) {
+            ("BEGIN", "VEVENT") => {
+                current = Some(RawEvent::default());
+                nested = 0;
+                continue;
+            }
+            ("END", "VEVENT") => {
+                if let Some(e) = current.take() {
+                    events.push(e);
+                }
+                continue;
+            }
+            ("BEGIN", _) if current.is_some() => {
+                nested += 1;
+                continue;
+            }
+            ("END", _) if current.is_some() => {
+                nested = nested.saturating_sub(1);
+                continue;
+            }
+            _ => {}
+        }
+        let Some(event) = current.as_mut() else { continue };
+        if nested > 0 {
+            continue;
+        }
+        match prop.name.as_str() {
+            "UID" => event.uid = prop.value.clone(),
+            "SUMMARY" => event.summary = unescape(&prop.value),
+            "LOCATION" => event.location = Some(unescape(&prop.value)).filter(|l| !l.trim().is_empty()),
+            "DESCRIPTION" => event.description = Some(unescape(&prop.value)).filter(|d| !d.trim().is_empty()),
+            "DTSTART" => event.start = parse_time_value(&prop.value, &prop, fallback),
+            "DTEND" => event.end = parse_time_value(&prop.value, &prop, fallback),
+            "DURATION" => event.duration = parse_duration(&prop.value),
+            "RRULE" => event.rrule = Some(prop.value.clone()),
+            "EXDATE" => event.exdates.extend(prop.value.split(',').filter_map(|v| parse_time_value(v, &prop, fallback))),
+            "RECURRENCE-ID" => event.recurrence_id = parse_time_value(&prop.value, &prop, fallback),
+            "STATUS" => event.cancelled = prop.value.eq_ignore_ascii_case("CANCELLED"),
+            _ => {}
+        }
+    }
+    events
+}
+
+fn fmt_utc(t: DateTime<Utc>) -> String {
+    t.format("%Y%m%dT%H%M%SZ").to_string()
+}
+
+fn instance_id(uid: &str, start: DateTime<Utc>) -> String {
+    format!("{}#{}", uid, start.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+}
+
+/// Starts of a recurring event's occurrences that may touch `[from, to)`.
+fn expand(
+    event: &RawEvent,
+    start: DateTime<Utc>,
+    duration: Duration,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    fallback: chrono_tz::Tz,
+) -> Result<Vec<DateTime<Utc>>, String> {
+    let rule = event.rrule.as_deref().unwrap_or_default();
+    // A local DTSTART keeps the same wall-clock time across DST changes.
+    let dtstart = match event.start {
+        Some(IcsTime::Local(naive, zone)) => format!("DTSTART;TZID={}:{}", zone.name(), naive.format("%Y%m%dT%H%M%S")),
+        Some(IcsTime::Date(date)) => {
+            format!("DTSTART;TZID={}:{}", fallback.name(), date.and_time(chrono::NaiveTime::MIN).format("%Y%m%dT%H%M%S"))
+        }
+        _ => format!("DTSTART:{}", fmt_utc(start)),
+    };
+    let mut text = format!("{dtstart}\nRRULE:{rule}");
+    for ex in &event.exdates {
+        text.push_str(&format!("\nEXDATE:{}", fmt_utc(ex.to_utc(fallback))));
+    }
+    let set: rrule::RRuleSet = text.parse().map_err(|e| format!("unreadable RRULE ({rule}): {e}"))?;
+    let after = (from - duration - Duration::seconds(1)).with_timezone(&rrule::Tz::UTC);
+    let before = to.with_timezone(&rrule::Tz::UTC);
+    let result = set.after(after).before(before).all(5000);
+    Ok(result.dates.into_iter().map(|d| d.with_timezone(&Utc)).collect())
+}
+
+/// The occurrences of an iCalendar text overlapping `[from, to)`, sorted by
+/// start, and what couldn't be read. Times without an IANA TZID read in
+/// `fallback_zone`.
+pub fn trust_ics_occurrences(
+    text: &str,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    fallback_zone: &str,
+    include_all_day: bool,
+) -> (Vec<IcsOccurrence>, Vec<String>) {
+    let fallback: chrono_tz::Tz = fallback_zone.parse().unwrap_or(chrono_tz::UTC);
+    let raw = collect_events(text, fallback);
+    let mut warnings = Vec::new();
+
+    // Moved or cancelled single occurrences replace the planned one.
+    let overridden: std::collections::HashSet<String> = raw
+        .iter()
+        .filter_map(|e| e.recurrence_id.map(|rid| instance_id(&e.uid, rid.to_utc(fallback))))
+        .collect();
+
+    let mut out = Vec::new();
+    let overlaps = |s: DateTime<Utc>, e: DateTime<Utc>| e > from && s < to;
+
+    for event in &raw {
+        if event.uid.is_empty() {
+            continue;
+        }
+        let Some(start_time) = event.start else { continue };
+        let all_day = matches!(start_time, IcsTime::Date(_));
+        if all_day && !include_all_day {
+            continue;
+        }
+        let start = start_time.to_utc(fallback);
+        let end = event
+            .end
+            .map(|e| e.to_utc(fallback))
+            .or_else(|| event.duration.map(|d| start + d))
+            .unwrap_or(if all_day { start + Duration::days(1) } else { start });
+        let duration = end - start;
+        let base = IcsOccurrence {
+            uid: event.uid.clone(),
+            instance_id: event.uid.clone(),
+            title: if event.summary.trim().is_empty() { "(untitled)".to_string() } else { event.summary.clone() },
+            start,
+            end,
+            location: event.location.clone(),
+            description: event.description.clone(),
+            all_day,
+        };
+
+        if let Some(rid) = event.recurrence_id {
+            if !event.cancelled && overlaps(start, end) {
+                out.push(IcsOccurrence { instance_id: instance_id(&event.uid, rid.to_utc(fallback)), ..base });
+            }
+            continue;
+        }
+        if event.cancelled {
+            continue;
+        }
+        if event.rrule.is_none() {
+            if overlaps(start, end) {
+                out.push(base);
+            }
+            continue;
+        }
+        match expand(event, start, duration, from, to, fallback) {
+            Ok(starts) => {
+                for s in starts {
+                    let id = instance_id(&event.uid, s);
+                    if overridden.contains(&id) || !overlaps(s, s + duration) {
+                        continue;
+                    }
+                    out.push(IcsOccurrence { instance_id: id, start: s, end: s + duration, ..base.clone() });
+                }
+            }
+            Err(warning) => {
+                // An unreadable rule keeps at least its first occurrence.
+                warnings.push(format!("\"{}\": {}", base.title, warning));
+                if overlaps(start, end) {
+                    out.push(base);
+                }
+            }
+        }
+    }
+    out.sort_by_key(|e| e.start);
+    (out, warnings)
+}

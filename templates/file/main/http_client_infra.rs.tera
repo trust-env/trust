@@ -1,1 +1,1 @@
-    let {{ var }}_storage = {{ name }}::new({{ base_url_expr }}, vec![{% for h in headers %}({{ h.name }}.to_string(), {{ h.value_expr }}){% if not loop.last %}, {% endif %}{% endfor %}])?;
+    let {{ var }}_storage = {{ name }}::new({{ base_url_expr }}, vec![{% for h in headers %}({{ h.name }}.to_string(), {{ h.value_expr }}){% if not loop.last %}, {% endif %}{% endfor %}])?{% if oauth2 %}.with_oauth2({% for v in oauth2 %}{{ v }}{% if not loop.last %}, {% endif %}{% endfor %}){% endif %};

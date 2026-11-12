@@ -201,6 +201,8 @@ pub struct CodeGenContext {
     locale: Option<String>,
     /// `map A -> B {}` declarations.
     maps: Vec<crate::parser::MapDeclaration>,
+    /// Some `ics_feed {}` infra: write `trust_ics.rs`.
+    needs_ics: bool,
     /// Some HTTP adapter of this crate declares `events:`, so use cases
     /// with `notify` publish to `crate::trust_publish`.
     has_events: bool,
@@ -260,6 +262,7 @@ impl CodeGenContext {
             app_tz: None,
             locale: None,
             maps: Vec::new(),
+            needs_ics: false,
             has_events: false,
             databases: HashMap::new(),
             psql_databases: HashMap::new(),
@@ -1128,7 +1131,7 @@ impl CodeGen {
                 ),
                 Ast::TypeDecl(t) => self.gen_domain(&mut context, t, domain_path.clone()),
                 // Generated with the app that runs them.
-                Ast::App(_) | Ast::Schedule(_) | Ast::Config(_) | Ast::Include(_) | Ast::Database(_) | Ast::Resource(_) | Ast::InfraSet(..) | Ast::Journal(_) | Ast::Map(_) => Ok(()),
+                Ast::App(_) | Ast::Schedule(_) | Ast::Config(_) | Ast::Include(_) | Ast::Database(_) | Ast::Resource(_) | Ast::InfraSet(..) | Ast::Journal(_) | Ast::Map(_) | Ast::Mirror(_) => Ok(()),
                 Ast::Plugin(plugin_ast) => self.generate_plugin(
                     &mut context,
                     plugin_ast,
@@ -1279,6 +1282,14 @@ impl CodeGen {
         }
         if crate::generator::time::write_time_module(&mut context, &src_path)? {
             lib_mods.push("trust_time".to_string());
+        }
+        if context.needs_ics {
+            std::fs::write(
+                src_path.join("trust_ics.rs"),
+                crate::generator::rust_code::render::render("file/http_client/ics.rs.tera", &tera::Context::new()),
+            )
+            .map_err(|e| format!("Failed to write the ics module: {}", e))?;
+            lib_mods.push("trust_ics".to_string());
         }
         if crate::generator::maps::write_maps_module(&mut context, &src_path)? {
             lib_mods.push("trust_maps".to_string());

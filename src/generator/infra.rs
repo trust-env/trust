@@ -63,6 +63,19 @@ impl CodeGen {
         tera_context.insert("timeout_secs", &cfg.timeout_secs);
         tera_context.insert("infra", infra_name);
         tera_context.insert("name", &Self::http_client_struct_name(infra_name));
+        tera_context.insert("ics", &cfg.ics.is_some());
+        if let Some(ics) = &cfg.ics {
+            ics.timezone_fallback.parse::<chrono_tz::Tz>().map_err(|_| {
+                format!("infra '{}': unknown timezone_fallback '{}' (use an IANA name such as \"Europe/Paris\")", infra_name, ics.timezone_fallback)
+            })?;
+            tera_context.insert("ics_fallback", &ics.timezone_fallback);
+            tera_context.insert("ics_all_day", &ics.include_all_day);
+            context.needs_ics = true;
+            context.require_version_dependency_with_features("chrono", "0.4", vec!["serde"]);
+            context.require_version_dependency("chrono-tz", "0.10");
+            context.require_version_dependency("rrule", "0.14");
+            context.require_version_dependency("tracing", "0.1");
+        }
         let code = crate::generator::rust_code::render::render(
             "file/http_client/client.rs.tera",
             &tera_context,
