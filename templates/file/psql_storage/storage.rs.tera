@@ -55,19 +55,6 @@ pub trait {{ trait_name }}: Storage<{{ entity }}, {{ error }}> + Send + Sync {
     fn patch_one(&self, id: EntityId, owner: Option<(&'static str, i64)>, patch: {{ patch }}) -> impl std::future::Future<Output = Result<Option<{{ entity }}>, {{ error }}>> + Send;
 }
 
-#[derive(Clone)]
-pub struct {{ struct_name }} {
-    db: SQLConnector,
-    /// Set by `in_transaction`: every query then runs on that transaction.
-    tx: Option<TrustTx>,
-}
-
-impl {{ struct_name }} {
-    pub fn new(db: SQLConnector) -> Self {
-        Self { db, tx: None }
-    }
-}
-
 /// Runs a query on the shared transaction when there is one, on the pool
 /// otherwise.
 macro_rules! run {
@@ -85,13 +72,54 @@ macro_rules! run {
     };
 }
 
+#[derive(Clone)]
+pub struct {{ struct_name }} {
+    db: SQLConnector,
+    /// Set by `in_transaction`: every query then runs on that transaction.
+    tx: Option<TrustTx>,
+    /// Set by `in_journaled_transaction`: written rows are recorded.
+    journal: Option<TrustJournal>,
+}
+
+impl {{ struct_name }} {
+    pub fn new(db: SQLConnector) -> Self {
+        Self { db, tx: None, journal: None }
+    }
+{%- if has_id %}
+
+    /// The row as JSON (column names), when journaling.
+    async fn snapshot(&self, id: EntityId) -> Result<Option<serde_json::Value>, {{ error }}> {
+        if self.journal.is_none() {
+            return Ok(None);
+        }
+        let query = sqlx::query_scalar::<_, serde_json::Value>("SELECT to_jsonb(t) FROM {{ table }} t WHERE {{ id_field }} = $1").bind(id);
+        run!(self, query, fetch_optional).map_err({{ error }}::from)
+    }
+
+    /// Records a written row in the journal (after re-reading it).
+    async fn journal_write(&self, id: EntityId, before: Option<serde_json::Value>, deleted: bool) -> Result<(), {{ error }}> {
+        if let Some(journal) = &self.journal {
+            let after = if deleted { None } else { self.snapshot(id).await? };
+            if before != after {
+                journal.record(TrustChange { table: "{{ table }}".to_string(), id, before, after });
+            }
+        }
+        Ok(())
+    }
+{%- endif %}
+}
+
 impl TrustTransactional for {{ struct_name }} {
     async fn begin(&self) -> Result<TrustTx, sqlx::Error> {
         crate::begin_transaction(&self.db).await
     }
 
     fn in_transaction(&self, tx: &TrustTx) -> Self {
-        Self { db: self.db.clone(), tx: Some(tx.clone()) }
+        Self { db: self.db.clone(), tx: Some(tx.clone()), journal: None }
+    }
+
+    fn in_journaled_transaction(&self, tx: &TrustTx, journal: &TrustJournal) -> Self {
+        Self { db: self.db.clone(), tx: Some(tx.clone()), journal: Some(journal.clone()) }
     }
 }
 
@@ -101,7 +129,11 @@ impl Storage<{{ entity }}, {{ error }}> for {{ struct_name }} {
             "INSERT INTO {{ table }} ({% for f in data_fields %}{{ f.name }}{% if not loop.last %}, {% endif %}{% endfor %}) VALUES ({% for f in data_fields %}${{ loop.index }}{% if not loop.last %}, {% endif %}{% endfor %}) RETURNING {{ all_columns | join(sep=", ") }}",
         ){% for f in data_fields %}
             .bind({{ self::bind(var="data", f=f) }}){% endfor %};
-        run!(self, query, fetch_one).map_err({{ error }}::from)
+        let row = run!(self, query, fetch_one).map_err({{ error }}::from)?;
+{%- if has_id %}
+        self.journal_write(row.{{ id_field }}, None, false).await?;
+{%- endif %}
+        Ok(row)
     }
 
     async fn save_many(&self, data: Vec<{{ entity }}>) -> Result<Vec<{{ entity }}>, {{ error }}> {
@@ -124,7 +156,13 @@ impl Storage<{{ entity }}, {{ error }}> for {{ struct_name }} {
 {%- for f in data_fields %}
             .bind(col_{{ f.name }})
 {%- endfor %};
-        run!(self, query, fetch_all).map_err({{ error }}::from)
+        let rows = run!(self, query, fetch_all).map_err({{ error }}::from)?;
+{%- if has_id %}
+        for row in &rows {
+            self.journal_write(row.{{ id_field }}, None, false).await?;
+        }
+{%- endif %}
+        Ok(rows)
     }
 
     async fn find_one(&self, id: EntityId) -> Result<Option<{{ entity }}>, {{ error }}> {
@@ -149,29 +187,57 @@ impl Storage<{{ entity }}, {{ error }}> for {{ struct_name }} {
 
     /// `NotFound` when no row has this id.
     async fn update_one(&self, id: EntityId, data: {{ entity }}) -> Result<{{ entity }}, {{ error }}> {
+{%- if has_id %}
+        let before = self.snapshot(id).await?;
+{%- endif %}
         let query = sqlx::query_as::<_, {{ entity }}>(
             "UPDATE {{ table }} SET {% for f in data_fields %}{{ f.name }} = ${{ loop.index }}{% if not loop.last %}, {% endif %}{% endfor %} WHERE {{ id_field }} = ${{ next }} RETURNING {{ all_columns | join(sep=", ") }}",
         ){% for f in data_fields %}
             .bind({{ self::bind(var="data", f=f) }}){% endfor %}
             .bind(id);
-        run!(self, query, fetch_one).map_err({{ error }}::from)
+        let row = run!(self, query, fetch_one).map_err({{ error }}::from)?;
+{%- if has_id %}
+        self.journal_write(id, before, false).await?;
+{%- endif %}
+        Ok(row)
     }
 
     /// `NotFound` when no row has this id.
     async fn delete(&self, id: EntityId) -> Result<{{ entity }}, {{ error }}> {
+{%- if has_id %}
+        let before = self.snapshot(id).await?;
+{%- endif %}
         let query = sqlx::query_as::<_, {{ entity }}>(
             "DELETE FROM {{ table }} WHERE {{ id_field }} = $1 RETURNING {{ all_columns | join(sep=", ") }}",
         )
         .bind(id);
-        run!(self, query, fetch_one).map_err({{ error }}::from)
+        let row = run!(self, query, fetch_one).map_err({{ error }}::from)?;
+{%- if has_id %}
+        self.journal_write(id, before, true).await?;
+{%- endif %}
+        Ok(row)
     }
 
     async fn delete_many(&self, ids: Vec<EntityId>) -> Result<Vec<{{ entity }}>, {{ error }}> {
+{%- if has_id %}
+        let mut befores = Vec::new();
+        for id in &ids {
+            befores.push((*id, self.snapshot(*id).await?));
+        }
+{%- endif %}
         let query = sqlx::query_as::<_, {{ entity }}>(
             "DELETE FROM {{ table }} WHERE {{ id_field }} = ANY($1) RETURNING {{ all_columns | join(sep=", ") }}",
         )
         .bind(&ids);
-        run!(self, query, fetch_all).map_err({{ error }}::from)
+        let rows = run!(self, query, fetch_all).map_err({{ error }}::from)?;
+{%- if has_id %}
+        for (id, before) in befores {
+            if rows.iter().any(|row| row.{{ id_field }} == id) {
+                self.journal_write(id, before, true).await?;
+            }
+        }
+{%- endif %}
+        Ok(rows)
     }
 }
 
@@ -186,13 +252,18 @@ impl {{ trait_name }} for {{ struct_name }} {
 {%- endfor %}
             other => return Err({{ error }}::ConversionError(format!("'{}' is not an owner column of {{ table }}", other))),
         };
+        let before = self.snapshot(id).await?;
         let query = sqlx::query_as::<_, {{ entity }}>(sql)
 {%- for f in data_fields %}
             .bind({{ self::bind(var="data", f=f) }})
 {%- endfor %}
             .bind(id)
             .bind(owner);
-        run!(self, query, fetch_optional).map_err({{ error }}::from)
+        let row = run!(self, query, fetch_optional).map_err({{ error }}::from)?;
+        if row.is_some() {
+            self.journal_write(id, before, false).await?;
+        }
+        Ok(row)
     }
 
     async fn delete_owned(&self, id: EntityId, owner_field: &'static str, owner: i64) -> Result<Option<{{ entity }}>, {{ error }}> {
@@ -202,8 +273,13 @@ impl {{ trait_name }} for {{ struct_name }} {
 {%- endfor %}
             other => return Err({{ error }}::ConversionError(format!("'{}' is not an owner column of {{ table }}", other))),
         };
+        let before = self.snapshot(id).await?;
         let query = sqlx::query_as::<_, {{ entity }}>(sql).bind(id).bind(owner);
-        run!(self, query, fetch_optional).map_err({{ error }}::from)
+        let row = run!(self, query, fetch_optional).map_err({{ error }}::from)?;
+        if row.is_some() {
+            self.journal_write(id, before, true).await?;
+        }
+        Ok(row)
     }
 {%- else %}
     // {{ entity }} has no integer column an `owner:` could name.
@@ -339,11 +415,29 @@ impl {{ trait_name }} for {{ struct_name }} {
 {%- endfor %}
             Some(other) => return Err({{ error }}::ConversionError(format!("'{}' is not an owner column of {{ table }}", other))),
         };
+{%- if has_id %}
+        // The row the unique key may already name, before it's overwritten.
+        let before = if self.journal.is_some() {
+            let existing = sqlx::query_scalar::<_, serde_json::Value>(
+                "SELECT to_jsonb(t) FROM {{ table }} t WHERE {% for k in unique_key %}{{ k }} = ${{ loop.index }}{% if not loop.last %} AND {% endif %}{% endfor %}",
+            ){% for k in unique_key %}
+            .bind(data.{{ k }}.clone()){% endfor %};
+            run!(self, existing, fetch_optional).map_err({{ error }}::from)?
+        } else {
+            None
+        };
+{%- endif %}
         let query = sqlx::query_as::<_, {{ entity }}>(sql)
 {%- for f in data_fields %}
             .bind({{ self::bind(var="data", f=f) }})
 {%- endfor %};
-        run!(self, query, fetch_optional).map_err({{ error }}::from)
+        let row = run!(self, query, fetch_optional).map_err({{ error }}::from)?;
+{%- if has_id %}
+        if let Some(row) = &row {
+            self.journal_write(row.{{ id_field }}, before, false).await?;
+        }
+{%- endif %}
+        Ok(row)
 {%- else %}
         let _ = (data, owner);
         Err({{ error }}::ConversionError("{{ table }} has no unique key: declare `unique: [...]` on its psql infra to upsert".to_string()))
@@ -389,6 +483,9 @@ impl {{ trait_name }} for {{ struct_name }} {
         }
         sql.push_str(" RETURNING {{ all_columns | join(sep=", ") }}");
 
+{%- if has_id %}
+        let before = self.snapshot(id).await?;
+{%- endif %}
         let mut q = sqlx::query_as::<_, {{ entity }}>(sqlx::AssertSqlSafe(sql));
 {%- for f in data_fields %}
         if let Some(value) = patch.{{ f.name }} {
@@ -399,6 +496,12 @@ impl {{ trait_name }} for {{ struct_name }} {
         if let Some((_, value)) = owner {
             q = q.bind(value);
         }
-        run!(self, q, fetch_optional).map_err({{ error }}::from)
+        let row = run!(self, q, fetch_optional).map_err({{ error }}::from)?;
+{%- if has_id %}
+        if row.is_some() {
+            self.journal_write(id, before, false).await?;
+        }
+{%- endif %}
+        Ok(row)
     }
 }

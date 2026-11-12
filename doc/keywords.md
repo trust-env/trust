@@ -973,6 +973,45 @@ adapter Api {
 - Every HTTP adapter answers `GET /health` (`{"status":"ok"}`) unless a route
   uses that path, and logs each request.
 
+### `journal`
+An undoable log of what use cases write:
+
+```tr
+type Action {
+    id: Int  user_id: Int  kind: String  text: String  changes: Json
+    undone: Bool  at: DateTime  requires_ack: Bool
+}
+infra ActionInfra { storage { psql { entity: Action owner: user_id } } }
+
+journal Actions { infra: ActionInfra owner: user_id undo: "/actions/:id/toggle" conflict: refuse }
+
+use_case AcceptInboxItemUseCase { ... journal: Actions text: "« {input.title} » accepted (task {output.task_id})" }
+resource Tasks { ... journal: Actions }
+adapter Api { http { ... resources { Tasks Actions } } }
+```
+
+- The journal's entity needs `id`, the owner field (`Int`), `kind: String`,
+  `text: String`, `changes: Json`, `undone: Bool` and `at: DateTime`; other
+  fields take their default (or a value set from code, below).
+- A use case with `journal:` (and a resource's writes) runs in one
+  transaction (psql infras on one database) and records every row it writes.
+  On success it writes an entry: `kind` = the use case name, `text` = its
+  `text:` (`{input.x}`, `{output.a.b}` placeholders; the use case name by
+  default), `changes` = `[{ "table", "id", "before", "after" }]` — table
+  names and `to_jsonb` rows with column names, `null` for a creation /
+  deletion. A run that changed nothing writes no entry.
+- An output field `action_id: Option<Int>` (or `Int`) receives the entry's id.
+- From a `code {}` body: `self.trust_journal` (or `deps.journal()` in a
+  `module:` file) — `.entry("text").requires_ack(true)` / `.set("field",
+  value)` starts a new entry for the writes that follow; `.text("...")`
+  replaces the current entry's text.
+- `undo: "/path/:id"` generates `Toggle{Journal}UseCase` (input `{ id }`,
+  output the entry) and, in adapters listing the journal under
+  `resources {}`, a `POST` route: an entry not undone is undone (every row
+  back to `before`), an undone one redone. With `conflict: refuse` a row
+  changed since answers 409; `overwrite` skips the check. Another user's
+  entry is a 404.
+
 ### `resource`
 CRUD use cases and routes in one block:
 

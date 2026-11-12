@@ -4,6 +4,10 @@ pub trait {{ name }}Deps {
 {%- for a in accessors %}
     fn {{ a.field }}(&self) -> {{ a.returns }};
 {%- endfor %}
+{%- if journal_handle %}
+    /// The journal of the current run (`deps.journal().entry("...")`).
+    fn journal(&self) -> &TrustJournal;
+{%- endif %}
 }
 
 impl{{ generics }} {{ name }}Deps for {{ name }}{{ generics }}
@@ -13,6 +17,11 @@ impl{{ generics }} {{ name }}Deps for {{ name }}{{ generics }}
         &self.{{ a.field }}
     }
 {%- endfor %}
+{%- if journal_handle %}
+    fn journal(&self) -> &TrustJournal {
+        &self.trust_journal
+    }
+{%- endif %}
 }
 
 /// The body, from its `module:` file (`<this file's name>/logic.rs`).

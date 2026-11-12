@@ -4,12 +4,17 @@ pub struct {{ name }}{{ generics }}
 {%- for f in fields %}
     pub {{ f.field }}: {{ f.field_type }},
 {%- endfor %}
+{%- if journal_handle %}
+    /// The journal of the current run: `self.trust_journal.entry("...")`
+    /// starts a new entry for the writes that follow.
+    pub trust_journal: TrustJournal,
+{%- endif %}
 }
 
 impl{{ generics }} {{ name }}{{ generics }}
 {{ where_clause }}{
     pub fn new({{ params }}) -> Self {
-        Self { {{ ctor_fields | join(sep=", ") }} }
+        Self { {{ ctor_fields | join(sep=", ") }}{% if journal_handle %}{% if ctor_fields %}, {% endif %}trust_journal: TrustJournal::default(){% endif %} }
     }
 }
 

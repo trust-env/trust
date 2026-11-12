@@ -13,6 +13,91 @@ pub trait TrustTransactional: Sized {
     fn begin(&self) -> impl std::future::Future<Output = Result<TrustTx, sqlx::Error>> + Send;
     /// A copy of this storage whose queries all run inside `tx`.
     fn in_transaction(&self, tx: &TrustTx) -> Self;
+    /// Like `in_transaction`, also recording every row it writes (before /
+    /// after) in `journal`.
+    fn in_journaled_transaction(&self, tx: &TrustTx, journal: &TrustJournal) -> Self;
+}
+
+/// One row a journaled run wrote: its table, id, and `to_jsonb` of the row
+/// before and after (`None` for a creation / a deletion). Keys are column
+/// names.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TrustChange {
+    pub table: String,
+    pub id: i64,
+    pub before: Option<serde_json::Value>,
+    pub after: Option<serde_json::Value>,
+}
+
+/// An entry being collected: its text, extra fields, and the rows written
+/// while it was the current one.
+#[derive(Debug, Default)]
+pub struct TrustJournalDraft {
+    pub text: Option<String>,
+    pub fields: Vec<(String, serde_json::Value)>,
+    pub changes: Vec<TrustChange>,
+}
+
+/// The journal of one run (`journal:` use cases). Writes go into the
+/// current entry; `entry("...")` starts a new one. Entries that changed
+/// nothing are not written.
+#[derive(Debug, Clone, Default)]
+pub struct TrustJournal(std::sync::Arc<std::sync::Mutex<Vec<TrustJournalDraft>>>);
+
+impl TrustJournal {
+    pub fn new_run() -> Self {
+        TrustJournal(std::sync::Arc::new(std::sync::Mutex::new(vec![TrustJournalDraft::default()])))
+    }
+
+    /// Starts a new entry: the writes that follow belong to it.
+    pub fn entry(&self, text: impl Into<String>) -> TrustJournalEntry {
+        let mut drafts = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        drafts.push(TrustJournalDraft { text: Some(text.into()), ..Default::default() });
+        TrustJournalEntry { journal: self.clone(), index: drafts.len() - 1 }
+    }
+
+    /// Sets the current entry's text (the `.tr` text otherwise).
+    pub fn text(&self, text: impl Into<String>) {
+        if let Some(draft) = self.0.lock().unwrap_or_else(|e| e.into_inner()).last_mut() {
+            draft.text = Some(text.into());
+        }
+    }
+
+    pub fn record(&self, change: TrustChange) {
+        if let Some(draft) = self.0.lock().unwrap_or_else(|e| e.into_inner()).last_mut() {
+            draft.changes.push(change);
+        }
+    }
+
+    /// The entries that changed something.
+    pub fn take(&self) -> Vec<TrustJournalDraft> {
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()))
+            .into_iter()
+            .filter(|d| !d.changes.is_empty())
+            .collect()
+    }
+}
+
+/// A journal entry started with `entry(...)`.
+pub struct TrustJournalEntry {
+    journal: TrustJournal,
+    index: usize,
+}
+
+impl TrustJournalEntry {
+    /// Sets another field of the entry (e.g. `requires_ack`).
+    pub fn set(self, field: &str, value: impl serde::Serialize) -> Self {
+        if let Ok(value) = serde_json::to_value(value) {
+            if let Some(draft) = self.journal.0.lock().unwrap_or_else(|e| e.into_inner()).get_mut(self.index) {
+                draft.fields.push((field.to_string(), value));
+            }
+        }
+        self
+    }
+
+    pub fn requires_ack(self, value: bool) -> Self {
+        self.set("requires_ack", value)
+    }
 }
 
 pub async fn begin_transaction(db: &common::SQLConnector) -> Result<TrustTx, sqlx::Error> {

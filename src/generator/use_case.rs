@@ -266,7 +266,7 @@ impl CodeGen {
             });
         }
 
-        if use_case.transaction {
+        if use_case.transaction || use_case.journal.is_some() {
             if let Some(call) = resolved_calls
                 .iter()
                 .find(|c| context.find_infra_target_address(&c.infra_name).is_some())
@@ -858,7 +858,7 @@ impl CodeGen {
             });
         }
 
-        if use_case.transaction {
+        if use_case.transaction || use_case.journal.is_some() {
             if !dependencies.iter().any(|d| matches!(d, CodeDependency::Storage { transactional: true, .. })) {
                 return Err(format!(
                     "UseCase '{}': 'transaction: true' needs at least one psql infra",
@@ -880,7 +880,11 @@ impl CodeGen {
             self.write_shared_module(context, &use_case.name, include, &folder)?;
         }
 
-        let body = std::fs::read_to_string(&code.file).map_err(|e| {
+        let body = match &code.inline {
+            Some(body) => Ok(body.clone()),
+            None => std::fs::read_to_string(&code.file),
+        }
+        .map_err(|e| {
             format!(
                 "UseCase '{}': failed to read code file '{}': {}",
                 use_case.name, code.file, e
@@ -912,13 +916,14 @@ impl CodeGen {
         CodeUseCaseFile {
             name: use_case.name.clone(),
             input: input_type.name,
-            output: output_type.name,
+            output: output_type.name.clone(),
             source_file: code.file.clone(),
             body,
             dependencies,
             error_variants: code.errors.clone(),
             transaction: use_case.transaction,
             publish: context.has_events() && use_case.notifies(),
+            journal: Self::journal_use(context, use_case, Some(&output_type), true)?,
             module: code.module,
         }
         .write(&folder)?;
@@ -1037,6 +1042,7 @@ impl CodeGen {
                     folder,
                 )?
                 .with_publish(context.has_events() && use_case.notifies())
+                .with_journal(Self::journal_use(context, &use_case, None, false)?)
                 .with_json_camel(context.json_camel());
 
                 file.write()?;

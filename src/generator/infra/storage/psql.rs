@@ -117,6 +117,9 @@ impl CodeGen {
                         "common",
                         "ssh://git@github.com/BH-World/common.git",
                     );
+                    // Row snapshots (`to_jsonb`) for journaled runs.
+                    context.require_version_dependency("serde_json", "1");
+                    context.require_version_dependency_with_features("sqlx", "0.9.0", vec!["json"]);
                     context.register_infra_entity_module(module_name);
                 }
                 None => {

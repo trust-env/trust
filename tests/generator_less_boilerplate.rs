@@ -108,5 +108,5 @@ fn databases_are_shared_and_env_defaults_apply() {
 #[test]
 fn unknown_resource_is_rejected() {
     let err = try_generate(&TR.replace("resources { Tasks }", "resources { Nope }")).unwrap_err();
-    assert!(err.contains("unknown resource 'Nope'"), "{err}");
+    assert!(err.contains("unknown resource or journal (with undo) 'Nope'"), "{err}");
 }

@@ -1,17 +1,47 @@
 impl{{ generics }} UseCase<{{ input }}, {{ output }}, {{ error }}> for {{ name }}{{ generics }}
 {{ where_clause }}{
-    async fn execute(&self, {% if publish %}user{% else %}{{ user_param }}{% endif %}: i64, input: {{ input }}) -> Result<{{ output }}, {{ error }}> {
+    async fn execute(&self, {% if publish or journal %}user{% else %}{{ user_param }}{% endif %}: i64, input: {{ input }}) -> Result<{{ output }}, {{ error }}> {
 {%- if transaction %}
+{%- if journal and journal.input_json %}
+        let journal_input = serde_json::to_value(&input).unwrap_or_default();
+{%- endif %}
         // One database transaction for the whole run: committed when it
         // succeeds, rolled back on any error.
         let tx = self.{{ tx_first }}.begin().await.map_err(|e| {{ error }}::StorageError(e.to_string()))?;
+{%- if journal %}
+        // Every row written below is recorded for the `{{ journal.name }}` journal.
+        let journal = crate::TrustJournal::new_run();
+{%- endif %}
         let scoped = Self {
 {%- for f in tx_fields %}
-            {{ f.field }}: {% if f.storage %}self.{{ f.field }}.in_transaction(&tx){% else %}self.{{ f.field }}.clone(){% endif %},
+            {{ f.field }}: {% if f.storage %}self.{{ f.field }}.{% if journal %}in_journaled_transaction(&tx, &journal){% else %}in_transaction(&tx){% endif %}{% else %}self.{{ f.field }}.clone(){% endif %},
 {%- endfor %}
+{%- if journal and journal.handle %}
+            trust_journal: journal.clone(),
+{%- endif %}
         };
-        match scoped.run({% if publish %}user{% else %}{{ user_param }}{% endif %}, input).await {
+        match scoped.run({% if publish or journal %}user{% else %}{{ user_param }}{% endif %}, input).await {
             Ok(output) => {
+{%- if journal %}
+                let text = crate::trust_journal_text(
+                    {{ journal.text_literal }},
+                    &{% if journal.input_json %}journal_input{% else %}serde_json::Value::Null{% endif %},
+                    &serde_json::to_value(&output).unwrap_or_default(),
+                );
+                // Only entries that changed something are written.
+                let action_id = crate::trust_write_{{ journal.fn_name }}(&tx, user, "{{ name }}", &text, &journal)
+                    .await
+                    .map_err(|e| {{ error }}::StorageError(e.to_string()))?;
+{%- if journal.action_id == "option" %}
+                let mut output = output;
+                output.action_id = action_id;
+{%- elif journal.action_id == "int" %}
+                let mut output = output;
+                output.action_id = action_id.unwrap_or(0);
+{%- else %}
+                let _ = action_id;
+{%- endif %}
+{%- endif %}
                 crate::commit_transaction(&tx)
                     .await
                     .map_err(|e| {{ error }}::StorageError(e.to_string()))?;
