@@ -1,7 +1,8 @@
 # Keywords
 
 This page lists all language keywords currently recognized by Trust, what
-each one does, and how to use it. For exact type/name conversion rules and
+each one does, and how to use it. For an overview by theme, start with
+[features.md](features.md). For exact type/name conversion rules and
 generated-code shapes, see [conversions.md](conversions.md); for full CLI
 usage see [cli.md](cli.md).
 
@@ -107,8 +108,7 @@ imported type resolves against its own module, and the types it mentions
 (an enum, a nested struct) are generated with it.
 `import X from "git@github.com:org/repo.git"` **parses** successfully but
 codegen hard-errors with "Git imports are not supported yet" the moment it
-tries to resolve one — despite this exact form appearing in the top-level
-README's own example. Don't rely on git imports today.
+tries to resolve one. Don't rely on git imports today.
 
 ### `from`
 Used in import declarations to specify the source module.
@@ -310,8 +310,8 @@ infra SizeInfra {
 }
 ```
 
-The path is read at compile time relative to the working directory and
-copied into the crate as `migrations/<table>.seed.sql`. Because it re-runs
+The path is read at compile time, relative to the `.tr` file (see
+[Paths](#paths)), and copied into the crate as `migrations/<table>.seed.sql`. Because it re-runs
 on every boot it **must be idempotent** (`INSERT ... ON CONFLICT DO
 NOTHING`, explicit ids, ...).
 
@@ -661,7 +661,8 @@ use_case ListOpenTasksUseCase {
 
 Values: `input.<field>`, a literal (quoted string or bare word: `true`,
 `42`), a `[list]` for `in`, `now()` (UTC time of the request), `today()` or
-`today("Europe/Paris")` (the current date, in UTC or in that zone).
+`today("Europe/Paris")` (the current date, in the `config { tz }` zone — UTC
+without one — or in the zone given).
 
 - Only valid when the **primary** (last) `call:` is `list`; the field must
   exist on its entity and can't be a JSONB list/struct column.
@@ -794,7 +795,7 @@ use_case CheckoutUseCase {
 }
 ```
 
-- `file` (required): path relative to the working directory. Its content
+- `file` (or `module`, below): path relative to the `.tr` file. Its content
   is pasted as the body of
   `async fn execute(&self, user: i64, input: Input) -> Result<Output, {Name}Error>`
   — `user` is the JWT user id on routes with `auth`, `0` otherwise.
@@ -1342,7 +1343,8 @@ app Main: run { Api Jobs }
 - Five-field cron (`minute hour day-of-month month day-of-week`) with `*`,
   `a-b`, `*/n`, lists and `jan`/`mon` names; checked by Trust at compile
   time. When both day fields are restricted, either one matches.
-- `tz` (IANA name, UTC by default) applies per schedule or per line;
+- `tz` (IANA name; the `config { tz }` zone by default, else UTC) applies
+  per schedule or per line;
   daylight-saving changes are handled.
 - Each run calls `execute(user, input)` as `user` (0 by default), with the
   input type's defaults — or with literal fields over them:
@@ -1420,8 +1422,7 @@ adapter InternalGrpcApi {
 }
 ```
 
-> **Field type limitation, not currently in limitations.md at HTTP-parity
-> visibility:** gRPC message fields only support `String` and `Int` (`i64`).
+> **Field type limitation:** gRPC message fields only support `String` and `Int` (`i64`).
 > `Uuid`, `Float`, `Decimal`, list-shaped (`Vec<...>`) outputs, and nested
 > struct fields are a **generation-time error** ("gRPC doesn't support field
 > type '...' yet — only String and Int fields are supported"). Design
