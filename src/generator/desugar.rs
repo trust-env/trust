@@ -220,7 +220,12 @@ fn mirror_use_case(mirror: &crate::parser::MirrorDeclaration, env: &MirrorEnv) -
                 "{{
             let source_input = serde_json::from_value(serde_json::json!({{ \"from\": from, \"to\": to }}))
                 .map_err(|e| format!(\"{source_name} input: {{}}\", e))?;
-            self.{source}.execute(user, source_input).await.map_err(|e| format!(\"{source_name}: {{:?}}\", e))?.items
+            let source_output = self.{source}.execute(user, source_input).await.map_err(|e| format!(\"{source_name}: {{:?}}\", e))?;
+            // `configured: false` in the source's output: nothing is written or removed.
+            if serde_json::to_value(&source_output).ok().and_then(|v| v.get(\"configured\").and_then(|c| c.as_bool())) == Some(false) {{
+                return Ok(None);
+            }}
+            source_output.items
         }}",
                 source = source,
                 source_name = mirror.source
@@ -288,6 +293,87 @@ fn mirror_use_case(mirror: &crate::parser::MirrorDeclaration, env: &MirrorEnv) -
             key_fields.iter().map(|k| format!("&{}.{},", var, k)).collect::<String>()
         )
     };
+    // `skip {}`: helpers and regexes before the loop, one test per line in it.
+    let mut skip_setup = String::new();
+    let mut skip_tests = Vec::new();
+    for (i, rule) in mirror.skip.iter().enumerate() {
+        use crate::parser::FilterOperator as Op;
+        let text_of = |v: &serde_json::Value| match v {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        let field = format!("trust_mirror_text(serde_json::to_value(&item.{}).unwrap_or_default())", rule.path.join("."));
+        let shown = format!("item.{}", rule.path.join("."));
+        let mut regex_test = |pattern: String| -> Result<String, String> {
+            regex::Regex::new(&pattern).map_err(|e| err(format!("skip: {}: invalid pattern: {}", shown, e)))?;
+            skip_setup.push_str(&format!("let trust_skip_{} = regex::Regex::new({:?}).expect(\"pattern checked by trust\");\n", i, pattern));
+            Ok(format!("trust_skip_{}.is_match(&{})", i, field))
+        };
+        let like = |pattern: &str| {
+            let mut re = String::from("^");
+            for c in pattern.chars() {
+                match c {
+                    '%' => re.push_str(".*"),
+                    '_' => re.push('.'),
+                    other => re.push_str(&regex::escape(&other.to_string())),
+                }
+            }
+            re.push('$');
+            re
+        };
+        let literal = text_of(&rule.value);
+        let test = match &rule.operator {
+            None => regex_test(literal)?,
+            Some(Op::Like) => regex_test(like(&literal))?,
+            Some(Op::ILike) => regex_test(format!("(?i){}", like(&literal)))?,
+            Some(Op::Contains) => format!("{}.to_lowercase().contains(&{:?}.to_lowercase())", field, literal),
+            Some(Op::Eq) => format!("{} == {:?}", field, literal),
+            Some(Op::NotEq) => format!("{} != {:?}", field, literal),
+            Some(op @ (Op::Gt | Op::Gte | Op::Lt | Op::Lte)) => {
+                let wanted = match op {
+                    Op::Gt => "== std::cmp::Ordering::Greater",
+                    Op::Gte => "!= std::cmp::Ordering::Less",
+                    Op::Lt => "== std::cmp::Ordering::Less",
+                    _ => "!= std::cmp::Ordering::Greater",
+                };
+                format!("trust_mirror_cmp(&{}, {:?}) {}", field, literal, wanted)
+            }
+            Some(op @ (Op::In | Op::NotIn)) => {
+                let serde_json::Value::Array(values) = &rule.value else {
+                    return Err(err(format!("skip: {} in: expected a [list]", shown)));
+                };
+                let list: Vec<String> = values.iter().map(|v| format!("{:?}", text_of(v))).collect();
+                format!("{}[{}].contains(&{}.as_str())", if matches!(op, Op::NotIn) { "!" } else { "" }, list.join(", "), field)
+            }
+        };
+        skip_tests.push(test);
+    }
+    let (skip_helpers, skip_check) = if skip_tests.is_empty() {
+        (String::new(), String::new())
+    } else {
+        (
+            format!(
+                r#"// `skip {{}}`: a source value as text, and comparisons (numbers when both are).
+fn trust_mirror_text(value: serde_json::Value) -> String {{
+    match value {{
+        serde_json::Value::String(text) => text,
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    }}
+}}
+#[allow(dead_code)]
+fn trust_mirror_cmp(a: &str, b: &str) -> std::cmp::Ordering {{
+    match (a.parse::<f64>(), b.parse::<f64>()) {{
+        (Ok(x), Ok(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+        _ => a.cmp(b),
+    }}
+}}
+{}"#,
+                skip_setup
+            ),
+            format!("        if {} {{\n            continue;\n        }}\n", skip_tests.iter().map(|t| format!("({})", t)).collect::<Vec<_>>().join("\n            || ")),
+        )
+    };
     let (owner_filter, owner_arg) = match &owner {
         Some(owner) => (format!(".eq({:?}, user)", owner), format!("Some({:?})", owner)),
         None => (String::new(), "None".to_string()),
@@ -313,12 +399,12 @@ let to = from + chrono::Duration::days(days);
 if !{configured} {{
     return Ok(MirrorReport {{ configured: false, written: 0, removed: 0, error: None }});
 }}
-let outcome: Result<(i64, i64), String> = async {{
+{skip_helpers}let outcome: Result<Option<(i64, i64)>, String> = async {{
     let items = {items};
     let mut keep = std::collections::HashSet::new();
     let mut written = 0i64;
     for item in items.iter() {{
-        #[allow(clippy::needless_update)]
+{skip_check}        #[allow(clippy::needless_update)]
         let row = {entity} {{
 {inits}                ..Default::default()
         }};
@@ -339,18 +425,21 @@ let outcome: Result<(i64, i64), String> = async {{
             removed += 1;
         }}
     }}
-    Ok((written, removed))
+    Ok(Some((written, removed)))
 }}
 .await;
 if let Err(error) = &outcome {{
     tracing::warn!(mirror = "{name}", %error, "mirror failed");
 }}
 Ok(match outcome {{
-    Ok((written, removed)) => MirrorReport {{ configured: true, written, removed, error: None }},
+    Ok(Some((written, removed))) => MirrorReport {{ configured: true, written, removed, error: None }},
+    Ok(None) => MirrorReport {{ configured: false, written: 0, removed: 0, error: None }},
     Err(error) => MirrorReport {{ configured: true, written: 0, removed: 0, error: Some(error) }},
 }})
 "#,
         days = mirror.window_days,
+        skip_helpers = skip_helpers,
+        skip_check = skip_check,
         from_expr = from_expr,
         configured = configured,
         items = items,
@@ -381,7 +470,15 @@ Ok(match outcome {{
         file: format!("(generated by trust for mirror {})", mirror.name),
         infras,
         use_cases,
-        deps: vec![("chrono-tz".to_string(), "0.10".to_string()), ("tracing".to_string(), "0.1".to_string())],
+        deps: {
+            let mut deps = vec![("chrono-tz".to_string(), "0.10".to_string()), ("tracing".to_string(), "0.1".to_string())];
+            if mirror.skip.iter().any(|r| {
+                matches!(r.operator, None | Some(crate::parser::FilterOperator::Like) | Some(crate::parser::FilterOperator::ILike))
+            }) {
+                deps.push(("regex".to_string(), "1".to_string()));
+            }
+            deps
+        },
         inline: Some(body),
         ..Default::default()
     });

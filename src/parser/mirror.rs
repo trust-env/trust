@@ -25,6 +25,7 @@ impl Parser {
             window_from: "today".to_string(),
             window_zone: None,
             window_days: 28,
+            skip: Vec::new(),
         };
         loop {
             match self.next_token() {
@@ -128,6 +129,46 @@ impl Parser {
                         mirror.map.push((field, value));
                     }
                 }
+                Some(Token::Identifier(k)) if k == "skip" => {
+                    if self.next_token() != Some(Token::OpenBrace) {
+                        return Err(err("expected '{' after skip"));
+                    }
+                    loop {
+                        match self.next_token() {
+                            Some(Token::CloseBrace) => break,
+                            Some(Token::Comma) => continue,
+                            Some(Token::Identifier(w)) if w == "item" => {}
+                            other => return Err(err(&format!("skip: expected item.<field>, got {:?}", other))),
+                        }
+                        let mut path = Vec::new();
+                        loop {
+                            let dot = self.current;
+                            match (self.next_token(), self.next_token()) {
+                                (Some(Token::Dot), Some(Token::Identifier(part))) => path.push(part),
+                                (Some(Token::Dot), Some(Token::Keyword(k))) => path.push(k.to_string()),
+                                _ => {
+                                    self.reset(dot);
+                                    break;
+                                }
+                            }
+                        }
+                        if path.is_empty() {
+                            return Err(err("skip: expected item.<field>"));
+                        }
+                        let pos = self.current;
+                        let operator = match self.next_token() {
+                            Some(Token::Identifier(w)) if w == "matches" => None,
+                            _ => {
+                                self.reset(pos);
+                                Some(self.try_filter_operator().ok_or_else(|| {
+                                    err("skip: expected an operator (==, !=, <, >, in, not in, like, ilike, contains, matches)")
+                                })?)
+                            }
+                        };
+                        let value = self.try_json_literal().map_err(|e| err(&format!("skip: {}", e)))?;
+                        mirror.skip.push(crate::parser::MirrorSkip { path, operator, value });
+                    }
+                }
                 Some(Token::Identifier(k)) if k == "window" => {
                     if self.next_token() != Some(Token::OpenBrace) {
                         return Err(err("expected '{' after window"));
@@ -169,7 +210,7 @@ impl Parser {
                 }
                 other => {
                     return Err(err(&format!(
-                        "unexpected {:?} (expected source, into, key, scope, map, window)",
+                        "unexpected {:?} (expected source, into, key, scope, skip, map, window)",
                         other
                     )));
                 }

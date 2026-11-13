@@ -1002,6 +1002,18 @@ pub struct MirrorDeclaration {
     /// (the app's `config { tz }`, else UTC).
     pub window_zone: Option<String>,
     pub window_days: i64,
+    /// `skip { item.title matches "^Presence" }`: source items left out
+    /// (any line matching skips the item).
+    pub skip: Vec<MirrorSkip>,
+}
+
+/// One `skip {}` line: `item.<path> <operator> <value>`.
+#[derive(Debug, Clone)]
+pub struct MirrorSkip {
+    pub path: Vec<String>,
+    /// A `filters {}` operator, or `None` for `matches` (a regex).
+    pub operator: Option<FilterOperator>,
+    pub value: serde_json::Value,
 }
 
 #[derive(Debug, Clone)]

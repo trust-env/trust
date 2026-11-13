@@ -12,6 +12,10 @@ These apply across the whole language and aren't tied to one keyword:
 
 - **Projects span files.** `include "./x.tr"` and file-relative paths; see
   [`include`](#include).
+- **Strings are verbatim.** `"..."` or `'...'`, with no escape sequences:
+  `\` is a plain backslash, so a regex is written as is
+  (`"^\[[^]]+\] Présence"`). A string can't contain its own quote: use
+  the other one (`'say "hi"'`).
 - **`//` line comments.** Everything from `//` to the end of the line is
   ignored (outside string literals). There is no `#` or `/* */` form.
 - **Contextual words.** Newer constructs (`enum`, `schedule`, `config`,
@@ -543,6 +547,7 @@ mirror OutlookMirror {
     into: EventInfra
     key: [user_id, kind, external_id]        // becomes the infra's upsert key
     scope { kind: "outlook"  end_at > window.from  start_at < window.to }
+    skip { item.title matches "^\[[^]]+\] Présence"  item.title contains "(cancelled)" }
     map { kind: "outlook"  external_id: item.instance_id  title: item.title
           start_at: item.start  end_at: item.end  domain: "pro"  note: item.location }
     window { from: week_start  days: 28 }    // now | today | week_start [("Europe/Paris")]
@@ -559,8 +564,19 @@ failure is reported in `error` (nothing is deleted); an `ics_feed` whose URL
 is empty reports `configured: false`. `today` / `week_start` use the
 `config { tz }` zone unless one is given.
 
+`skip {}` leaves source items out before `map {}`: one line per rule,
+`item.<field> <operator> <value>` with the operators of
+[`filters`](#filters) (`==`, `!=`, `<`, `>=`, `in [..]`, `not in [..]`,
+`like`, `ilike`, `contains`) plus `matches "<regex>"`; an item matching any
+line is skipped. Values are compared as text (numbers as numbers when both
+sides are); patterns are checked when Trust compiles. A row copied before
+and skipped now is removed, like an item gone from the source.
+
 A use case source receives `{ from, to }` (its input type's fields of
-those names) and its output's `items` list is mirrored — e.g. a `code` use
+those names) and its output's `items` list is mirrored. When its output
+has `configured: false` (credentials missing, say), the mirror reports
+`configured: false` and writes and removes nothing — an empty `items` list,
+by contrast, removes every copied row of the scope — e.g. a `code` use
 case paging through an API with `get_json_paged`. `map {}` values are
 `item.<field>` (a value goes into an `Option` field as `Some`) or literals.
 
