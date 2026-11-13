@@ -5,9 +5,9 @@ use trust::ai::AiConfig;
 
 /// These build real, generated Rust web-service crates with a genuine
 /// `cargo build` subprocess (never `cargo run`/live Postgres — that's a
-/// separate, smaller e2e tier). Private git dependencies (`common`, ...) are
-/// patched to this repo's local `mod/*` checkouts so nothing here ever needs
-/// network/SSH access; every crates.io dependency is expected to already be
+/// separate, smaller e2e tier). Runtime git dependencies (`common`, `auth`)
+/// are patched to this repo's local `runtime/*` crates so nothing here ever
+/// needs network access; every crates.io dependency is expected to already be
 /// vendored in the local registry cache.
 #[test]
 fn crud_project_compiles() {

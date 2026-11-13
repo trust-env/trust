@@ -314,7 +314,7 @@ bot TelegramBot {
 | Load balancer | `load_balancer { targets on }`: a round-robin reverse proxy. | [`load_balancer`](keywords.md#load_balancer) |
 | Configuration | `${VAR}` and `${VAR:-default}` everywhere addresses and secrets go; `.env` is loaded at startup. | [Defaults](keywords.md#defaults), [`on`](keywords.md#on) |
 | Service tokens | `<binary> token <user_id> [days]` prints a JWT for scripts and agents. | [cli.md](cli.md#generated-binary-commands) |
-| Offline builds | `--vendor`: private dependencies are copied into the output, so it builds without SSH (Docker, CI). | [cli.md](cli.md) |
+| Offline builds | `--vendor`: git dependencies are copied into the output, so it builds without network access (Docker, CI). | [cli.md](cli.md) |
 
 ## 13. Compiler tooling
 
@@ -341,6 +341,6 @@ bot TelegramBot {
 - `./out` (or `--out`) is wiped and regenerated on every compile: never
   hand-edit generated code. Hand-written logic lives in `code {}` files next
   to your `.tr` files.
-- Private dependencies (`common`, `auth`, ...) come from BH-World over SSH;
-  `--vendor` makes the output buildable without it.
+- The runtime crates (`common`, `auth`) come from Trust's own repository
+  (`runtime/`) over HTTPS; `--vendor` makes the output buildable offline.
 - What Trust doesn't do yet: [limitations.md](limitations.md).

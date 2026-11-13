@@ -32,6 +32,11 @@ jobs:
       - name: Run unit tests
         run: cargo test --lib --verbose
 
+      - name: Run runtime crate tests
+        run: |
+          cargo test --manifest-path runtime/common/Cargo.toml
+          cargo test --manifest-path runtime/auth/Cargo.toml
+
   generator-integration:
     runs-on: ubuntu-latest
     needs: unit
@@ -71,15 +76,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # e2e tests generate real Rust projects that depend on `common` (a
-      # private BH-World repo) and `cargo build` them for real, patched via
-      # `[patch]` to a local checkout under `mod/` instead of fetching over
-      # SSH — this is the one step in the whole suite that needs a token,
-      # to check that local checkout out in the first place. Extend this if
-      # a future e2e fixture needs `auth` or `user_permission` too.
-      - name: Check out local common dependency
-        run: |
-          git clone "https://x-access-token:${{ secrets.BH_WORLD_CI_TOKEN }}@github.com/BH-World/common.git" mod/common
+      # e2e tests generate real Rust projects that depend on the `common` /
+      # `auth` runtime crates and `cargo build` them for real, patched via
+      # `[patch]` to this checkout's `runtime/*` crates — no token needed.
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -87,7 +86,11 @@ jobs:
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
 
+      # A fresh runner has none of the generated projects' crates.io
+      # dependencies cached: let the e2e builds download them.
       - name: Run e2e tests
+        env:
+          CARGO_NET_OFFLINE: "false"
         run: cargo test --test 'e2e_*' --verbose
 
   coverage:

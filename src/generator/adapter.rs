@@ -229,7 +229,7 @@ impl CodeGen {
             return self.empty_adapter_service(name, folder, "http");
         }
 
-        context.require_git_dependency("common", "ssh://git@github.com/BH-World/common.git");
+        context.require_git_dependency("common", crate::generator::RUNTIME_GIT_URL);
         context.require_version_dependency("axum", "0.8");
         // `JsonBody` decodes request bodies itself.
         context.require_version_dependency("serde_json", "1");
@@ -275,7 +275,7 @@ impl CodeGen {
         }
 
         if bindings.iter().any(|b| b.requires_user) {
-            context.require_git_dependency("auth", "ssh://git@github.com/BH-World/auth.git");
+            context.require_git_dependency("auth", crate::generator::RUNTIME_GIT_URL);
         }
 
         // Request logs (TraceLayer) on every HTTP adapter.
@@ -415,7 +415,7 @@ impl CodeGen {
             return self.empty_adapter_service(name, folder, "grpc");
         }
 
-        context.require_git_dependency("common", "ssh://git@github.com/BH-World/common.git");
+        context.require_git_dependency("common", crate::generator::RUNTIME_GIT_URL);
         context.require_version_dependency("tonic", "0.12");
         context.require_version_dependency("prost", "0.13");
         context.require_build_dependency("tonic-build", "0.12");
@@ -580,7 +580,7 @@ impl CodeGen {
             return Err(format!("mcp adapter '{}' must declare at least one tool", name));
         }
         let file = Self::mcp_adapter_file(context, &name, mcp)?;
-        context.require_git_dependency("common", "ssh://git@github.com/BH-World/common.git");
+        context.require_git_dependency("common", crate::generator::RUNTIME_GIT_URL);
         context.require_version_dependency("axum", "0.8");
         context.require_version_dependency("serde_json", "1");
         context.require_version_dependency("tracing", "0.1");

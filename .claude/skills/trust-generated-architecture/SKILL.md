@@ -30,7 +30,8 @@ chains in the Rust generator).
   full, filtered copy of every `type`/`use_case`/`infra` it actually
   references — not a reference to a shared crate. Only two things are
   genuinely external and shared: the `common` crate (always a git
-  dependency, `ssh://git@github.com/BH-World/common.git`) and any
+  dependency on Trust's own `runtime/common`,
+  `https://github.com/trust-env/trust.git`) and any
   `import X from "git@..."` use-case source repos. Confirmed by scenario 04
   (multi-app-workspace): `http_api`'s crate has `CreateTaskUseCase`,
   `grpc_worker`'s does not, even though both share `TaskInfra`/`Task`/

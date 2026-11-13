@@ -76,7 +76,10 @@ fn routes_without_auth_keep_executing_as_user_zero() {
 fn login_only_route_pulls_in_the_auth_crate_but_no_permission_generic() {
     let project = generate(AUTH_TR);
     let cargo = project.read("main/Cargo.toml");
-    assert!(cargo.contains("BH-World/auth.git"), "{cargo}");
+    assert!(
+        cargo.contains(&format!("auth = {{ git = \"{}\" }}", trust::generator::RUNTIME_GIT_URL)),
+        "{cargo}"
+    );
 
     let adapter = project.read("main/src/adapters/http/http_api.rs");
     assert!(

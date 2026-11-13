@@ -76,7 +76,7 @@ impl CodeGen {
             bindings.push((mapping.storage_method.clone(), binding));
         }
 
-        context.require_git_dependency("common", "ssh://git@github.com/BH-World/common.git");
+        context.require_git_dependency("common", crate::generator::RUNTIME_GIT_URL);
         context.require_version_dependency("tonic", "0.12");
         context.require_version_dependency("prost", "0.13");
         context.require_build_dependency("tonic-build", "0.12");
