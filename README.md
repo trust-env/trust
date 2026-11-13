@@ -142,7 +142,7 @@ app Main: run { Api Jobs }
 |---|---|
 | `type`, `enum` | Data shapes: entities, requests, responses |
 | `infra` | Storage (`psql`, `s3`, `grpc_client`) and outside services (`http_client`, `ics_feed`) |
-| `use_case` | One operation: storage `call:`s, hand-written `code {}`, `blob:` or `ai {}` |
+| `use_case` | One operation: storage `call:`s, a [`logic {}`](doc/logic.md) script, hand-written `code {}`, `blob:` or `ai {}` |
 | `resource`, `journal`, `mirror` | Generated CRUD APIs, an undo log, sync from external sources |
 | `adapter` | How use cases are exposed: `http`, `mcp`, `grpc` |
 | `schedule`, `notifications`, `bot` | Cron jobs, outbound messages, Telegram bots |

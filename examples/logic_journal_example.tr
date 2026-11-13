@@ -1,0 +1,107 @@
+// logic {} with the app's time zone, map conversions, the undo journal
+// and generated (mirror) use cases.
+config { tz: "Europe/Paris" }
+
+type Task { id: Int, user_id: Int, title: String, start_at: Option<DateTime>, end_at: Option<DateTime>, note: Option<String> }
+type InboxItem { id: Int, user_id: Int, text: String }
+type Action { id: Int, user_id: Int, kind: String, text: String, changes: Json, undone: Bool, at: DateTime, requires_ack: Bool }
+type AcceptRequest { id: Int }
+type MoveRequest { id: Int, start_at: DateTime }
+type DayInfo { weekday: Int, hour: Int, preview: String, morning: Bool, days_to_monday: Int }
+type Empty {}
+type FeedWindow { from: DateTime, to: DateTime }
+type FeedItem { id: String, title: String, start: DateTime, end: DateTime }
+type Feed { items: List<FeedItem> }
+
+infra TaskInfra { storage { psql { entity: Task owner: user_id } } }
+infra InboxInfra { storage { psql { entity: InboxItem owner: user_id } } }
+infra ActionInfra { storage { psql { entity: Action owner: user_id } } }
+
+journal Actions { infra: ActionInfra owner: user_id undo: "/actions/:id/toggle" conflict: refuse }
+
+map InboxItem -> Task { title: text  note: "from the inbox" }
+
+use_case AcceptInboxUseCase {
+    input: AcceptRequest
+    output: Task
+    journal: Actions
+    logic {
+        let item = InboxInfra.get(input.id)
+        let task = TaskInfra.create(item.to_task())
+        InboxInfra.delete(item.id)
+        journal("Inbox: « {item.text.take(60)} » accepted")
+        return task
+    }
+}
+
+use_case MoveTaskUseCase {
+    input: MoveRequest
+    output: Task
+    journal: Actions
+    logic {
+        let task = TaskInfra.get(input.id)
+        let start = task.start_at ?? fail NotScheduled("task {task.id} has no slot")
+        let end = task.end_at ?? start.add_minutes(30)
+        let length = end.seconds_since(start)
+        journal("Moved to {input.start_at.date()} at {input.start_at.hour()}h")
+        return TaskInfra.update(Task { start_at: input.start_at, end_at: input.start_at.add_seconds(length), ..task })
+    }
+}
+
+use_case DayInfoUseCase {
+    input: Empty
+    output: DayInfo
+    logic {
+        let moment = now()
+        let day = today()
+        let preview = TaskInfra.all().map(t => t.title).join(", ").take(60)
+        let monday = day.add_days(8 - day.weekday())
+        return DayInfo {
+            weekday: day.weekday()
+            hour: moment.hour()
+            preview: preview
+            morning: moment.hour() < 12
+            days_to_monday: monday.days_since(day)
+        }
+    }
+}
+
+use_case FeedUseCase {
+    input: FeedWindow
+    output: Feed
+    logic {
+        return Feed { items: [FeedItem { id: "standup", title: "Stand-up {input.from.date()}", start: input.from, end: input.from.add_minutes(15) }] }
+    }
+}
+
+mirror FeedMirror {
+    source: FeedUseCase
+    into: TaskInfra
+    key: [user_id, title]
+    scope { note: "feed" }
+    map { title: item.title  start_at: item.start  end_at: item.end  note: "feed" }
+    window { from: today  days: 7 }
+}
+
+use_case SyncUseCase {
+    input: Empty
+    output: MirrorReport
+    logic {
+        return FeedMirrorUseCase.run(FeedMirrorRequest { days: 7 })
+    }
+}
+
+adapter Api {
+    http {
+        on: "0.0.0.0:8080"
+        auth: required
+        resources { Actions }
+        routes {
+            POST "/inbox/accept" { use_case: AcceptInboxUseCase }
+            POST "/tasks/move" { use_case: MoveTaskUseCase status { NotScheduled -> 409 } }
+            GET "/day" { use_case: DayInfoUseCase }
+            POST "/sync" { use_case: SyncUseCase }
+        }
+    }
+}
+app Main: run { Api }

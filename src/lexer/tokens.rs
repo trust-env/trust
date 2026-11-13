@@ -176,6 +176,9 @@ pub enum Token {
     Plus,
     OpenBracket,
     CloseBracket,
+    /// The raw text between the braces of a `logic { ... }` block and the
+    /// char offset of its first character — parsed by `crate::script`.
+    Script(String, usize),
     Eof,
 }
 
@@ -202,6 +205,7 @@ impl ToString for Token {
             Token::Plus => "+".to_string(),
             Token::OpenBracket => "[".to_string(),
             Token::CloseBracket => "]".to_string(),
+            Token::Script(source, _) => format!("{{{}}}", source),
             Token::Eof => "EOF".to_string(),
         }
     }

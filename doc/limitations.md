@@ -121,6 +121,22 @@
   refresh token is built in (`oauth2 {}`); other per-request headers go
   through `request(...)` + `send_raw(...)`.
 
+## `logic`
+
+- Only `psql` and `http_client` infras and other use cases are reachable;
+  `s3`, `grpc_client` and notification channels need `code {}`.
+- Types imported from another module (`import`) aren't visible to a
+  script; declare them in the project.
+- Tagged enums (variants with fields) can be passed around but not built
+  or matched; struct values can't be compared with `==`.
+- Queries can't match `none` and have no `or`; `TaskInfra.query(...)`
+  returns at most 1000 rows unless `limit:` says otherwise.
+- `Int` arithmetic other than `/` and `%` wraps on overflow in release
+  builds (and panics in debug builds), like Rust.
+- No user-defined functions or shared library between scripts, and no
+  error recovery (a failing call ends the script): use `code {}` with
+  `include:` for those.
+
 ## Migrations
 
 - Added fields become new (nullable) columns; `renamed {}` and `dropped`

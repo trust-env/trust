@@ -1,0 +1,309 @@
+//! The types a script manipulates, and how the project's declarations map
+//! onto them.
+
+use std::collections::HashMap;
+
+use crate::parser::{
+    AllowedType, Ast, DerivedType, InfraServiceType, StorageType, TypeDeclaration,
+};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Ty {
+    Int,
+    Float,
+    Decimal,
+    Bool,
+    Str,
+    Uuid,
+    DateTime,
+    Date,
+    Time,
+    Json,
+    Opt(Box<Ty>),
+    List(Box<Ty>),
+    /// A declared struct (or `Omit`/`Pick`/`Partial` type).
+    Struct(String),
+    /// A declared enum of plain values.
+    Enum(String),
+    /// A declared enum whose variants carry fields: passed around only.
+    Tagged(String),
+    /// The built-in `RawRequest` input.
+    RawRequest,
+    /// What `xs.push(x)` returns.
+    Unit,
+    /// What `fail` "returns": fits anywhere.
+    Never,
+}
+
+impl Ty {
+    pub fn opt(inner: Ty) -> Ty {
+        Ty::Opt(Box::new(inner))
+    }
+
+    pub fn list(inner: Ty) -> Ty {
+        Ty::List(Box::new(inner))
+    }
+
+    pub fn name(&self) -> String {
+        match self {
+            Ty::Int => "Int".into(),
+            Ty::Float => "Float".into(),
+            Ty::Decimal => "Decimal".into(),
+            Ty::Bool => "Bool".into(),
+            Ty::Str => "String".into(),
+            Ty::Uuid => "Uuid".into(),
+            Ty::DateTime => "DateTime".into(),
+            Ty::Date => "Date".into(),
+            Ty::Time => "Time".into(),
+            Ty::Json => "Json".into(),
+            Ty::Opt(t) => format!("Option<{}>", t.name()),
+            Ty::List(t) => format!("List<{}>", t.name()),
+            Ty::Struct(n) | Ty::Enum(n) | Ty::Tagged(n) => n.clone(),
+            Ty::RawRequest => "RawRequest".into(),
+            Ty::Unit => "nothing".into(),
+            Ty::Never => "fail".into(),
+        }
+    }
+
+    /// The type as the generated crate spells it.
+    pub fn rust(&self) -> String {
+        match self {
+            Ty::Int => "i64".into(),
+            Ty::Float => "f64".into(),
+            Ty::Decimal => "rust_decimal::Decimal".into(),
+            Ty::Bool => "bool".into(),
+            Ty::Str => "String".into(),
+            Ty::Uuid => "uuid::Uuid".into(),
+            Ty::DateTime => "chrono::DateTime<chrono::Utc>".into(),
+            Ty::Date => "chrono::NaiveDate".into(),
+            Ty::Time => "chrono::NaiveTime".into(),
+            Ty::Json => "serde_json::Value".into(),
+            Ty::Opt(t) => format!("Option<{}>", t.rust()),
+            Ty::List(t) => format!("Vec<{}>", t.rust()),
+            Ty::Struct(n) | Ty::Enum(n) | Ty::Tagged(n) => n.clone(),
+            Ty::RawRequest => "RawRequest".into(),
+            Ty::Unit => "()".into(),
+            Ty::Never => "_".into(),
+        }
+    }
+
+    pub fn is_copy(&self) -> bool {
+        match self {
+            Ty::Int
+            | Ty::Float
+            | Ty::Decimal
+            | Ty::Bool
+            | Ty::Uuid
+            | Ty::DateTime
+            | Ty::Date
+            | Ty::Time
+            | Ty::Enum(_) => true,
+            Ty::Opt(t) => t.is_copy(),
+            _ => false,
+        }
+    }
+
+    /// Supports `==` (generated structs don't derive `PartialEq`).
+    pub fn is_eq(&self) -> bool {
+        match self {
+            Ty::Struct(_) | Ty::Tagged(_) | Ty::RawRequest | Ty::Unit | Ty::Never => false,
+            Ty::Opt(t) | Ty::List(t) => t.is_eq(),
+            _ => true,
+        }
+    }
+
+    /// Supports `<` and sorting.
+    pub fn is_ord(&self) -> bool {
+        match self {
+            Ty::Int | Ty::Float | Ty::Decimal | Ty::Str | Ty::DateTime | Ty::Date | Ty::Time => {
+                true
+            }
+            Ty::Opt(t) => t.is_ord(),
+            _ => false,
+        }
+    }
+
+    /// Totally ordered (`max()`/`min()` of a list; not `Float`).
+    pub fn is_total(&self) -> bool {
+        self.is_ord() && !matches!(self, Ty::Float) && !matches!(self, Ty::Opt(t) if !t.is_total())
+    }
+
+    /// Can be written into a string (`"{x}"`) or a query.
+    pub fn is_display(&self) -> bool {
+        matches!(
+            self,
+            Ty::Int
+                | Ty::Float
+                | Ty::Decimal
+                | Ty::Bool
+                | Ty::Str
+                | Ty::Uuid
+                | Ty::DateTime
+                | Ty::Date
+                | Ty::Time
+                | Ty::Enum(_)
+                | Ty::Json
+        )
+    }
+
+    pub fn is_numeric(&self) -> bool {
+        matches!(self, Ty::Int | Ty::Float | Ty::Decimal)
+    }
+}
+
+/// An infra, as far as a script can use it.
+#[derive(Debug, Clone)]
+pub enum InfraKind {
+    Psql {
+        entity: String,
+        owner: Option<String>,
+    },
+    HttpClient,
+    /// Any other kind: named in the error message.
+    Other(&'static str),
+}
+
+/// What a script can see of the project.
+#[derive(Debug, Default)]
+pub struct Project {
+    pub types: HashMap<String, TypeDeclaration>,
+    pub infras: HashMap<String, InfraKind>,
+    /// `(input, output)` of every use case.
+    pub use_cases: HashMap<String, (Option<AllowedType>, Option<AllowedType>)>,
+    /// `map A -> B` declarations: `(A, B)`.
+    pub maps: Vec<(String, String)>,
+    /// A `config { tz | locale }` exists: the crate has `crate::tz`.
+    pub local_time: bool,
+}
+
+impl Project {
+    pub fn new(asts: &[Ast]) -> Self {
+        let mut project = Project::default();
+        for ast in asts {
+            match ast {
+                Ast::TypeDecl(t) => {
+                    let name = match t {
+                        TypeDeclaration::TypeAlias(a) => a.name.clone(),
+                        TypeDeclaration::Struct(s) => s.name.clone(),
+                        TypeDeclaration::Enum(e) => e.name.clone(),
+                        TypeDeclaration::Derived(d) => d.name.clone(),
+                    };
+                    project.types.insert(name, t.clone());
+                }
+                Ast::Infra(infra) => {
+                    let kind = match &infra.service_type {
+                        InfraServiceType::Storage(StorageType::Psql(psql)) => match &psql.entity {
+                            AllowedType::DefinedType(entity) => InfraKind::Psql {
+                                entity: entity.clone(),
+                                owner: psql.owner.clone(),
+                            },
+                            _ => InfraKind::Other("psql"),
+                        },
+                        InfraServiceType::HttpClient(_) => InfraKind::HttpClient,
+                        InfraServiceType::Storage(StorageType::S3(_)) => InfraKind::Other("s3"),
+                        InfraServiceType::Storage(StorageType::GrpcClient(_)) => {
+                            InfraKind::Other("grpc_client")
+                        }
+                    };
+                    project.infras.insert(infra.name.clone(), kind);
+                }
+                Ast::UseCase(u) => {
+                    project
+                        .use_cases
+                        .insert(u.name.clone(), (u.input.clone(), u.output.clone()));
+                }
+                Ast::Map(m) => project.maps.push((m.from.clone(), m.to.clone())),
+                Ast::Config(c) => project.local_time |= c.tz.is_some() || c.locale.is_some(),
+                _ => {}
+            }
+        }
+        project
+    }
+
+    pub fn ty(&self, t: &AllowedType) -> Result<Ty, String> {
+        Ok(match t {
+            AllowedType::String | AllowedType::Regex(_) => Ty::Str,
+            AllowedType::Uuid => Ty::Uuid,
+            AllowedType::Int => Ty::Int,
+            AllowedType::Float => Ty::Float,
+            AllowedType::Decimal => Ty::Decimal,
+            AllowedType::Bool => Ty::Bool,
+            AllowedType::DateTime => Ty::DateTime,
+            AllowedType::Date => Ty::Date,
+            AllowedType::Time => Ty::Time,
+            AllowedType::Json => Ty::Json,
+            AllowedType::Option(inner) => Ty::opt(self.ty(inner)?),
+            AllowedType::List(inner) => Ty::list(self.ty(inner)?),
+            AllowedType::Range(inner, _, _) => self.ty(inner)?,
+            AllowedType::DefinedType(name) => self.named(name)?,
+        })
+    }
+
+    pub fn named(&self, name: &str) -> Result<Ty, String> {
+        match self.types.get(name) {
+            Some(TypeDeclaration::Struct(_)) | Some(TypeDeclaration::Derived(_)) => {
+                Ok(Ty::Struct(name.to_string()))
+            }
+            Some(TypeDeclaration::Enum(e)) if e.is_tagged() => Ok(Ty::Tagged(name.to_string())),
+            Some(TypeDeclaration::Enum(_)) => Ok(Ty::Enum(name.to_string())),
+            Some(TypeDeclaration::TypeAlias(a)) => self.ty(&a.aliased_type),
+            None if name == "RawRequest" => Ok(Ty::RawRequest),
+            None => Err(format!(
+                "unknown type '{}' (logic only sees types declared in this project, not imported ones)",
+                name
+            )),
+        }
+    }
+
+    /// The fields of a struct type, in declaration order.
+    pub fn fields(&self, name: &str) -> Result<Vec<(String, AllowedType)>, String> {
+        match self.types.get(name) {
+            Some(TypeDeclaration::Struct(s)) => Ok(s
+                .fields
+                .iter()
+                .map(|f| (f.name.clone(), f.field_type.clone()))
+                .collect()),
+            Some(TypeDeclaration::Derived(d)) => {
+                let mut fields = self.derived_fields(&d.base)?;
+                fields.extend(
+                    d.extra
+                        .iter()
+                        .map(|f| (f.name.clone(), f.field_type.clone())),
+                );
+                Ok(fields)
+            }
+            _ => Err(format!("'{}' is not a struct", name)),
+        }
+    }
+
+    fn derived_fields(&self, derived: &DerivedType) -> Result<Vec<(String, AllowedType)>, String> {
+        Ok(match derived {
+            DerivedType::Named(name) => self.fields(name)?,
+            DerivedType::Omit(base, names) => self
+                .derived_fields(base)?
+                .into_iter()
+                .filter(|(f, _)| !names.contains(f))
+                .collect(),
+            DerivedType::Pick(base, names) => self
+                .derived_fields(base)?
+                .into_iter()
+                .filter(|(f, _)| names.contains(f))
+                .collect(),
+            DerivedType::Partial(base) => self
+                .derived_fields(base)?
+                .into_iter()
+                .map(|(f, t)| match t {
+                    AllowedType::Option(_) => (f, t),
+                    t => (f, AllowedType::Option(Box::new(t))),
+                })
+                .collect(),
+        })
+    }
+
+    pub fn enum_variants(&self, name: &str) -> Vec<String> {
+        match self.types.get(name) {
+            Some(TypeDeclaration::Enum(e)) => e.variants.clone(),
+            _ => Vec::new(),
+        }
+    }
+}

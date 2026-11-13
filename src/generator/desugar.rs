@@ -82,6 +82,7 @@ fn use_case(name: String, infra: &str, method: &str, owner: Option<String>) -> U
         filters: Vec::new(),
         owner,
         code: None,
+        logic: None,
         order_by: Vec::new(),
         transaction: false,
         notify: None,
@@ -990,5 +991,7 @@ pub fn desugar(asts: Vec<Ast>) -> Result<Vec<Ast>, String> {
             _ => {}
         }
     }
-    Ok(out)
+    // `logic {}` scripts become the `code {}` they stand for — last, so
+    // they can run the use cases resources, journals and mirrors add.
+    crate::script::lower_all(out)
 }

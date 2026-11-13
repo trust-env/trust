@@ -1,7 +1,7 @@
 use crate::{
     lexer::{Keyword, Token},
     parser::{
-        AiSpec, Ast, BlobCall, CodeSpec, ErrorMapping, FilterMapping, FilterOperator, FilterSource,
+        AiSpec, Ast, BlobCall, CodeSpec, LogicSpec, ErrorMapping, FilterMapping, FilterOperator, FilterSource,
         OrderBy, Parser, UseCaseCall, UseCaseService,
     },
 };
@@ -599,6 +599,7 @@ impl Parser {
         let mut filters = Vec::new();
         let mut owner = None;
         let mut code = None;
+        let mut logic = None;
         let mut order_by = Vec::new();
         let mut transaction = false;
         let mut notify = None;
@@ -659,6 +660,15 @@ impl Parser {
                     self.revert(1);
                     code = Some(self.try_code_block()?);
                 }
+                Some(Token::Identifier(k)) if k == "logic" => match self.next_token() {
+                    Some(Token::Script(source, offset)) => {
+                        logic = Some(LogicSpec { source, offset, ..Default::default() });
+                    }
+                    _ => {
+                        self.reset(pos);
+                        return Err("Expected '{' after 'logic'".to_string());
+                    }
+                },
                 Some(Token::Identifier(k)) if k == "order_by" => {
                     order_by = self.try_order_by()?;
                 }
@@ -704,6 +714,9 @@ impl Parser {
                 }
             }
         }
+        if let Some(logic) = &mut logic {
+            logic.unscoped = owner.as_deref() == Some("none");
+        }
         Ok(UseCaseService {
             name,
             input,
@@ -714,6 +727,7 @@ impl Parser {
             filters,
             owner,
             code,
+            logic,
             order_by,
             transaction,
             notify,
@@ -737,21 +751,23 @@ impl Parser {
                     filters,
                     owner,
                     code,
+                    logic,
                     ..
                 } = &use_case;
                 let modes_used = !calls.is_empty() as u8
                     + ai.is_some() as u8
                     + blob.is_some() as u8
-                    + code.is_some() as u8;
+                    + code.is_some() as u8
+                    + logic.is_some() as u8;
                 if modes_used > 1 {
                     return Err(format!(
-                        "UseCase '{}' cannot declare more than one of 'call', 'ai', 'blob', 'code' — they're mutually exclusive",
+                        "UseCase '{}' cannot declare more than one of 'call', 'ai', 'blob', 'code', 'logic' — they're mutually exclusive",
                         name
                     ));
                 }
-                if !filters.is_empty() && code.is_some() {
+                if !filters.is_empty() && (code.is_some() || logic.is_some()) {
                     return Err(format!(
-                        "UseCase '{}': 'filters' cannot be combined with 'code'",
+                        "UseCase '{}': 'filters' cannot be combined with 'code' or 'logic'",
                         name
                     ));
                 }
@@ -761,13 +777,16 @@ impl Parser {
                         name
                     ));
                 }
-                if use_case.transaction && calls.is_empty() && code.is_none() {
+                if use_case.transaction && calls.is_empty() && code.is_none() && logic.is_none() {
                     return Err(format!(
-                        "UseCase '{}': 'transaction' is only valid with 'call' or 'code'",
+                        "UseCase '{}': 'transaction' is only valid with 'call', 'code' or 'logic'",
                         name
                     ));
                 }
-                if owner.is_some() && calls.is_empty() {
+                // `owner: none` lets a logic body reach every row of its
+                // infras' owned tables.
+                let logic_unscoped = logic.is_some() && owner.as_deref() == Some("none");
+                if owner.is_some() && calls.is_empty() && !logic_unscoped {
                     return Err(format!(
                         "UseCase '{}': 'owner' is only valid with 'call'",
                         name
@@ -929,7 +948,7 @@ mod tests {
         let err = parser_for(src).try_use_case_service().unwrap_err();
         assert_eq!(
             err,
-            "UseCase 'Bad' cannot declare more than one of 'call', 'ai', 'blob', 'code' — they're mutually exclusive"
+            "UseCase 'Bad' cannot declare more than one of 'call', 'ai', 'blob', 'code', 'logic' — they're mutually exclusive"
         );
     }
 
