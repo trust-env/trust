@@ -219,7 +219,7 @@ impl Parser {
     }
 
     /// The operator of a `filters {}` line, right after the field name.
-    fn try_filter_operator(&mut self) -> Option<FilterOperator> {
+    pub(super) fn try_filter_operator(&mut self) -> Option<FilterOperator> {
         let pos = self.current;
         let op = match self.next_token() {
             Some(Token::Colon) => FilterOperator::Eq,

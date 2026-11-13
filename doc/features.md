@@ -187,7 +187,7 @@ Blocks that generate several use cases, routes and types at once.
 | Resources | `resource Tasks { infra path list create get patch delete }`: CRUD use cases and REST routes in one block. | [`resource`](keywords.md#resource) |
 | Singleton resources | `singleton default { ... } get upsert`: one row per user (settings), with defaults. | [`resource`](keywords.md#resource) |
 | Undo journal | `journal Actions { ... undo: "/actions/:id/toggle" }`: every write of a journaled use case is recorded, and can be undone or redone. A row already in its target state isn't a conflict. | [`journal`](keywords.md#journal) |
-| Sync mirrors | `mirror X { source into key scope map window }`: copies an ICS feed or another use case's items into a table, upserting on a key and deleting what disappeared. Reports `{ configured, written, removed, error }`. | [`mirror`](keywords.md#mirror) |
+| Sync mirrors | `mirror X { source into key scope skip map window }`: copies an ICS feed or another use case's items into a table, upserting on a key and deleting what disappeared; `skip {}` leaves items out (`item.title matches "^Présence"`). Reports `{ configured, written, removed, error }`. | [`mirror`](keywords.md#mirror) |
 
 ```tr
 resource Tasks { infra: TaskInfra path: "/tasks" journal: Actions list create get save patch delete }

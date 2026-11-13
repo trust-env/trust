@@ -21,6 +21,7 @@ mirror OutlookMirror {
     into: EventInfra
     key: [user_id, kind, external_id]
     scope { kind: "outlook"  end_at > window.from  start_at < window.to }
+    skip { item.title matches "^\[[^]]+\] Présence"  item.title ilike "%cancelled%"  item.uid in ["a", "b"] }
     map { kind: "outlook"  external_id: item.instance_id  title: item.title  start_at: item.start  end_at: item.end  note: item.location }
     window { from: week_start("Europe/Paris")  days: 28 }
 }
@@ -117,4 +118,26 @@ fn every_windows_zone_maps_to_a_known_iana_zone() {
     assert!(count > 130, "only {count} Windows zones");
     assert!(template.contains(r#""Azerbaijan Standard Time" => "Asia/Baku","#));
     assert!(template.contains("unknown time zone"));
+}
+
+
+#[test]
+fn mirrors_skip_items_and_respect_unconfigured_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = generate(&tr(dir.path()));
+    let outlook = p.read("main/src/applications/outlook_mirror_use_case.rs");
+    assert!(outlook.contains(r#"regex::Regex::new("^\\[[^]]+\\] Présence")"#), "{outlook}");
+    assert!(outlook.contains(r#"regex::Regex::new("(?i)^.*cancelled.*$")"#), "{outlook}");
+    assert!(outlook.contains(r#"["a", "b"].contains(&trust_mirror_text(serde_json::to_value(&item.uid).unwrap_or_default()).as_str())"#), "{outlook}");
+    assert!(outlook.contains("continue;"), "{outlook}");
+    assert!(p.read("main/Cargo.toml").contains("regex"));
+    let google = p.read("main/src/applications/google_mirror_use_case.rs");
+    assert!(google.contains(r#"v.get("configured")"#), "{google}");
+    assert!(google.contains("Ok(None) => MirrorReport { configured: false"), "{google}");
+    assert!(!google.contains("trust_mirror_text"), "{google}");
+
+    let err = try_generate(&tr(dir.path()).replace(r#"matches "^\[[^]]+\] Présence""#, r#"matches "(unclosed""#)).unwrap_err();
+    assert!(err.contains("invalid pattern"), "{err}");
+    let err = try_generate(&tr(dir.path()).replace(r#"item.uid in ["a", "b"]"#, r#"item.uid in "a""#)).unwrap_err();
+    assert!(err.contains("expected a [list]"), "{err}");
 }

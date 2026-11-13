@@ -233,6 +233,9 @@
   source, changed or not.
 - `scope {}` takes equalities and `> window.from` / `< window.to`
   comparisons only.
+- `skip {}` rules are OR-ed (any matching line skips) and read direct
+  fields of the item (`item.a.b` through a struct, not through an
+  `Option`).
 - Literal values of `map {}` are converted when the mirror runs: one that
   doesn't fit its field is reported in `error`, not at compile time.
 - Writing back to the source (pushing local rows to an API) is not
