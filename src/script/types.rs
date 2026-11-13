@@ -29,6 +29,11 @@ pub enum Ty {
     Tagged(String),
     /// The built-in `RawRequest` input.
     RawRequest,
+    /// `try e`: the value, or the error's text (`Result<T, String>`).
+    Try(Box<Ty>),
+    /// `Api.send(...)`: status and body of an HTTP response, whatever the
+    /// status (`(i64, String)`).
+    Response,
     /// What `xs.push(x)` returns.
     Unit,
     /// What `fail` "returns": fits anywhere.
@@ -60,6 +65,8 @@ impl Ty {
             Ty::List(t) => format!("List<{}>", t.name()),
             Ty::Struct(n) | Ty::Enum(n) | Ty::Tagged(n) => n.clone(),
             Ty::RawRequest => "RawRequest".into(),
+            Ty::Try(t) => format!("Try<{}>", t.name()),
+            Ty::Response => "Response".into(),
             Ty::Unit => "nothing".into(),
             Ty::Never => "fail".into(),
         }
@@ -82,6 +89,8 @@ impl Ty {
             Ty::List(t) => format!("Vec<{}>", t.rust()),
             Ty::Struct(n) | Ty::Enum(n) | Ty::Tagged(n) => n.clone(),
             Ty::RawRequest => "RawRequest".into(),
+            Ty::Try(t) => format!("Result<{}, String>", t.rust()),
+            Ty::Response => "(i64, String)".into(),
             Ty::Unit => "()".into(),
             Ty::Never => "_".into(),
         }
@@ -106,7 +115,13 @@ impl Ty {
     /// Supports `==` (generated structs don't derive `PartialEq`).
     pub fn is_eq(&self) -> bool {
         match self {
-            Ty::Struct(_) | Ty::Tagged(_) | Ty::RawRequest | Ty::Unit | Ty::Never => false,
+            Ty::Struct(_)
+            | Ty::Tagged(_)
+            | Ty::RawRequest
+            | Ty::Unit
+            | Ty::Never
+            | Ty::Try(_)
+            | Ty::Response => false,
             Ty::Opt(t) | Ty::List(t) => t.is_eq(),
             _ => true,
         }
@@ -158,7 +173,8 @@ pub enum InfraKind {
         entity: String,
         owner: Option<String>,
     },
-    HttpClient,
+    /// `ics`: an `ics_feed {}` (also has `occurrences(from, to)`).
+    HttpClient { ics: bool },
     /// Any other kind: named in the error message.
     Other(&'static str),
 }
@@ -219,7 +235,16 @@ impl Project {
                             },
                             _ => InfraKind::Other("psql"),
                         },
-                        InfraServiceType::HttpClient(_) => InfraKind::HttpClient,
+                        InfraServiceType::HttpClient(c) => {
+                            if c.ics.is_some() && !project.types.contains_key("IcsOccurrence") {
+                                project
+                                    .types
+                                    .insert("IcsOccurrence".to_string(), ics_occurrence());
+                            }
+                            InfraKind::HttpClient {
+                                ics: c.ics.is_some(),
+                            }
+                        }
                         InfraServiceType::Storage(StorageType::S3(_)) => InfraKind::Other("s3"),
                         InfraServiceType::Storage(StorageType::GrpcClient(_)) => {
                             InfraKind::Other("grpc_client")
@@ -326,4 +351,28 @@ impl Project {
             _ => Vec::new(),
         }
     }
+}
+
+/// `crate::IcsOccurrence`, generated with `ics_feed {}` infras.
+fn ics_occurrence() -> TypeDeclaration {
+    use crate::parser::{StructDeclaration, StructField};
+    let field = |name: &str, field_type: AllowedType| StructField {
+        name: name.to_string(),
+        field_type,
+    };
+    let text = || AllowedType::Option(Box::new(AllowedType::String));
+    TypeDeclaration::Struct(StructDeclaration {
+        name: "IcsOccurrence".to_string(),
+        fields: vec![
+            field("uid", AllowedType::String),
+            field("instance_id", AllowedType::String),
+            field("title", AllowedType::String),
+            field("start", AllowedType::DateTime),
+            field("end", AllowedType::DateTime),
+            field("location", text()),
+            field("description", text()),
+            field("all_day", AllowedType::Bool),
+        ],
+        export: None,
+    })
 }

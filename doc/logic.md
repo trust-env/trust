@@ -70,7 +70,7 @@ A complete project using most of the language is in
 | Expression | Meaning |
 |---|---|
 | `1`, `2.5`, `true`, `none`, `"text {expr}"` | Literals. Strings interpolate `{expr}`; `{{` `}}` are braces. |
-| `[a, b]` | A `List`. |
+| `[a, b]` | A `List`. With one item per line, commas may be left out. |
 | `Task { title: t, done: false }` | A struct. Option, List and `id` fields may be left out, and so may the owner field of an entity whose infra has `owner:` (`create`/`update` fill it). `..base` copies the other fields: `Task { done: true, ..task }`. |
 | `{ key: value, other }` | A `Json` object (`{ other }` is `{ other: other }`). |
 | `Status.done` | An enum value (as written in the `enum`). |
@@ -115,17 +115,45 @@ transaction, as with `code {}`.
 | `Api.get(path)`, `Api.delete(path)` | the response |
 | `Api.post(path, body)`, `put`, `patch` | the response |
 | `Api.text(path)` | `String` |
+| `Api.get_paged(path, "items", "nextPageToken")` | every page's `items`, following `nextPageToken` (`List<Json>`, or `List<T>` when the context expects it) |
+| `Api.send("PATCH", path, body)`, `Api.send("DELETE", path)` | a `Response` whatever the HTTP status: `.status` (`Int`), `.text`, `.json()` |
+| `Api.is_configured()` | `Bool`: its `${VARS}` are set |
+
+The method of `send` is a literal: `"GET"`, `"POST"`, `"PUT"`, `"PATCH"`,
+`"DELETE"`. Only a network failure makes it fail.
 
 The response decodes into the type the context expects —
 `let r: Purchase = Api.post(...)`, `return Api.get(...)` — and is `Json`
 otherwise. `Json` values read with `j.field`, `j.get("key")`, then
 `.str() .int() .float() .bool()` (`Option`s), `.list()`, `.is_null()`.
 
+**ics_feed**: `Ics.occurrences(from, to)` returns the feed's
+`List<IcsOccurrence>` over the window (fields `uid instance_id title start end
+location description all_day`); `Ics.is_configured()` tells whether its URL
+is set.
+
 **Other use cases**: `PlanUseCase.run(input)` returns its output (its
 `input` and `output` must be declared). That includes the use cases Trust
 adds itself — a mirror's `{Name}MirrorUseCase`, a resource's
 `Create{Entity}UseCase`, a journal's `Toggle{Journal}UseCase`. Other infra kinds (`s3`,
 `grpc_client`) aren't available yet: use `code {}`.
+
+## Recovering from errors (`try`)
+
+`try e` turns `e`'s failure into a value instead of ending the script — for
+reports where each source succeeds or fails on its own:
+
+```tr
+let google = try ImportGoogleUseCase.run(input)
+if let error = google.error { log_warn("google: {error}") }
+let report = google ?? SourceReport { name: "google", configured: true, written: 0, error: google.error }
+```
+
+A `Try<T>` has `.ok` (`Option<T>`), `.error` (`Option<String>`: the
+message of `fail X("...")`, or `"not found"`), `is_ok()` and `is_error()`,
+and `try e ?? fallback` is the value or the fallback. `try` covers any
+expression (use case runs, infra and HTTP calls, a `fail` inside it); it
+can't be used inside `x => ...`.
 
 ## Shared Rust functions (`extern fn`)
 
@@ -177,13 +205,22 @@ use case declaring `journal:`), `env("UPPER_CASE_NAME")` (a literal
 name, so every variable a script reads shows in the source; fails with
 `StorageError` when unset), `sha256(text)`, `hmac_sha256(key, text)` (hex),
 `secure_eq(a, b)` (constant-time comparison, for signatures),
-`to_json(value)`, `min(a, b)`, `max(a, b)`.
+`to_json(value)`, `min(a, b)`, `max(a, b)`, and:
+
+| Function | Returns |
+|---|---|
+| `env_opt("NAME")` | `Option<String>`: none when unset or blank |
+| `url_encode(text)` | `text` percent-encoded for a URL segment or query value |
+| `parse_datetime(text)` | `Option<DateTime>` from RFC 3339, or a date alone (`2026-01-02`, midnight in the app's time zone) |
+| `parse_date(text)` | `Option<Date>` from a date or an RFC 3339 instant |
+| `week_start()` | this week's Monday 0:00 in the app's time zone |
+| `log_warn(text)` | logs a warning (`tracing`), tagged with the use case |
 
 `weekday()` is 1 for Monday to 7 for Sunday. Dates and instants compare
 with `< <= > >= ==`; `d.add_days(-1)` goes back.
 
 Inside `x => ...` nothing that can fail runs (infra and use case calls,
-`fail`, integer division, `env`, `hmac_sha256`): write a `for` loop instead.
+`fail`, `try`, integer division, `env`, `hmac_sha256`): write a `for` loop instead.
 
 ```tr
 use_case WebhookUseCase {

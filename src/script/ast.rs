@@ -107,6 +107,8 @@ pub enum ExprKind {
     Lambda(String, Box<Expr>),
     /// `fail Variant(...)` as an expression: the right side of `??`.
     Fail(String, Option<Box<Expr>>),
+    /// `try e`: `e`'s failure becomes a value (`.ok`, `.error`).
+    Try(Box<Expr>),
 }
 
 #[derive(Debug, Clone)]
