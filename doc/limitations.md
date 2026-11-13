@@ -123,7 +123,7 @@
 
 ## `logic`
 
-- Only `psql` and `http_client` infras and other use cases are reachable;
+- Only `psql`, `http_client` and `ics_feed` infras and other use cases are reachable;
   `s3`, `grpc_client` and notification channels need `code {}`.
 - Types imported from another module (`import`) aren't visible to a
   script; declare them in the project.
@@ -135,7 +135,7 @@
   builds (and panics in debug builds), like Rust.
 - No functions written in `logic` itself: shared rules are Rust files
   declared with `extern fn`, whose signatures Trust trusts (rustc checks
-  them). No error recovery yet: a failing call ends the script.
+  them).
 
 ## Migrations
 

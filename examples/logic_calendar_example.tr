@@ -1,0 +1,138 @@
+// logic {} syncing calendars: an iCalendar feed, an OAuth2 API with paging,
+// raw HTTP calls, and sources that fail independently (`try`).
+config { tz: "Europe/Paris" }
+
+enum EventKind { feed google block }
+type CalendarEvent { id: Int, user_id: Int, kind: EventKind, external_id: String, title: String, start_at: DateTime, end_at: DateTime }
+type SyncRequest { days: Option<Int> }
+type SourceReport { name: String, configured: Bool, written: Int, error: Option<String> }
+type SyncReport { from: DateTime, to: DateTime, sources: List<SourceReport>, warnings: List<String> }
+type PushReport { written: Int, removed: Int }
+
+infra EventInfra { storage { psql { entity: CalendarEvent owner: user_id } } }
+infra WorkIcs { ics_feed { url: "${WORK_ICS_URL}" timezone_fallback: "Europe/Paris" all_day: skip } }
+infra GoogleCalendar { http_client {
+    base_url: "https://www.googleapis.com/calendar/v3"
+    oauth2 { token_url: "https://oauth2.googleapis.com/token" client_id: "${GOOGLE_CLIENT_ID}" client_secret: "${GOOGLE_CLIENT_SECRET}" refresh_token: "${GOOGLE_REFRESH_TOKEN}" }
+} }
+
+// Copies the work feed's occurrences of the window as `feed` events.
+use_case ImportFeedUseCase {
+    input: SyncRequest
+    output: SourceReport
+    logic {
+        if not WorkIcs.is_configured() {
+            return SourceReport { name: "work", configured: false, written: 0 }
+        }
+        let from = week_start()
+        let to = from.add_days(input.days ?? 28)
+        var written = 0
+        for occurrence in WorkIcs.occurrences(from, to) {
+            let known = EventInfra.query(kind == EventKind.feed, external_id == occurrence.instance_id, limit: 1)
+            if known.is_empty() {
+                EventInfra.create(CalendarEvent {
+                    kind: EventKind.feed, external_id: occurrence.instance_id, title: occurrence.title
+                    start_at: occurrence.start, end_at: occurrence.end
+                })
+                written = written + 1
+            }
+        }
+        return SourceReport { name: "work", configured: true, written: written }
+    }
+}
+
+// Reads the Google calendar page by page; all-day events have a date only.
+use_case ImportGoogleUseCase {
+    input: SyncRequest
+    output: SourceReport
+    logic {
+        let calendar = env_opt("GOOGLE_CALENDAR_ID") ?? "primary"
+        if not GoogleCalendar.is_configured() {
+            return SourceReport { name: "google", configured: false, written: 0 }
+        }
+        let from = week_start()
+        let to = from.add_days(input.days ?? 28)
+        let path = "/calendars/{url_encode(calendar)}/events?singleEvents=true&timeMin={url_encode(from.to_string())}&timeMax={url_encode(to.to_string())}"
+        var written = 0
+        for item in GoogleCalendar.get_paged(path, "items", "nextPageToken") {
+            let start = parse_datetime(item.start.dateTime.str() ?? item.start.date.str() ?? "")
+            let end = parse_datetime(item.end.dateTime.str() ?? item.end.date.str() ?? "")
+            if let start_at = start {
+                EventInfra.create(CalendarEvent {
+                    kind: EventKind.google, external_id: item.id.str() ?? "", title: item.summary.str() ?? "(sans titre)"
+                    start_at: start_at, end_at: end ?? start_at.add_hours(1)
+                })
+                written = written + 1
+            } else {
+                log_warn("google event without a start: {item.id}")
+            }
+        }
+        return SourceReport { name: "google", configured: true, written: written }
+    }
+}
+
+// Pushes blocks to a dedicated Google calendar with raw calls, whatever the
+// HTTP status of each.
+use_case PushBlocksUseCase {
+    input: SyncRequest
+    output: PushReport
+    logic {
+        let calendar = env_opt("GOOGLE_MYWORLD_CALENDAR_ID") ?? fail NotConfigured("GOOGLE_MYWORLD_CALENDAR_ID is not set")
+        let base = "/calendars/{url_encode(calendar)}/events"
+        var written = 0
+        for block in EventInfra.query(kind == EventKind.block, start_at >= week_start()) {
+            let response = GoogleCalendar.send("POST", base, { summary: block.title, start: { dateTime: block.start_at }, end: { dateTime: block.end_at } })
+            if response.status >= 300 {
+                log_warn("push of block {block.id} failed ({response.status}): {response.text.take(200)}")
+            } else {
+                let id = response.json().id.str() ?? fail StorageError("Google answered without an id")
+                EventInfra.update(CalendarEvent { external_id: id, ..block })
+                written = written + 1
+            }
+        }
+        let stale = GoogleCalendar.send("DELETE", "{base}/stale")
+        return PushReport { written: written, removed: if_removed(stale.status) }
+    }
+}
+
+logic {
+    extern fn if_removed(status: Int) -> Int from "examples/logic/rules.rs"
+}
+
+// Every source fails on its own: its error lands in the report.
+use_case SyncCalendarsUseCase {
+    input: SyncRequest
+    output: SyncReport
+    logic {
+        let from = parse_datetime(env_opt("SYNC_FROM") ?? "") ?? week_start()
+        let feed = try ImportFeedUseCase.run(input)
+        let google = try ImportGoogleUseCase.run(input)
+        let push = try PushBlocksUseCase.run(input)
+        var warnings: List<String> = []
+        if let error = push.error { warnings.push("blocks: {error}") }
+        let pushed = push ?? PushReport { written: 0, removed: 0 }
+        if let error = feed.error { log_warn("work feed: {error}") }
+        return SyncReport {
+            from: from
+            to: from.add_days(input.days ?? 28)
+            sources: [
+                feed ?? SourceReport { name: "work", configured: true, written: 0, error: feed.error }
+                google ?? SourceReport { name: "google", configured: true, written: 0, error: google.error }
+                SourceReport { name: "blocks", configured: push.is_ok(), written: pushed.written }
+            ]
+            warnings: warnings
+        }
+    }
+}
+
+adapter Api {
+    http {
+        on: "0.0.0.0:8080"
+        auth: required
+        routes {
+            POST "/sync" { use_case: SyncCalendarsUseCase }
+            POST "/push" { use_case: PushBlocksUseCase status { NotConfigured -> 409 } }
+        }
+    }
+}
+app Main: run { Api }

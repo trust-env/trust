@@ -11,7 +11,7 @@ use super::{Pos, ScriptError};
 /// Words that can't name a variable.
 pub const KEYWORDS: &[&str] = &[
     "let", "var", "if", "else", "for", "in", "return", "fail", "true", "false", "none", "and",
-    "or", "not",
+    "or", "not", "try",
 ];
 
 type R<T> = Result<T, ScriptError>;
@@ -450,6 +450,14 @@ impl Parser {
     }
 
     fn unary(&mut self, s: bool) -> R<Expr> {
+        if self.is_word("try") {
+            let pos = self.advance().pos;
+            let inner = self.unary(s)?;
+            return Ok(Expr {
+                kind: ExprKind::Try(Box::new(inner)),
+                pos,
+            });
+        }
         if self.is_sym("-") {
             let pos = self.advance().pos;
             let inner = self.unary(s)?;
@@ -606,11 +614,14 @@ impl Parser {
             Tok::Sym("[") => {
                 let mut items = Vec::new();
                 while !self.eat_sym("]") {
-                    if !items.is_empty() {
-                        self.expect_sym(",")?;
-                        if self.eat_sym("]") {
-                            break;
-                        }
+                    // One item per line needs no comma (like struct fields);
+                    // on one line, `[a -1]` would be ambiguous.
+                    let new_line = self.i > 0 && self.tokens[self.i - 1].pos.line < self.pos().line;
+                    if !items.is_empty() && !self.eat_sym(",") && !new_line {
+                        return self.expected("',' or a new line between list items");
+                    }
+                    if self.eat_sym("]") {
+                        break;
                     }
                     items.push(self.expr(true)?);
                 }

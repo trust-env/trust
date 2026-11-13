@@ -96,6 +96,7 @@ pub fn lower(project: &Project, target: &Target, body: &[Stmt]) -> R<Lowered> {
             },
         ]],
         out: Lowered::default(),
+        uses_try: false,
         lambda: 0,
         iterating: Vec::new(),
     };
@@ -107,7 +108,27 @@ pub fn lower(project: &Project, target: &Target, body: &[Stmt]) -> R<Lowered> {
             "the logic can reach its end without 'return' or 'fail'",
         );
     }
-    lowerer.out.rust = code;
+    lowerer.out.rust = if lowerer.uses_try {
+        // `try` turns an error into its text: every variant of the enum.
+        let mut arms = vec![
+            format!("{}::NotFound => String::from(\"not found\")", lowerer.error),
+            format!("{}::StorageError(message) => message", lowerer.error),
+        ];
+        for variant in &lowerer.out.errors {
+            arms.push(format!(
+                "{}::{}(message) => message",
+                lowerer.error, variant
+            ));
+        }
+        format!(
+            "let trust_error_text = |error: {}| -> String {{ match error {{ {} }} }};\n{}",
+            lowerer.error,
+            arms.join(", "),
+            code
+        )
+    } else {
+        code
+    };
     Ok(lowerer.out)
 }
 
@@ -175,6 +196,12 @@ pub const BUILTINS: &[&str] = &[
     "min",
     "max",
     "journal",
+    "env_opt",
+    "url_encode",
+    "parse_datetime",
+    "parse_date",
+    "week_start",
+    "log_warn",
 ];
 
 /// A written type (`List<Task>`), resolved against the project.
@@ -196,11 +223,33 @@ pub fn resolve_type(p: &Project, t: &TypeExpr) -> R<Ty> {
         TypeExpr::Generic(name, args, pos) => match (name.as_str(), args.as_slice()) {
             ("List", [inner]) => Ok(Ty::list(resolve_type(p, inner)?)),
             ("Option", [inner]) => Ok(Ty::opt(resolve_type(p, inner)?)),
+            ("Try", [inner]) => Ok(Ty::Try(Box::new(resolve_type(p, inner)?))),
             _ => err(
                 *pos,
                 format!("unknown type '{}<...>' (List<T> and Option<T> exist)", name),
             ),
         },
+    }
+}
+
+/// The `"NAME"` of `env("NAME")`: a literal, so every variable a script
+/// reads shows in the source.
+fn env_name(arg: &Expr) -> R<String> {
+    match &arg.kind {
+        ExprKind::Str(parts) => match parts.as_slice() {
+            [StrPart::Text(t)]
+                if !t.is_empty()
+                    && t.chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') =>
+            {
+                Ok(t.clone())
+            }
+            _ => err(arg.pos, "env() takes a literal UPPER_CASE name"),
+        },
+        _ => err(
+            arg.pos,
+            "env() takes a literal UPPER_CASE name, so every variable a script reads is visible in the source",
+        ),
     }
 }
 
@@ -224,6 +273,8 @@ struct Lowerer<'a> {
     error: String,
     scopes: Vec<Vec<Local>>,
     out: Lowered,
+    /// A `try` was lowered: the body needs `trust_error_text`.
+    uses_try: bool,
     /// Depth of `x => ...` lambdas being lowered.
     lambda: usize,
     /// Roots of the lists `for` loops are walking (can't change meanwhile).
@@ -590,6 +641,9 @@ impl Lowerer<'_> {
                 let Some(base) = self.place(inner)? else {
                     return Ok(None);
                 };
+                if matches!(base.ty, Ty::Try(_) | Ty::Response) {
+                    return Ok(None);
+                }
                 let ty = self.field_ty(&base.ty, field, e.pos)?;
                 let code = match base.ty {
                     Ty::Json => format!("{}[{}]", base.code, literal(field)),
@@ -680,6 +734,23 @@ impl Lowerer<'_> {
                     return self.enum_value(type_name, field, pos);
                 }
                 let (ty, code) = self.recv(inner)?;
+                match (&ty, field.as_str()) {
+                    (Ty::Try(t), "ok") => {
+                        return Ok((Ty::opt((**t).clone()), format!("{}.clone().ok()", code)));
+                    }
+                    (Ty::Try(_), "error") => {
+                        return Ok((Ty::opt(Ty::Str), format!("{}.clone().err()", code)));
+                    }
+                    (Ty::Try(_), _) => {
+                        return err(pos, "a Try has 'ok', 'error', is_ok() and is_error()");
+                    }
+                    (Ty::Response, "status") => return Ok((Ty::Int, format!("{}.0", code))),
+                    (Ty::Response, "text") => return Ok((Ty::Str, format!("{}.1.clone()", code))),
+                    (Ty::Response, _) => {
+                        return err(pos, "a Response has 'status', 'text' and json()");
+                    }
+                    _ => {}
+                }
                 let fty = self.field_ty(&ty, field, pos)?;
                 let value = match ty {
                     Ty::Json => format!("{}[{}].clone()", code, literal(field)),
@@ -762,6 +833,30 @@ impl Lowerer<'_> {
                 "'x => ...' only goes inside a list method: xs.map(x => x.title)",
             ),
             ExprKind::Fail(..) => err(pos, "'fail' here only works after '??'"),
+            ExprKind::Try(inner) => {
+                self.need_try(pos, "'try'")?;
+                // `let r: Try<T> = try ...` and `try ... ?? fallback` decode into T.
+                let inner_expected = match expected {
+                    Some(Ty::Try(t)) | Some(Ty::Opt(t)) => Some((**t).clone()),
+                    _ => None,
+                };
+                let (ty, code) = self.expr(inner, inner_expected.as_ref())?;
+                if matches!(ty, Ty::Unit | Ty::Never | Ty::Try(_)) {
+                    return err(
+                        inner.pos,
+                        format!("'try' needs a value, found {}", ty.name()),
+                    );
+                }
+                self.uses_try = true;
+                Ok((
+                    Ty::Try(Box::new(ty)),
+                    format!(
+                        "async {{ Ok::<_, {}>({}) }}.await.map_err(trust_error_text)",
+                        self.error,
+                        bare(&code)
+                    ),
+                ))
+            }
         }
     }
 
@@ -1006,6 +1101,11 @@ impl Lowerer<'_> {
             BinOp::Coalesce => {
                 let (lty, lcode) =
                     self.expr(left, expected.map(|t| Ty::opt(t.clone())).as_ref())?;
+                // `try e ?? fallback`: the value, or the fallback on failure.
+                let (lty, lcode) = match lty {
+                    Ty::Try(t) => (Ty::Opt(t), format!("{}.ok()", lcode)),
+                    other => (other, lcode),
+                };
                 let Ty::Opt(inner) = lty else {
                     return err(
                         pos,
@@ -1189,25 +1289,7 @@ impl Lowerer<'_> {
                 let [arg] = self.positional(args, 1, "env(\"NAME\")", pos)?[..] else {
                     unreachable!()
                 };
-                let var = match &arg.kind {
-                    ExprKind::Str(parts) => match parts.as_slice() {
-                        [StrPart::Text(t)]
-                            if !t.is_empty()
-                                && t.chars().all(|c| {
-                                    c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'
-                                }) =>
-                        {
-                            t.clone()
-                        }
-                        _ => return err(arg.pos, "env() takes a literal UPPER_CASE name"),
-                    },
-                    _ => {
-                        return err(
-                            arg.pos,
-                            "env() takes a literal UPPER_CASE name, so every variable a script reads is visible in the source",
-                        );
-                    }
-                };
+                let var = env_name(arg)?;
                 self.need_try(pos, "env()")?;
                 Ok((
                     Ty::Str,
@@ -1216,6 +1298,96 @@ impl Lowerer<'_> {
                         literal(&var),
                         self.error,
                         literal(&format!("environment variable {} is not set", var))
+                    ),
+                ))
+            }
+            "env_opt" => {
+                let [arg] = self.positional(args, 1, "env_opt(\"NAME\")", pos)?[..] else {
+                    unreachable!()
+                };
+                let var = env_name(arg)?;
+                Ok((
+                    Ty::opt(Ty::Str),
+                    format!(
+                        "std::env::var({}).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())",
+                        literal(&var)
+                    ),
+                ))
+            }
+            "url_encode" => {
+                let [text] = self.positional(args, 1, "url_encode(text)", pos)?[..] else {
+                    unreachable!()
+                };
+                // A variable is lent, not cloned.
+                let text = match self.place(text)? {
+                    Some(place) if place.ty == Ty::Str => {
+                        if place.bare_ref {
+                            place.code
+                        } else {
+                            format!("&{}", place.code)
+                        }
+                    }
+                    _ => format!("&{}", self.expect(text, &Ty::Str)?),
+                };
+                self.dep("urlencoding", "2");
+                Ok((
+                    Ty::Str,
+                    format!("urlencoding::encode({}).into_owned()", text),
+                ))
+            }
+            "parse_datetime" | "parse_date" => {
+                let [text] = self.positional(args, 1, &format!("{}(text)", name), pos)?[..] else {
+                    unreachable!()
+                };
+                let text = bare(&self.expect(text, &Ty::Str)?);
+                self.dep("chrono", "0.4");
+                let date = "chrono::NaiveDate::parse_from_str(trust_text, \"%Y-%m-%d\").ok()";
+                if name == "parse_date" {
+                    return Ok((
+                        Ty::opt(Ty::Date),
+                        format!(
+                            "{{ let trust_owned = {}; let trust_text = trust_owned.trim(); chrono::DateTime::parse_from_rfc3339(trust_text).ok().map(|d| d.date_naive()).or_else(|| {}) }}",
+                            text, date
+                        ),
+                    ));
+                }
+                // A date alone is midnight in the app's time zone.
+                let midnight = if self.p.local_time {
+                    "crate::tz::midnight(d)"
+                } else {
+                    "d.and_time(chrono::NaiveTime::MIN).and_utc()"
+                };
+                Ok((
+                    Ty::opt(Ty::DateTime),
+                    format!(
+                        "{{ let trust_owned = {}; let trust_text = trust_owned.trim(); chrono::DateTime::parse_from_rfc3339(trust_text).ok().map(|d| d.with_timezone(&chrono::Utc)).or_else(|| {}.map(|d| {})) }}",
+                        text, date, midnight
+                    ),
+                ))
+            }
+            "week_start" => {
+                self.positional(args, 0, "week_start()", pos)?;
+                self.dep("chrono", "0.4");
+                // Monday 0:00 of this week, in the app's time zone.
+                let code = if self.p.local_time {
+                    "crate::tz::week_bounds(chrono::Utc::now()).0".to_string()
+                } else {
+                    "{ let trust_today = chrono::Utc::now().date_naive(); (trust_today - chrono::Duration::days(chrono::Datelike::weekday(&trust_today).num_days_from_monday() as i64)).and_time(chrono::NaiveTime::MIN).and_utc() }".to_string()
+                };
+                Ok((Ty::DateTime, code))
+            }
+            "log_warn" => {
+                let [text] = self.positional(args, 1, "log_warn(text)", pos)?[..] else {
+                    unreachable!()
+                };
+                let text = bare(&self.expect(text, &Ty::Str)?);
+                self.dep("tracing", "0.1");
+                Ok((
+                    Ty::Unit,
+                    format!(
+                        "tracing::warn!(use_case = {}, \"{{}}\", {})",
+                        literal(self.t.name),
+                        text
                     ),
                 ))
             }
@@ -1440,7 +1612,38 @@ impl Lowerer<'_> {
                 let owner = if self.t.unscoped { None } else { owner.clone() };
                 self.psql_call(&field, entity, owner.as_deref(), method, args, pos)?
             }
-            InfraKind::HttpClient => self.http_call(&field, method, args, expected, pos)?,
+            InfraKind::HttpClient { ics } => {
+                if method == "is_configured" {
+                    self.positional(args, 0, "is_configured()", pos)?;
+                    if !self.out.infras.iter().any(|i| i == infra) {
+                        self.out.infras.push(infra.to_string());
+                    }
+                    return Ok((Ty::Bool, format!("{}.is_configured()", field)));
+                }
+                if method == "occurrences" {
+                    if !ics {
+                        return err(
+                            pos,
+                            format!(
+                                "occurrences() reads an ics_feed infra; '{}' is an http_client",
+                                infra
+                            ),
+                        );
+                    }
+                    let [from, to] = self.positional(args, 2, "occurrences(from, to)", pos)?[..]
+                    else {
+                        unreachable!()
+                    };
+                    let from = bare(&self.expect(from, &Ty::DateTime)?);
+                    let to = bare(&self.expect(to, &Ty::DateTime)?);
+                    (
+                        Ty::list(Ty::Struct("IcsOccurrence".into())),
+                        format!("{}.occurrences({}, {}).await?", field, from, to),
+                    )
+                } else {
+                    self.http_call(&field, method, args, expected, pos)?
+                }
+            }
             InfraKind::Other(kind) => {
                 return err(
                     pos,
@@ -1743,6 +1946,84 @@ impl Lowerer<'_> {
                     ),
                 )
             }
+            "get_paged" => {
+                let [path, items, next] = self.positional(
+                    args,
+                    3,
+                    "get_paged(path, items_field, next_token_field)",
+                    pos,
+                )?[..] else {
+                    unreachable!()
+                };
+                let path = self.expect(path, &Ty::Str)?;
+                let items = self.expect(items, &Ty::Str)?;
+                let next = self.expect(next, &Ty::Str)?;
+                let item = match &response {
+                    Ty::List(item) => (**item).clone(),
+                    _ => Ty::Json,
+                };
+                (
+                    Ty::list(item.clone()),
+                    format!(
+                        "{}.get_json_paged::<{}>(&{}, &{}, &{}).await?",
+                        field,
+                        item.rust(),
+                        path,
+                        items,
+                        next
+                    ),
+                )
+            }
+            "send" => {
+                if args.len() != 2 && args.len() != 3 {
+                    return err(
+                        pos,
+                        "expected send(\"METHOD\", path) or send(\"METHOD\", path, body)",
+                    );
+                }
+                let verb = match &args[0].value.kind {
+                    ExprKind::Str(parts) => match parts.as_slice() {
+                        [StrPart::Text(v)]
+                            if ["GET", "POST", "PUT", "PATCH", "DELETE"].contains(&v.as_str()) =>
+                        {
+                            v.clone()
+                        }
+                        _ => {
+                            return err(
+                                args[0].value.pos,
+                                "send() takes a literal \"GET\", \"POST\", \"PUT\", \"PATCH\" or \"DELETE\"",
+                            );
+                        }
+                    },
+                    _ => {
+                        return err(
+                            args[0].value.pos,
+                            "send() takes a literal \"GET\", \"POST\", \"PUT\", \"PATCH\" or \"DELETE\"",
+                        );
+                    }
+                };
+                let path = self.expect(&args[1].value, &Ty::Str)?;
+                let body = match args.get(2) {
+                    Some(arg) => {
+                        let (bty, code) = self.expr(&arg.value, None)?;
+                        if matches!(bty, Ty::Unit | Ty::Never) {
+                            return err(pos, "the body doesn't produce a value");
+                        }
+                        format!(".json(&{})", code)
+                    }
+                    None => String::new(),
+                };
+                (
+                    Ty::Response,
+                    format!(
+                        "{{ let (trust_status, trust_text) = {f}.send_raw({f}.request(reqwest::Method::{v}, &{p}){b}).await?; (trust_status.as_u16() as i64, trust_text) }}",
+                        f = field,
+                        v = verb,
+                        p = path,
+                        b = body
+                    ),
+                )
+            }
             "text" => {
                 let [path] = self.positional(args, 1, "text(path)", pos)?[..] else {
                     unreachable!()
@@ -1754,7 +2035,7 @@ impl Lowerer<'_> {
                 return err(
                     pos,
                     format!(
-                        "an http_client infra has get, post, put, patch, delete and text — not '{}'",
+                        "an http_client infra has get, post, put, patch, delete, text, get_paged, send and is_configured — not '{}'",
                         other
                     ),
                 );
@@ -1934,6 +2215,21 @@ impl Lowerer<'_> {
                     }
                     None => unknown(&ty),
                 }
+            }
+            Ty::Try(_) if name == "is_ok" || name == "is_error" => {
+                self.positional(args, 0, &format!("{}()", name), pos)?;
+                let method = if name == "is_ok" { "is_ok" } else { "is_err" };
+                Ok((Ty::Bool, format!("{}.{}()", recv, method)))
+            }
+            Ty::Response if name == "json" => {
+                self.positional(args, 0, "json()", pos)?;
+                Ok((
+                    Ty::Json,
+                    format!(
+                        "serde_json::from_str::<serde_json::Value>(&{}.1).unwrap_or_default()",
+                        recv
+                    ),
+                ))
             }
             Ty::List(item) => self.list_method(recv_expr, &recv, item, name, args, pos),
             _ => unknown(&ty),

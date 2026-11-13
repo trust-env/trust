@@ -44,3 +44,11 @@ fn logic_example_compiles() {
 fn logic_journal_example_compiles() {
     assert_example_builds_cleanly("logic_journal_example.tr");
 }
+
+/// Calendar sync: an `ics_feed`, an OAuth2 http_client with `get_paged`
+/// and raw `send`, `try` around use cases, `env_opt`, `url_encode`,
+/// `parse_datetime`, `week_start` and `log_warn`.
+#[test]
+fn logic_calendar_example_compiles() {
+    assert_example_builds_cleanly("logic_calendar_example.tr");
+}
