@@ -198,6 +198,12 @@ pre { margin: 0; padding: 10px 12px; background: var(--bg); border: 1px solid va
   'use strict';
   const COLORS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7'];
   const ME = 'trust';
+  const SCEN_FR = {
+    ping: 'Coût du framework seul : routage et JSON, sans I/O',
+    get: 'Lecture par clé primaire, id aléatoire parmi 10 000 lignes',
+    list: 'Lecture paginée de 20 lignes à un offset aléatoire',
+    create: 'Validation du corps JSON puis INSERT … RETURNING',
+  };
   const nf = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 });
   const nf1 = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 1 });
   const compact = new Intl.NumberFormat('fr-FR', { notation: 'compact', maximumFractionDigits: 1 });
@@ -386,12 +392,12 @@ pre { margin: 0; padding: 10px 12px; background: var(--bg); border: 1px solid va
       return;
     }
     const cfg = data.meta.config, scs = data.meta.scenarios;
-    if (!scs.some((s) => s.id === state.scenario)) state.scenario = scs[0].id;
+    if (!scs.some((s) => s.id === state.scenario)) state.scenario = (scs.find((s) => s.id === 'get') || scs[0]).id;
     if (!cfg.connections.includes(state.conc)) state.conc = cfg.connections.includes(64) ? 64 : cfg.connections[0];
     seg($('#scenarioSeg'), scs.map((s) => ({ label: s.label, value: s.id })), 'scenario');
     seg($('#concSeg'), cfg.connections.map((c) => ({ label: String(c), value: c })), 'conc');
     const scen = scs.find((s) => s.id === state.scenario);
-    $('#scenDesc').textContent = `${scen.desc}. ${cfg.duration_s} s de mesure après ${cfg.warmup_s} s de chauffe, ${state.conc} connexions keep-alive.`;
+    $('#scenDesc').textContent = `${SCEN_FR[scen.id] || scen.desc}. ${cfg.duration_s} s de mesure après ${cfg.warmup_s} s de chauffe, ${state.conc} connexions keep-alive.`;
     const h = data.meta.host;
     $('#meta').innerHTML = [
       ['Run', new Date(data.meta.date).toLocaleString('fr-FR', { dateStyle: 'medium', timeStyle: 'short' })],

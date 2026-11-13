@@ -473,6 +473,11 @@ def measure(app: dict, scenario: dict, c: int, cg: Path, args) -> dict:
 
 def save(report: dict, stamp: str) -> None:
     RESULTS.mkdir(exist_ok=True)
+    # Canonical order whatever was (re)measured: the dashboard colours each
+    # contender by its position, so it must not move between reports.
+    rank = {a["id"]: i for i, a in enumerate(APPS)}
+    report["apps"].sort(key=lambda a: rank.get(a["id"], len(rank)))
+    report["runs"].sort(key=lambda r: rank.get(r["app"], len(rank)))
     payload = json.dumps(report, indent=2)
     (RESULTS / f"run-{stamp}.json").write_text(payload)
     (RESULTS / "latest.json").write_text(payload)

@@ -71,8 +71,28 @@ pool size, durations).
   the way it ships. The hand-written Rust baseline has neither.
 - No ORM in the Node contenders: NestJS with TypeORM or Prisma would be slower.
 
-Results from a laptop are noisy: compare contenders within one run rather
-than absolute numbers across machines.
+## Noise on a shared machine
+
+A dev machine is rarely idle (builds, tests, other sessions), and anything
+scheduled on the app's CPUs steals throughput from it. The bench guards
+against that:
+
+- Before each measurement it waits until the rest of the machine uses at most
+  `--max-busy` cores (default 2, up to `--quiet-timeout` seconds).
+- During each measurement it records the CPU time other processes took on
+  the app's own CPUs (`/proc/stat` busy time minus the app's cgroup). Above
+  0.1 core the point is flagged `noisy` and measured again (`--noisy-retries`,
+  default 2); a point still noisy after that is kept, and flagged ⚠ in the
+  dashboard.
+- Results are saved after every contender. `--merge` re-measures only the
+  contenders given to `--apps` and keeps the others from `results/latest.json`:
+
+```bash
+python3 bench/bench.py --apps trust,go --merge   # redo two contenders
+```
+
+Even so, compare contenders within one report rather than absolute numbers
+across machines.
 
 ## Adding a contender
 
