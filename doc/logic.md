@@ -79,6 +79,7 @@ A complete project using most of the language is in
 | `+ - * / %` | Numbers of one type (`.to_float()` converts). `+` also joins strings. Integer `/` by zero fails with `StorageError`. |
 | `== != < <= > >=` | Comparisons (no chaining). |
 | `and or not`, `x in list`, `x not in list` | Logic. |
+| `if c { a } else { b }` | A value chosen by a condition (`else` required, `else if` chains): `let s = if n > 1 { "s" } else { "" }`. A `none` branch makes it an `Option`. |
 | `a ?? b`, `a ?? fail E` | Default of an Option. When `b` is itself an `Option`, the result is an `Option` (first one set). `??` groups to the right: `a ?? b ?? fail E` is `a ?? (b ?? fail E)`. |
 
 ## Infras
@@ -127,7 +128,7 @@ The method of `send` is a literal: `"GET"`, `"POST"`, `"PUT"`, `"PATCH"`,
 The response decodes into the type the context expects —
 `let r: Purchase = Api.post(...)`, `return Api.get(...)` — and is `Json`
 otherwise. `Json` values read with `j.field`, `j.get("key")`, then
-`.str() .int() .float() .bool()` (`Option`s), `.list()`, `.is_null()`.
+`.str() .int() .float() .bool()` (`Option`s), `.list()` (a `List<Json>`, empty when the value isn't an array), `.is_null()`.
 
 **ics_feed**: `Ics.occurrences(from, to)` returns the feed's
 `List<IcsOccurrence>` over the window (fields `uid instance_id title start end
@@ -194,7 +195,7 @@ can — keep these files small and pure. They are callable inside
 | `String` | `len() is_empty() trim() lower() upper() contains(s) starts_with(s) ends_with(s) split(sep) replace(a, b) take(n) skip(n) to_int() to_float()` (`take`/`skip` count characters) |
 | `Int` | `to_float() abs()` |
 | `Float` | `round() floor() ceil()` (to `Int`), `abs()` |
-| `DateTime` | `add_days(n) add_hours(n) add_minutes(n) add_seconds(n) minutes_since(t) seconds_since(t)`, and in the app's time zone: `date() weekday() hour() minute() day() month() year()` |
+| `DateTime` | `add_days(n) add_hours(n) add_minutes(n) add_seconds(n) minutes_since(t) seconds_since(t) timestamp()` (Unix seconds), and in the app's time zone: `date() weekday() hour() minute() day() month() year()` |
 | `Date` | `add_days(n) days_since(d) weekday() day() month() year()` |
 | a type with a [`map`](keywords.md#map) | `item.to_task()` for `map Item -> Task` |
 | `Option` | `is_some() is_none()` |

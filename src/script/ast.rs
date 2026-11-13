@@ -119,6 +119,8 @@ pub enum ExprKind {
     Fail(String, Option<Box<Expr>>),
     /// `try e`: `e`'s failure becomes a value (`.ok`, `.error`).
     Try(Box<Expr>),
+    /// `if c { a } else { b }` as a value (`else` required).
+    If(Box<Expr>, Box<Expr>, Box<Expr>),
     /// `Change.move { start: s, end: e }`: a value of an enum whose
     /// variants carry fields.
     Variant {
