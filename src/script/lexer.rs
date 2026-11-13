@@ -172,6 +172,45 @@ impl Lexer<'_> {
         ))
     }
 
+    /// After the `{` of an interpolation: up to its `}`, stepping over
+    /// strings inside it (`"{d.format("dd/MM")}"`). False at the end.
+    fn skip_code(&mut self) -> bool {
+        let mut depth = 1;
+        loop {
+            match self.bump() {
+                Some('{') => depth += 1,
+                Some('}') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return true;
+                    }
+                }
+                // The string is consumed by the guard either way.
+                Some('"') if !self.skip_string() => return false,
+                None => return false,
+                _ => {}
+            }
+        }
+    }
+
+    /// After a `"` inside an interpolation: up to its closing quote.
+    fn skip_string(&mut self) -> bool {
+        loop {
+            match self.bump() {
+                Some('\\') => {
+                    self.bump();
+                }
+                Some('"') => return true,
+                Some('{') if self.peek(0) == Some('{') => {
+                    self.bump();
+                }
+                Some('{') if !self.skip_code() => return false,
+                None => return false,
+                _ => {}
+            }
+        }
+    }
+
     fn number(&mut self) -> Tok {
         let mut text = String::new();
         let mut float = false;
@@ -244,24 +283,11 @@ impl Lexer<'_> {
                     }
                     let code_start = self.pos;
                     let begin = self.i;
-                    let mut depth = 1;
-                    loop {
-                        match self.bump() {
-                            Some('{') => depth += 1,
-                            Some('}') => {
-                                depth -= 1;
-                                if depth == 0 {
-                                    break;
-                                }
-                            }
-                            Some('"') | None => {
-                                return Err(ScriptError::new(
-                                    code_start,
-                                    "unterminated '{' in a string (strings can't nest inside '{...}')".to_string(),
-                                ));
-                            }
-                            _ => {}
-                        }
+                    if !self.skip_code() {
+                        return Err(ScriptError::new(
+                            code_start,
+                            "unterminated '{' in a string".to_string(),
+                        ));
                     }
                     let inner = &self.chars[begin..self.i - 1];
                     let tokens = lex(inner, code_start)?;

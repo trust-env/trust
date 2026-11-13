@@ -642,3 +642,144 @@ fn lists_take_one_item_per_line_without_commas() {
             .contains("expected ',' or a new line between list items")
     );
 }
+
+const PLANNER: &str = r#"
+config { tz: "Europe/Paris" locale: "fr" }
+enum Kind { brief conflict }
+enum Status { sent failed }
+enum Change { move { id: Int, start: DateTime, note: Option<String> } reset }
+type Event { id: Int, user_id: Int, title: String, project: Int, hours: Float, start_at: DateTime }
+type Action { id: Int, user_id: Int, kind: String, text: String, changes: Json, undone: Bool, at: DateTime, requires_ack: Bool }
+type Notification { id: Int, user_id: Int, kind: Kind, at: DateTime, channel: String, text: String, status: Status, error: Option<String>, external_id: Option<String> }
+type Ref { id: Int }
+type Out { n: Int, text: String }
+infra EventInfra { storage { psql { entity: Event owner: user_id } } }
+infra ActionInfra { storage { psql { entity: Action owner: user_id } } }
+infra NotificationInfra { storage { psql { entity: Notification owner: user_id } } }
+journal Actions { infra: ActionInfra owner: user_id undo: "/actions/:id/toggle" conflict: refuse }
+channel Telegram { telegram { token: "${T}" chat: "${C}" } }
+notifications Notify { infra: NotificationInfra default: Telegram fallback: log }
+"#;
+
+/// Lowered through desugaring, in the planner project.
+fn planner(header: &str, body: &str) -> Result<String, String> {
+    let src = format!(
+        "{}\nuse_case SubjectUseCase {{ input: Ref output: Out {} logic {{\n{}\n}} }}",
+        PLANNER, header, body
+    );
+    let asts = Parser::new(Lexer::new(&src).run()?).run()?;
+    crate::generator::desugar::desugar(asts)?
+        .into_iter()
+        .find_map(|a| match a {
+            Ast::UseCase(u) if u.name == "SubjectUseCase" => u.code.and_then(|c| c.inline),
+            _ => None,
+        })
+        .ok_or_else(|| "no code".to_string())
+}
+
+#[test]
+fn maps_group_and_count() {
+    let code = planner(
+        "",
+        "let events = EventInfra.all()\nvar hours: Map<Int, Float> = {}\nfor e in events { hours.set(e.project, (hours.get(e.project) ?? 0.0) + e.hours) }\nlet groups = events.group_by(e => e.title)\nlet by_id = events.to_map(e => e.id)\nreturn Out { n: hours.len() + groups.keys().len() + by_id.values().len() + [1, 1, 2].distinct().len(), text: \"{hours.contains(1)}\" }",
+    )
+    .unwrap();
+    assert!(
+        code.contains("let mut hours: std::collections::BTreeMap<i64, f64> = std::collections::BTreeMap::<i64, f64>::new();"),
+        "{code}"
+    );
+    assert!(code.contains("hours.insert(e.project, "), "{code}");
+    assert!(
+        code.contains(
+            "trust_map.entry(trust_key(trust_item)).or_default().push(trust_item.clone());"
+        ),
+        "{code}"
+    );
+    assert!(
+        code.contains("trust_map.insert(trust_key(trust_item), trust_item.clone());"),
+        "{code}"
+    );
+    let e = planner("", "let m: Map<Float, Int> = {}\nfail NotFound").unwrap_err();
+    assert!(
+        e.contains("a Map key is an Int, String, Bool, Date, DateTime or Uuid, not Float"),
+        "{e}"
+    );
+    let e = planner("", "let m: Map<Int, Int> = {}\nm.set(1, 2)\nfail NotFound").unwrap_err();
+    assert!(e.contains("'m' can't change: declare it with 'var'"), "{e}");
+}
+
+#[test]
+fn enums_with_fields_are_built_tested_and_destructured() {
+    let code = planner(
+        "",
+        "let c = Change.move { id: 1, start: now() }\nlet r = Change.reset\nif let Change.move { id, start: at } = c {\n  return Out { n: id, text: \"{at} {c.is(Change.move)} {r.is(Change.reset)}\" }\n}\nfail NotFound",
+    )
+    .unwrap();
+    assert!(
+        code.contains("let c = Change::Move { id: 1i64, start: chrono::Utc::now(), note: None };"),
+        "{code}"
+    );
+    assert!(code.contains("let r = Change::Reset;"), "{code}");
+    assert!(
+        code.contains("if let Change::Move { id, start: at, .. } = c.clone() {"),
+        "{code}"
+    );
+    assert!(code.contains("matches!(c, Change::Move { .. })"), "{code}");
+    let e = planner("", "let c = Change.move { id: 1 }\nfail NotFound").unwrap_err();
+    assert!(e.contains("Change.move is missing start"), "{e}");
+    let e = planner("", "let c = Change.jump\nfail NotFound").unwrap_err();
+    assert!(e.contains("'Change' has no value 'jump'"), "{e}");
+}
+
+#[test]
+fn journal_entries_dates_and_notifications() {
+    let code = planner(
+        "journal: Actions",
+        "journal_entry(\"moved {now().format(\"EEE dd/MM\")}\", requires_ack: true)\nlet sent = Notify.send_recorded(Kind.brief, \"hello\")\nNotify.send(\"conflict\", \"x\")\nreturn Out { n: sent.id, text: \"{sent.status == Status.sent}\" }",
+    )
+    .unwrap();
+    assert!(code.contains("self.trust_journal.entry(format!(\"moved {}\", crate::fmt::fmt_date((chrono::Utc::now()), &String::from(\"EEE dd/MM\")))).requires_ack(true);"), "{code}");
+    assert!(code.contains("self.notify.send_recorded(&self.notification_infra, user, Kind::Brief.as_str(), &String::from(\"hello\")).await?"), "{code}");
+    assert!(
+        code.contains(
+            "let _ = self.notify.send(&String::from(\"conflict\"), &String::from(\"x\")).await;"
+        ),
+        "{code}"
+    );
+    let e = planner("", "journal_entry(\"x\")\nfail NotFound").unwrap_err();
+    assert!(
+        e.contains("journal_entry() starts an entry of a use case with 'journal: <Journal>'"),
+        "{e}"
+    );
+    // `format` needs the app's language.
+    let e = local("", "let s = now().format(\"dd\")\nfail NotFound").unwrap_err();
+    assert!(e.contains("declare config { locale"), "{e}");
+}
+
+#[test]
+fn filter_map_keeps_set_values() {
+    let code = rust(
+        "let ts = TaskInfra.all()\nlet dues = ts.filter_map(t => t.due)\nlet n = [\"1\", \"x\"].filter_map(s => s.to_int())\nreturn Out { count: dues.len() + n.sum(), message: \"\" }",
+    );
+    assert!(
+        code.contains("let dues = ts.iter().filter_map(|t| t.due).collect::<Vec<_>>();"),
+        "{code}"
+    );
+    assert!(
+        error("let xs = [1].filter_map(x => x)\nfail NotFound")
+            .contains("filter_map() keeps the set values of an Option, found Int")
+    );
+}
+
+#[test]
+fn strings_nest_inside_interpolations() {
+    let code = planner(
+        "",
+        "return Out { n: 0, text: \"at {now().format(\"HH:mm {{x}}\")} ok\" }",
+    )
+    .unwrap();
+    assert!(
+        code.contains("crate::fmt::fmt_date((chrono::Utc::now()), &String::from(\"HH:mm {x}\"))"),
+        "{code}"
+    );
+}

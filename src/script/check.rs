@@ -224,6 +224,19 @@ pub fn resolve_type(p: &Project, t: &TypeExpr) -> R<Ty> {
             ("List", [inner]) => Ok(Ty::list(resolve_type(p, inner)?)),
             ("Option", [inner]) => Ok(Ty::opt(resolve_type(p, inner)?)),
             ("Try", [inner]) => Ok(Ty::Try(Box::new(resolve_type(p, inner)?))),
+            ("Map", [key, value]) => {
+                let key = resolve_type(p, key)?;
+                if !map_key(&key) {
+                    return err(
+                        *pos,
+                        format!(
+                            "a Map key is an Int, String, Bool, Date, DateTime or Uuid, not {}",
+                            key.name()
+                        ),
+                    );
+                }
+                Ok(Ty::Map(Box::new(key), Box::new(resolve_type(p, value)?)))
+            }
             _ => err(
                 *pos,
                 format!("unknown type '{}<...>' (List<T> and Option<T> exist)", name),
@@ -251,6 +264,14 @@ fn env_name(arg: &Expr) -> R<String> {
             "env() takes a literal UPPER_CASE name, so every variable a script reads is visible in the source",
         ),
     }
+}
+
+/// Whether `ty` can key a `Map` (ordered keys).
+fn map_key(ty: &Ty) -> bool {
+    matches!(
+        ty,
+        Ty::Int | Ty::Str | Ty::Bool | Ty::Date | Ty::DateTime | Ty::Uuid
+    )
 }
 
 /// A Rust string literal holding `text`.
@@ -522,6 +543,49 @@ impl Lowerer<'_> {
                 self.scopes.push(Vec::new());
                 let head = match cond {
                     Cond::Bool(e) => format!("if {} {{", bare(&self.expect(e, &Ty::Bool)?)),
+                    Cond::Variant {
+                        ty,
+                        variant,
+                        bindings,
+                        value,
+                        pos,
+                    } => {
+                        let (vty, code) = self.expr(value, None)?;
+                        if vty != Ty::Tagged(ty.clone()) {
+                            return err(
+                                value.pos,
+                                format!("expected a {}, found {}", ty, vty.name()),
+                            );
+                        }
+                        let Some(fields) = self.p.variant_fields(ty, variant) else {
+                            return err(*pos, format!("'{}' has no value '{}'", ty, variant));
+                        };
+                        let mut parts = Vec::new();
+                        for (field, name) in bindings {
+                            let Some((_, declared)) = fields.iter().find(|(f, _)| f == field)
+                            else {
+                                return err(
+                                    *pos,
+                                    format!("{}.{} has no field '{}'", ty, variant, field),
+                                );
+                            };
+                            let fty = self.p.ty(declared).or_else(|e| err(*pos, e))?;
+                            let rust = self.declare(name, fty, false, false, *pos)?;
+                            parts.push(if &rust == field {
+                                rust
+                            } else {
+                                format!("{}: {}", field, rust)
+                            });
+                        }
+                        parts.push("..".to_string());
+                        format!(
+                            "if let {}::{} {{ {} }} = {} {{",
+                            ty,
+                            variant_ident(variant),
+                            parts.join(", "),
+                            code
+                        )
+                    }
                     Cond::Let(name, e) => {
                         let (ty, code) = self.expr(e, None)?;
                         let Ty::Opt(inner) = ty else {
@@ -766,6 +830,18 @@ impl Lowerer<'_> {
                 fields,
                 spread,
             } => self.struct_literal(name, fields, spread.as_deref(), pos),
+            ExprKind::Object(fields)
+                if fields.is_empty() && matches!(expected, Some(Ty::Map(..))) =>
+            {
+                let ty = expected.cloned().expect("a Map");
+                let Ty::Map(k, v) = &ty else { unreachable!() };
+                let code = format!(
+                    "std::collections::BTreeMap::<{}, {}>::new()",
+                    k.rust(),
+                    v.rust()
+                );
+                Ok((ty.clone(), code))
+            }
             ExprKind::Object(fields) => {
                 let mut code = String::from("{ let mut trust_object = serde_json::Map::new(); ");
                 for (key, value) in fields {
@@ -833,6 +909,11 @@ impl Lowerer<'_> {
                 "'x => ...' only goes inside a list method: xs.map(x => x.title)",
             ),
             ExprKind::Fail(..) => err(pos, "'fail' here only works after '??'"),
+            ExprKind::Variant {
+                ty,
+                variant,
+                fields,
+            } => self.variant_value(ty, variant, fields, pos),
             ExprKind::Try(inner) => {
                 self.need_try(pos, "'try'")?;
                 // `let r: Try<T> = try ...` and `try ... ?? fallback` decode into T.
@@ -888,7 +969,7 @@ impl Lowerer<'_> {
         err(pos, format!("unknown name '{}'", name))
     }
 
-    fn enum_value(&self, type_name: &str, variant: &str, pos: Pos) -> R<(Ty, String)> {
+    fn enum_value(&mut self, type_name: &str, variant: &str, pos: Pos) -> R<(Ty, String)> {
         match self.p.named(type_name) {
             Ok(Ty::Enum(name)) => {
                 let variants = self.p.enum_variants(&name);
@@ -908,15 +989,78 @@ impl Lowerer<'_> {
                     format!("{}::{}", name, variant_ident(variant)),
                 ))
             }
-            Ok(Ty::Tagged(name)) => err(
-                pos,
-                format!(
-                    "'{}' carries fields per value: build it in a code {{}} use case",
-                    name
-                ),
-            ),
+            Ok(Ty::Tagged(name)) => self.variant_value(&name, variant, &[], pos),
             _ => self.unknown_name(type_name, pos),
         }
+    }
+
+    /// `Change.move { start: s, end: e }` (or `Change.reset`) of a tagged
+    /// enum: every field given, except Options and Lists (empty).
+    fn variant_value(
+        &mut self,
+        ty: &str,
+        variant: &str,
+        given: &[(String, Expr)],
+        pos: Pos,
+    ) -> R<(Ty, String)> {
+        let enum_ty = match self.p.named(ty) {
+            Ok(t @ Ty::Tagged(_)) => t,
+            Ok(Ty::Enum(_)) => {
+                return err(
+                    pos,
+                    format!("'{}' values carry no fields: write {}.{}", ty, ty, variant),
+                );
+            }
+            _ => return self.unknown_name(ty, pos),
+        };
+        let Some(fields) = self.p.variant_fields(ty, variant) else {
+            return err(
+                pos,
+                format!(
+                    "'{}' has no value '{}' (values: {})",
+                    ty,
+                    variant,
+                    self.p.enum_variants(ty).join(", ")
+                ),
+            );
+        };
+        let ident = format!("{}::{}", ty, variant_ident(variant));
+        if fields.is_empty() {
+            if !given.is_empty() {
+                return err(pos, format!("{}.{} carries no fields", ty, variant));
+            }
+            return Ok((enum_ty, ident));
+        }
+        let mut parts = Vec::new();
+        for (field, value) in given {
+            let Some((_, declared)) = fields.iter().find(|(f, _)| f == field) else {
+                return err(
+                    value.pos,
+                    format!("{}.{} has no field '{}'", ty, variant, field),
+                );
+            };
+            let fty = self.p.ty(declared).or_else(|e| err(pos, e))?;
+            let code = self.expect(value, &fty)?;
+            parts.push(format!("{}: {}", field, bare(&code)));
+        }
+        let mut missing = Vec::new();
+        for (field, declared) in &fields {
+            if given.iter().any(|(g, _)| g == field) {
+                continue;
+            }
+            match self.p.ty(declared) {
+                Ok(Ty::Opt(_)) => parts.push(format!("{}: None", field)),
+                Ok(Ty::List(_)) => parts.push(format!("{}: Vec::new()", field)),
+                _ => missing.push(field.as_str()),
+            }
+        }
+        if !missing.is_empty() {
+            return err(
+                pos,
+                format!("{}.{} is missing {}", ty, variant, missing.join(", ")),
+            );
+        }
+        Ok((enum_ty, format!("{} {{ {} }}", ident, parts.join(", "))))
     }
 
     fn string(&mut self, parts: &[StrPart]) -> R<(Ty, String)> {
@@ -1272,6 +1416,34 @@ impl Lowerer<'_> {
                 self.dep("chrono", "0.4");
                 Ok((Ty::Date, self.today()))
             }
+            "journal_entry" => {
+                if !self.t.journal {
+                    return err(
+                        pos,
+                        "journal_entry() starts an entry of a use case with 'journal: <Journal>'",
+                    );
+                }
+                let text = match args.first() {
+                    Some(Arg { name: None, value }) => bare(&self.expect(value, &Ty::Str)?),
+                    _ => {
+                        return err(
+                            pos,
+                            "expected journal_entry(text) or journal_entry(text, requires_ack: true)",
+                        );
+                    }
+                };
+                let mut code = format!("self.trust_journal.entry({})", text);
+                for arg in &args[1..] {
+                    match arg.name.as_deref() {
+                        Some("requires_ack") => {
+                            let ack = bare(&self.expect(&arg.value, &Ty::Bool)?);
+                            code.push_str(&format!(".requires_ack({})", ack));
+                        }
+                        _ => return err(arg.value.pos, "journal_entry() options: requires_ack"),
+                    }
+                }
+                Ok((Ty::Unit, code))
+            }
             "journal" => {
                 let [text] = self.positional(args, 1, "journal(text)", pos)?[..] else {
                     unreachable!()
@@ -1612,7 +1784,69 @@ impl Lowerer<'_> {
                 let owner = if self.t.unscoped { None } else { owner.clone() };
                 self.psql_call(&field, entity, owner.as_deref(), method, args, pos)?
             }
-            InfraKind::HttpClient { ics } => {
+            InfraKind::HttpClient {
+                notify: true,
+                record,
+                ..
+            } if method == "send" || method == "send_recorded" => {
+                let [kind, text] =
+                    self.positional(args, 2, &format!("{}(kind, text)", method), pos)?[..]
+                else {
+                    unreachable!()
+                };
+                let (kty, kind) = self.expr(kind, Some(&Ty::Str))?;
+                let kind = match kty {
+                    Ty::Str => format!("&{}", kind),
+                    Ty::Enum(_) => format!("{}.as_str()", kind),
+                    other => {
+                        return err(
+                            pos,
+                            format!(
+                                "the kind is a String or an enum value, not {}",
+                                other.name()
+                            ),
+                        );
+                    }
+                };
+                let text = self.expect(text, &Ty::Str)?;
+                self.need_try(pos, &format!("calling {}", infra))?;
+                if !self.out.infras.iter().any(|i| i == infra) {
+                    self.out.infras.push(infra.to_string());
+                }
+                if method == "send" {
+                    return Ok((
+                        Ty::Unit,
+                        format!("let _ = {}.send({}, &{}).await", field, kind, text),
+                    ));
+                }
+                let Some(record) = record.clone() else {
+                    return err(
+                        pos,
+                        format!(
+                            "'{}' records nothing: give its notifications a record infra, or use send()",
+                            infra
+                        ),
+                    );
+                };
+                let entity = match self.p.infras.get(&record) {
+                    Some(InfraKind::Psql { entity, .. }) => entity.clone(),
+                    _ => return err(pos, format!("'{}' is not a psql infra", record)),
+                };
+                if !self.out.infras.iter().any(|i| i == &record) {
+                    self.out.infras.push(record.clone());
+                }
+                return Ok((
+                    Ty::Struct(entity),
+                    format!(
+                        "{}.send_recorded(&self.{}, user, {}, &{}).await?",
+                        field,
+                        record.to_snake_case(),
+                        kind,
+                        text
+                    ),
+                ));
+            }
+            InfraKind::HttpClient { ics, .. } => {
                 if method == "is_configured" {
                     self.positional(args, 0, "is_configured()", pos)?;
                     if !self.out.infras.iter().any(|i| i == infra) {
@@ -2216,6 +2450,41 @@ impl Lowerer<'_> {
                     None => unknown(&ty),
                 }
             }
+            Ty::Map(key, value) => {
+                let (key, value) = ((**key).clone(), (**value).clone());
+                self.map_method(recv_expr, &recv, (key, value), name, args, pos)
+            }
+            Ty::Tagged(enum_name) if name == "is" => {
+                let [variant] =
+                    self.positional(args, 1, &format!("is({}.<value>)", enum_name), pos)?[..]
+                else {
+                    unreachable!()
+                };
+                let ExprKind::Field(t, v) = &variant.kind else {
+                    return err(variant.pos, format!("expected {}.<value>", enum_name));
+                };
+                if !matches!(&t.kind, ExprKind::Var(t) if t == enum_name)
+                    || self.p.variant_fields(enum_name, v).is_none()
+                {
+                    return err(
+                        variant.pos,
+                        format!(
+                            "expected one of {}: {}",
+                            enum_name,
+                            self.p.enum_variants(enum_name).join(", ")
+                        ),
+                    );
+                }
+                Ok((
+                    Ty::Bool,
+                    format!(
+                        "matches!({}, {}::{} {{ .. }})",
+                        recv,
+                        enum_name,
+                        variant_ident(v)
+                    ),
+                ))
+            }
             Ty::Try(_) if name == "is_ok" || name == "is_error" => {
                 self.positional(args, 0, &format!("{}()", name), pos)?;
                 let method = if name == "is_ok" { "is_ok" } else { "is_err" };
@@ -2330,12 +2599,99 @@ impl Lowerer<'_> {
                     ),
                 ))
             }
+            "format" => {
+                let [pattern] = self.positional(args, 1, "format(pattern)", pos)?[..] else {
+                    unreachable!()
+                };
+                if !self.p.locale {
+                    return err(
+                        pos,
+                        "format() writes dates in the app's language: declare config { locale: \"fr\" }",
+                    );
+                }
+                let pattern = self.expect(pattern, &Ty::Str)?;
+                Ok((
+                    Ty::Str,
+                    format!("crate::fmt::fmt_date({}, &{})", recv, pattern),
+                ))
+            }
             "date" if !date => {
                 self.positional(args, 0, "date()", pos)?;
                 Ok((Ty::Date, format!("{}.date_naive()", self.in_app_tz(recv))))
             }
             _ => unknown(),
         }
+    }
+
+    fn map_method(
+        &mut self,
+        recv_expr: &Expr,
+        recv: &str,
+        (key, value): (Ty, Ty),
+        name: &str,
+        args: &[Arg],
+        pos: Pos,
+    ) -> R<(Ty, String)> {
+        let map = Ty::Map(Box::new(key.clone()), Box::new(value.clone()));
+        Ok(match name {
+            "len" => {
+                self.positional(args, 0, "len()", pos)?;
+                (Ty::Int, format!("({}.len() as i64)", recv))
+            }
+            "is_empty" => {
+                self.positional(args, 0, "is_empty()", pos)?;
+                (Ty::Bool, format!("{}.is_empty()", recv))
+            }
+            "keys" | "values" => {
+                self.positional(args, 0, &format!("{}()", name), pos)?;
+                let ty = if name == "keys" { key } else { value };
+                (
+                    Ty::list(ty),
+                    format!("{}.{}().cloned().collect::<Vec<_>>()", recv, name),
+                )
+            }
+            "get" | "contains" => {
+                let [k] = self.positional(args, 1, &format!("{}(key)", name), pos)?[..] else {
+                    unreachable!()
+                };
+                let k = self.expect(k, &key)?;
+                if name == "get" {
+                    (Ty::opt(value), format!("{}.get(&{}).cloned()", recv, k))
+                } else {
+                    (Ty::Bool, format!("{}.contains_key(&{})", recv, k))
+                }
+            }
+            "set" | "remove" => {
+                let Some(place) = self.place(recv_expr)? else {
+                    return err(pos, format!("{}() changes a 'var' Map", name));
+                };
+                self.check_mutable(&place, pos)?;
+                if name == "set" {
+                    let [k, v] = self.positional(args, 2, "set(key, value)", pos)?[..] else {
+                        unreachable!()
+                    };
+                    let k = bare(&self.expect(k, &key)?);
+                    let v = bare(&self.expect(v, &value)?);
+                    (Ty::Unit, format!("{}.insert({}, {})", place.code, k, v))
+                } else {
+                    let [k] = self.positional(args, 1, "remove(key)", pos)?[..] else {
+                        unreachable!()
+                    };
+                    let k = self.expect(k, &key)?;
+                    (Ty::Unit, format!("{}.remove(&{})", place.code, k))
+                }
+            }
+            _ => {
+                return err(
+                    pos,
+                    format!(
+                        "a {} has len, is_empty, keys, values, get, contains, set and remove — not '{}'",
+                        map.name(),
+                        name
+                    ),
+                );
+            }
+        })
     }
 
     fn no_args_check(
@@ -2480,6 +2836,82 @@ impl Lowerer<'_> {
                 self.check_mutable(&place, pos)?;
                 let value = self.expect(value, &item)?;
                 (Ty::Unit, format!("{}.push({})", place.code, value))
+            }
+            "filter_map" => {
+                let [_] = self.positional(args, 1, "filter_map(x => optional)", pos)?[..] else {
+                    unreachable!()
+                };
+                let (param, body_ty, body) = self.lambda(&args[0], &item, pos)?;
+                let Ty::Opt(inner) = body_ty else {
+                    return err(
+                        args[0].value.pos,
+                        format!(
+                            "filter_map() keeps the set values of an Option, found {}",
+                            body_ty.name()
+                        ),
+                    );
+                };
+                (
+                    Ty::list(*inner),
+                    format!(
+                        "{}.iter().filter_map(|{}| {}).collect::<Vec<_>>()",
+                        recv, param, body
+                    ),
+                )
+            }
+            "distinct" => {
+                self.positional(args, 0, "distinct()", pos)?;
+                if !item.is_eq() {
+                    return err(pos, format!("{} values can't be compared", item.name()));
+                }
+                (
+                    list,
+                    format!(
+                        "{{ let mut trust_seen: Vec<{t}> = Vec::new(); for trust_item in {r}.iter() {{ if !trust_seen.contains(trust_item) {{ trust_seen.push(trust_item.clone()); }} }} trust_seen }}",
+                        t = item.rust(),
+                        r = recv
+                    ),
+                )
+            }
+            "group_by" | "to_map" => {
+                let [_] = self.positional(args, 1, &format!("{}(x => key)", name), pos)?[..] else {
+                    unreachable!()
+                };
+                let (param, key_ty, key) = self.lambda(&args[0], &item, pos)?;
+                if !map_key(&key_ty) {
+                    return err(
+                        args[0].value.pos,
+                        format!(
+                            "a Map key is an Int, String, Bool, Date, DateTime or Uuid, not {}",
+                            key_ty.name()
+                        ),
+                    );
+                }
+                let value = if name == "group_by" {
+                    list.clone()
+                } else {
+                    item.clone()
+                };
+                let map = Ty::Map(Box::new(key_ty.clone()), Box::new(value));
+                let insert = if name == "group_by" {
+                    "trust_map.entry(trust_key({p})).or_default().push({p}.clone());"
+                } else {
+                    "trust_map.insert(trust_key({p}), {p}.clone());"
+                }
+                .replace("{p}", "trust_item");
+                (
+                    map.clone(),
+                    format!(
+                        "{{ let trust_key = |{p}: &{t}| -> {k} {{ {b} }}; let mut trust_map: {m} = Default::default(); for trust_item in {r}.iter() {{ {i} }} trust_map }}",
+                        p = param,
+                        t = item.rust(),
+                        k = key_ty.rust(),
+                        b = key,
+                        m = map.rust(),
+                        r = recv,
+                        i = insert
+                    ),
+                )
             }
             "map" | "filter" | "any" | "all" | "find" | "count" | "sort_by" | "sort_by_desc" => {
                 let [_] = self.positional(args, 1, &format!("{}(x => ...)", name), pos)?[..] else {

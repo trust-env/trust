@@ -260,11 +260,74 @@ impl Parser {
 
     fn if_rest(&mut self, pos: Pos) -> R<Stmt> {
         let cond = if self.eat_word("let") {
+            if let (Tok::Ident(ty), Tok::Sym(".")) =
+                (self.peek_at(0).clone(), self.peek_at(1).clone())
+                && ty.starts_with(|c: char| c.is_uppercase())
+            {
+                return self.if_variant_rest(pos, ty);
+            }
             let name = self.ident("a variable name")?;
             self.expect_sym("=")?;
             Cond::Let(name, self.expr(false)?)
         } else {
             Cond::Bool(self.expr(false)?)
+        };
+        let then = self.block()?;
+        let otherwise = if self.eat_word("else") {
+            if self.is_word("if") {
+                let pos = self.pos();
+                self.i += 1;
+                Some(vec![self.if_rest(pos)?])
+            } else {
+                Some(self.block()?)
+            }
+        } else {
+            None
+        };
+        Ok(Stmt::If {
+            cond,
+            then,
+            otherwise,
+            pos,
+        })
+    }
+
+    /// After `if let Type`: `.variant { field, field: name } = value { ... }`.
+    fn if_variant_rest(&mut self, pos: Pos, ty: String) -> R<Stmt> {
+        let pattern_pos = self.pos();
+        self.i += 2;
+        let variant = match self.advance().tok {
+            Tok::Ident(v) => v,
+            other => {
+                return Err(ScriptError::new(
+                    pattern_pos,
+                    format!("expected a variant name, found {}", Self::describe(&other)),
+                ));
+            }
+        };
+        let mut bindings = Vec::new();
+        if self.eat_sym("{") {
+            while !self.eat_sym("}") {
+                if self.eat_sym(",") {
+                    continue;
+                }
+                let field = self.ident("a field name")?;
+                let name = if self.eat_sym(":") {
+                    self.ident("a variable name")?
+                } else {
+                    field.clone()
+                };
+                bindings.push((field, name));
+            }
+        }
+        self.expect_sym("=")?;
+        let value = self.expr(false)?;
+        let cond = Cond::Variant {
+            ty,
+            variant,
+            bindings,
+            value,
+            pos: pattern_pos,
         };
         let then = self.block()?;
         let otherwise = if self.eat_word("else") {
@@ -492,10 +555,33 @@ impl Parser {
                     pos,
                 };
             } else {
-                expr = Expr {
-                    kind: ExprKind::Field(Box::new(expr), name),
-                    pos,
-                };
+                let is_type = matches!(&expr.kind, ExprKind::Var(t) if t.starts_with(|c: char| c.is_uppercase()));
+                if s && is_type && self.is_sym("{") {
+                    self.i += 1;
+                    let (fields, spread) = self.fields()?;
+                    if spread.is_some() {
+                        return Err(ScriptError::new(
+                            pos,
+                            "'..base' isn't available on enum values".to_string(),
+                        ));
+                    }
+                    let ExprKind::Var(ty) = expr.kind else {
+                        unreachable!()
+                    };
+                    expr = Expr {
+                        kind: ExprKind::Variant {
+                            ty,
+                            variant: name,
+                            fields,
+                        },
+                        pos,
+                    };
+                } else {
+                    expr = Expr {
+                        kind: ExprKind::Field(Box::new(expr), name),
+                        pos,
+                    };
+                }
             }
         }
         Ok(expr)
