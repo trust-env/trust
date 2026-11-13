@@ -131,12 +131,13 @@ infra OutlookIcs { ics_feed { url: "${OUTLOOK_ICS_URL}" timezone_fallback: "Euro
 
 ## 5. Use cases
 
-A use case is one operation of the application. It has four forms, which
+A use case is one operation of the application. It has five forms, which
 can't be mixed:
 
 | Form | When to use it | Reference |
 |---|---|---|
 | `call: TaskInfra.list` | Storage operations, with nothing written by hand. Several `call:` lines run in order. | [`call`](keywords.md#call) |
+| `logic { ... }` | A body in Trust's small typed scripting language: checked by `trust`, limited to the project's infras and use cases, translated to Rust. | [`logic`](logic.md) |
 | `code { file \| module ... }` | Your own Rust, with every surrounding piece generated (errors, wiring, deps). | [`code`](keywords.md#code) |
 | `blob: MediaInfra.presigned_put_url` | One object-storage operation. | [`blob`](keywords.md#blob) |
 | `ai { prompt: '...' }` | A body written once by an LLM at compile time. | [`ai`](keywords.md#ai) |
@@ -151,6 +152,15 @@ Options of `call:` use cases:
 | Error mapping | `errors { DatabaseError -> Conflict("already exists") }`, then HTTP status mapping per route. | [`errors`](keywords.md#errors), [`status`](keywords.md#status) |
 | Partial updates | `patch_one`: only the fields sent, and `null` clears. `save_or_patch`: creates without an id, patches with one. | [`patch_one`, `upsert_one` and `save_or_patch`](keywords.md#patch_one-upsert_one-and-save_or_patch) |
 | Shaped outputs | `output:` may keep some of the entity's fields and add `action_id`. | [`output`](keywords.md#output) |
+
+`logic {}` use cases get:
+
+| Feature | What it gives you | Reference |
+|---|---|---|
+| Checked before the build | Types, fields, enum values, errors and every return path, reported at `file.tr:line:col`. | [`logic`](logic.md) |
+| Storage and APIs | `TaskInfra.get(id)`, `query(status != Status.done, order_by: due)`, `create`, `update`, `delete`; `Api.post(path, body)` decoded into the expected type. Owner-scoped when the infra has `owner:`. | [Infras](logic.md#infras) |
+| Safe by construction | No file/process/env/network access beyond declared infras (`env("NAME")` takes a literal), no `while`, no `null`, no panic on division or list access. | [Why not Rust](logic.md#why-not-rust) |
+| Typed errors | `fail AlreadyDone("...")` adds the variant; routes map it with `status {}`. | [Statements](logic.md#statements) |
 
 Hand-written `code {}` use cases get:
 

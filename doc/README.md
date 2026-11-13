@@ -8,6 +8,7 @@ This folder contains feature and language documentation for Trust.
 - [`tutorial.md`](tutorial.md): hands-on walkthrough — build, run and call a first service.
 - [`language-overview.md`](language-overview.md): what Trust is, compilation model, and core concepts.
 - [`keywords.md`](keywords.md): the reference — every DSL construct, its options and behavior.
+- [`logic.md`](logic.md): the `logic {}` scripting language — use case bodies checked by Trust, without writing Rust.
 - [`conversions.md`](conversions.md): the exhaustive reference for every `.tr` → Rust conversion — types, names, storage traits, error enums, path params, env interpolation, proto, dependencies.
 - [`cli.md`](cli.md): full CLI reference — every flag, output/exit behavior, and dev mode.
 - [`recipes.md`](recipes.md): practical copy-paste patterns for common use cases.

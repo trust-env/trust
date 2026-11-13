@@ -1,0 +1,310 @@
+use crate::lexer::Lexer;
+use crate::parser::{Ast, CodeSpec, Parser};
+
+const PROJECT: &str = r#"
+enum Status { todo done }
+type Task { id: Int, user_id: Int, title: String, status: Status, points: Int, due: Option<DateTime>, tags: List<String> }
+type Note { id: Int, text: String }
+type Ref { id: Int }
+type Out { count: Int, message: String }
+type Text { text: String }
+type Blob { key: String }
+infra TaskInfra { storage { psql { entity: Task owner: user_id } } }
+infra NoteInfra { storage { psql { entity: Note } } }
+infra Api { http_client { base_url: "https://example.com" } }
+infra Files { storage { s3 { bucket: "b" entity: Blob } } }
+use_case CountUseCase { input: Ref output: Out logic { return Out { count: 1, message: "" } } }
+"#;
+
+/// The `code {}` a use case `input: Ref output: Out logic { <body> }`
+/// becomes, or its error.
+fn lower_with(header: &str, body: &str) -> Result<CodeSpec, String> {
+    let src = format!(
+        "{}\nuse_case SubjectUseCase {{ {} logic {{\n{}\n}} }}",
+        PROJECT, header, body
+    );
+    let tokens = Lexer::new(&src).run()?;
+    let asts = Parser::new(tokens).run()?;
+    let asts = super::lower_all(asts)?;
+    asts.into_iter()
+        .find_map(|a| match a {
+            Ast::UseCase(u) if u.name == "SubjectUseCase" => u.code,
+            _ => None,
+        })
+        .ok_or_else(|| "no code".to_string())
+}
+
+fn lower(body: &str) -> Result<CodeSpec, String> {
+    lower_with("input: Ref output: Out", body)
+}
+
+fn rust(body: &str) -> String {
+    match lower(body) {
+        Ok(code) => code.inline.unwrap(),
+        Err(e) => panic!("{}", e),
+    }
+}
+
+fn error(body: &str) -> String {
+    match lower(body) {
+        Ok(code) => panic!("expected an error, got:\n{}", code.inline.unwrap()),
+        Err(e) => e,
+    }
+}
+
+#[test]
+fn psql_calls_await_propagate_and_are_scoped_to_their_owner() {
+    let code = rust(
+        "let t = TaskInfra.get(input.id)\nlet n = NoteInfra.find(input.id)\nreturn Out { count: t.points, message: t.title }",
+    );
+    assert!(code.contains("let t = self.task_infra.find_one_owned(input.id, \"user_id\", user).await?.ok_or(SubjectUseCaseError::NotFound)?;"), "{code}");
+    assert!(
+        code.contains("let n = self.note_infra.find_one(input.id).await?;"),
+        "{code}"
+    );
+    assert!(
+        code.contains("return Ok(Out { count: t.points, message: t.title.clone() });"),
+        "{code}"
+    );
+}
+
+#[test]
+fn owner_none_reaches_every_row() {
+    let code = lower_with(
+        "input: Ref output: Out owner: none",
+        "let t = TaskInfra.get(input.id)\nreturn Out { count: t.points, message: \"\" }",
+    )
+    .unwrap()
+    .inline
+    .unwrap();
+    assert!(
+        code.contains("self.task_infra.find_one(input.id)"),
+        "{code}"
+    );
+}
+
+#[test]
+fn creates_and_updates_stamp_the_owner() {
+    let code = rust(
+        "let t = TaskInfra.create(Task { title: \"a\", status: Status.todo, points: 1, user_id: 0 })\nlet u = TaskInfra.update(Task { points: 2, ..t })\nreturn Out { count: u.points, message: \"\" }",
+    );
+    assert!(code.contains("let mut trust_row = Task { title: String::from(\"a\"), status: Status::Todo, points: 1i64, user_id: 0i64, ..Default::default() }; trust_row.user_id = user; self.task_infra.save_one(trust_row).await?"), "{code}");
+    assert!(code.contains("update_one_owned(trust_row.id, \"user_id\", user, trust_row).await?.ok_or(SubjectUseCaseError::NotFound)?"), "{code}");
+}
+
+#[test]
+fn queries_build_typed_conditions() {
+    let code = rust(
+        "let ts = TaskInfra.query(status != Status.done, points >= 3, title.contains(\"x\"), id in [1, 2], order_by_desc: points, limit: 10)\nreturn Out { count: ts.len(), message: \"\" }",
+    );
+    assert!(
+        code.contains(r#"Query::new().eq("user_id", user).ne("status", Status::Done).gte("points", 3i64).contains("title", String::from("x")).is_in("id", vec![1i64, 2i64]).order_by_desc("points").limit(10i64)"#),
+        "{code}"
+    );
+    assert!(
+        error("let ts = TaskInfra.query(nope == 1)\nreturn Out { count: 0, message: \"\" }")
+            .contains("'Task' has no field 'nope'")
+    );
+    assert!(
+        error("let ts = TaskInfra.query(points == \"x\")\nreturn Out { count: 0, message: \"\" }")
+            .contains("expected Int, found String")
+    );
+}
+
+#[test]
+fn errors_are_collected_from_fail() {
+    let code = lower("if input.id == 0 { fail Invalid(\"zero: {input.id}\") }\nif input.id < 0 { fail NotFound }\nfail Conflict").unwrap();
+    assert_eq!(code.errors, vec!["Invalid", "Conflict"]);
+    let body = code.inline.unwrap();
+    assert!(
+        body.contains("return Err(SubjectUseCaseError::Invalid(format!(\"zero: {}\", input.id)));"),
+        "{body}"
+    );
+    assert!(
+        body.contains("return Err(SubjectUseCaseError::Conflict(String::from(\"Conflict\")));"),
+        "{body}"
+    );
+}
+
+#[test]
+fn coalesce_unwraps_or_fails() {
+    let code = rust(
+        "let n = NoteInfra.find(input.id) ?? fail NotFound\nreturn Out { count: n.id, message: n.text }",
+    );
+    assert!(code.contains("let n = match self.note_infra.find_one(input.id).await? { Some(trust_value) => trust_value, None => return Err(SubjectUseCaseError::NotFound) };"), "{code}");
+}
+
+#[test]
+fn lists_lambdas_and_loops() {
+    let code = rust(
+        "let ts = TaskInfra.all()\nvar total = 0\nfor t in ts { total = total + t.points }\nlet big = ts.filter(t => t.points > 2).map(t => t.title)\nreturn Out { count: total, message: big.join(\", \") }",
+    );
+    assert!(code.contains("for t in ts.iter() {"), "{code}");
+    assert!(code.contains("total = total + t.points;"), "{code}");
+    assert!(
+        code.contains(
+            "ts.iter().filter(|t| { let t = *t; t.points > 2i64 }).cloned().collect::<Vec<_>>()"
+        ),
+        "{code}"
+    );
+}
+
+#[test]
+fn http_responses_decode_into_what_the_context_wants() {
+    let code = rust(
+        "let r: Out = Api.get(\"/x\")\nlet j = Api.post(\"/y\", { id: input.id })\nreturn Out { count: j.count.int() ?? 0, message: r.message }",
+    );
+    assert!(
+        code.contains("self.api.get_json::<Out>(&String::from(\"/x\")).await?"),
+        "{code}"
+    );
+    assert!(
+        code.contains("self.api.post_json::<_, serde_json::Value>("),
+        "{code}"
+    );
+    assert!(code.contains("j[\"count\"].as_i64()"), "{code}");
+}
+
+#[test]
+fn reached_infras_use_cases_and_crates_are_reported() {
+    let code = lower("let o = CountUseCase.run(Ref { id: 1 })\nlet h = hmac_sha256(\"k\", \"m\")\nreturn Out { count: o.count, message: h }").unwrap();
+    assert_eq!(code.use_cases, vec!["CountUseCase"]);
+    assert!(code.deps.iter().any(|(n, _)| n == "hmac"));
+    assert!(
+        code.inline
+            .unwrap()
+            .contains("self.count_use_case.execute(user, Ref { id: 1i64 }).await?")
+    );
+}
+
+#[test]
+fn type_errors_point_at_the_script() {
+    let e = error("let x = 1\nreturn Out { count: \"no\", message: \"\" }");
+    // Without the loader, positions are relative to the block (the loader
+    // places them in the `.tr` file: see tests/generator_logic.rs).
+    assert!(
+        e.contains("<logic>:3:21: UseCase 'SubjectUseCase' logic: expected Int, found String"),
+        "{e}"
+    );
+    assert!(
+        e.contains("return Out { count: \"no\", message: \"\" }"),
+        "{e}"
+    );
+}
+
+#[test]
+fn every_path_must_return_or_fail() {
+    assert!(
+        error("if input.id > 0 { return Out { count: 1, message: \"\" } }")
+            .contains("can reach its end without 'return' or 'fail'")
+    );
+    assert!(error("fail NotFound\nlet x = 1").contains("unreachable"));
+    // Both branches returning is enough.
+    rust("if input.id > 0 { return Out { count: 1, message: \"\" } } else { fail NotFound }");
+}
+
+#[test]
+fn values_are_immutable_unless_var() {
+    assert!(
+        error("let x = 1\nx = 2\nfail NotFound")
+            .contains("'x' can't change: declare it with 'var'")
+    );
+    assert!(
+        error("var xs = [1]\nfor x in xs { xs.push(x) }\nfail NotFound")
+            .contains("can't change while a 'for' loop walks it")
+    );
+    rust("var xs: List<Int> = []\nxs.push(1)\nreturn Out { count: xs.len(), message: \"\" }");
+}
+
+#[test]
+fn fallible_calls_are_refused_inside_lambdas() {
+    let e = error("let xs = [1, 2].map(x => NoteInfra.get(x).id)\nfail NotFound");
+    assert!(
+        e.contains(
+            "calling NoteInfra can fail, so it can't run inside 'x => ...': use a 'for' loop"
+        ),
+        "{e}"
+    );
+    assert!(error("let xs = [1, 2].map(x => x / 2)\nfail NotFound").contains("can't run inside"));
+}
+
+#[test]
+fn integer_division_is_checked() {
+    let code = rust("return Out { count: input.id / 2, message: \"\" }");
+    assert!(code.contains("input.id.checked_div(2i64).ok_or_else(|| SubjectUseCaseError::StorageError(String::from(\"division by zero\")))?"), "{code}");
+}
+
+#[test]
+fn options_must_be_unwrapped() {
+    assert!(
+        error("let t = TaskInfra.get(1)\nif t.due < now() { fail NotFound }\nfail NotFound")
+            .contains("on an Option: unwrap it first")
+    );
+    assert!(
+        error("let n = NoteInfra.find(1)\nreturn Out { count: n.id, message: \"\" }")
+            .contains("may be none")
+    );
+    let code = rust(
+        "let t = TaskInfra.get(1)\nif let due = t.due { if due < now() { fail NotFound } }\nfail NotFound",
+    );
+    assert!(code.contains("if let Some(due) = t.due {"), "{code}");
+}
+
+#[test]
+fn struct_literals_need_every_required_field() {
+    let e = error("let t = Task { title: \"a\" }\nfail NotFound");
+    assert!(e.contains("Task is missing user_id, status, points (only Option, List and id fields may be left out)"), "{e}");
+    assert!(
+        error("let t = Note { text: \"a\", nope: 1 }\nfail NotFound")
+            .contains("'Note' has no field 'nope'")
+    );
+}
+
+#[test]
+fn capabilities_are_limited_to_what_the_project_declares() {
+    assert!(
+        error("let x = env(input.id.to_string())\nfail NotFound")
+            .contains("env() takes a literal UPPER_CASE name")
+    );
+    assert!(error("let f = Files.get(\"k\")\nfail NotFound").contains("logic can't use s3 infras"));
+    assert!(error("let x = std(1)\nfail NotFound").contains("unknown function 'std'"));
+    assert!(error("while true { }").contains("there is no 'while'"));
+    assert!(error("if a && b { }").contains("unexpected '&&': write 'and'"));
+}
+
+#[test]
+fn rust_keywords_are_valid_variable_names() {
+    let code = rust("let type = 1\nreturn Out { count: type, message: \"\" }");
+    assert!(code.contains("let r#type = 1i64;"), "{code}");
+    assert!(error("let user = 1\nfail NotFound").contains("'user' is reserved"));
+}
+
+#[test]
+fn strings_interpolate_and_escape() {
+    let code = rust("return Out { count: 0, message: \"{input.id} {{x}} \\\"q\\\"\" }");
+    assert!(
+        code.contains(r#"format!("{} {{x}} \"q\"", input.id)"#),
+        "{code}"
+    );
+    assert!(
+        error("let t = TaskInfra.get(1)\nreturn Out { count: 0, message: \"{t.due}\" }")
+            .contains("can't be written in a string: give it a default with '??'")
+    );
+}
+
+#[test]
+fn logic_is_exclusive_with_other_bodies() {
+    let e = lower_with(
+        "input: Ref output: Out call: NoteInfra.find_one",
+        "fail NotFound",
+    )
+    .unwrap_err();
+    assert!(e.contains("mutually exclusive"), "{e}");
+}
+
+#[test]
+fn bare_strips_only_one_wrapping_pair() {
+    assert_eq!(super::check::bare_for_tests("(a + b)"), "a + b");
+    assert_eq!(super::check::bare_for_tests("(a) + (b)"), "(a) + (b)");
+    assert_eq!(super::check::bare_for_tests("(\")\" == x)"), "\")\" == x");
+}

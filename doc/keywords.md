@@ -838,6 +838,28 @@ use_case CheckoutUseCase {
   never clashes with your own `use` lines. Apps containing a `code` use case keep **all** declared
   types, since the body may name any of them.
 
+### `logic`
+A use case body written in Trust's scripting language instead of Rust:
+type-checked by `trust` (errors at `file.tr:line:col`), limited to the
+project's infras, use cases and a fixed set of functions, then translated
+to the Rust body of a [`code`](#code) use case. Mutually exclusive with
+`call`, `ai`, `blob` and `code`; needs `input` and `output`; works with
+`transaction: true` and `owner: none`.
+
+```tr
+use_case CloseTaskUseCase {
+    input: CloseRequest
+    output: Task
+    logic {
+        let task = TaskInfra.get(input.id)
+        if task.status == TaskStatus.done { fail AlreadyDone("already done") }
+        return TaskInfra.update(Task { status: TaskStatus.done, ..task })
+    }
+}
+```
+
+The full language is described in [logic.md](logic.md).
+
 ### `RawRequest`
 Built-in input type for `code` use cases that need the request exactly as
 received — typically a webhook verifying an HMAC over the raw body:

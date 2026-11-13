@@ -82,6 +82,7 @@ fn use_case(name: String, infra: &str, method: &str, owner: Option<String>) -> U
         filters: Vec::new(),
         owner,
         code: None,
+        logic: None,
         order_by: Vec::new(),
         transaction: false,
         notify: None,
@@ -647,6 +648,8 @@ Ok(BotAck {{ handled: true, reply, error }})
 }
 
 pub fn desugar(asts: Vec<Ast>) -> Result<Vec<Ast>, String> {
+    // `logic {}` scripts become the `code {}` they stand for.
+    let asts = crate::script::lower_all(asts)?;
     let mut infra_entities: HashMap<String, String> = HashMap::new();
     let mut infra_owners: HashMap<String, String> = HashMap::new();
     for ast in &asts {

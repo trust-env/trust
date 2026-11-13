@@ -3,6 +3,7 @@ pub mod generator;
 pub mod lexer;
 pub mod parser;
 pub mod plugin;
+pub mod script;
 pub mod vendor;
 pub mod cron;
 pub mod loader;
