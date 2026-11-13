@@ -81,7 +81,7 @@ fn mirrors_upsert_on_their_key_and_remove_what_the_source_dropped() {
     assert!(outlook.contains(r#"external_id: TrustMirrorInto::trust_into(item.instance_id.clone()),"#), "{outlook}");
     assert!(outlook.contains(r#"kind: serde_json::from_str("\"outlook\"")"#), "{outlook}");
     assert!(outlook.contains(r#".eq("user_id", user).eq("kind", "outlook").gt("end_at", from.to_rfc3339()).lt("start_at", to.to_rfc3339())"#), "{outlook}");
-    assert!(outlook.contains("today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64)"), "{outlook}");
+    assert!(outlook.contains("today - chrono::Duration::days(chrono::Datelike::weekday(&today).num_days_from_monday() as i64)"), "{outlook}");
     let google = p.read("main/src/applications/google_mirror_use_case.rs");
     assert!(google.contains("self.google_events_use_case.execute(user, source_input)"), "{google}");
     assert!(p.read("main/src/domains/mirror_report.rs").contains("pub removed: i64,"));

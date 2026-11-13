@@ -240,7 +240,7 @@ fn mirror_use_case(mirror: &crate::parser::MirrorDeclaration, env: &MirrorEnv) -
         "now" => "chrono::Utc::now()".to_string(),
         which => format!(
             "{{
-        use chrono::{{Datelike, TimeZone}};
+        use chrono::TimeZone;
         let zone = {zone};
         let today = chrono::Utc::now().with_timezone(&zone).date_naive();
         let day = {day};
@@ -251,7 +251,7 @@ fn mirror_use_case(mirror: &crate::parser::MirrorDeclaration, env: &MirrorEnv) -
     }}",
             zone = zone_expr,
             day = if which == "week_start" {
-                "today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64)"
+                "today - chrono::Duration::days(chrono::Datelike::weekday(&today).num_days_from_monday() as i64)"
             } else {
                 "today"
             }

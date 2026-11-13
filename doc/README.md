@@ -10,7 +10,7 @@ This folder contains feature and language documentation for Trust.
 - [`keywords.md`](keywords.md): the reference — every DSL construct, its options and behavior.
 - [`conversions.md`](conversions.md): the exhaustive reference for every `.tr` → Rust conversion — types, names, storage traits, error enums, path params, env interpolation, proto, dependencies.
 - [`cli.md`](cli.md): full CLI reference — every flag, output/exit behavior, and dev mode.
-- [`recipes.md`](recipes.md): practical copy-paste patterns for common use cases.
+- [`recipes.md`](recipes.md): complete, copy-paste projects — CRUD, gRPC, auth, S3, then modules, smart creation, per-user settings, undo, tested Rust modules, calendar sync (Outlook, Google), notifications, a Telegram bot, an MCP server for AI agents, French messages at local time, live updates with a typed client.
 - [`limitations.md`](limitations.md): current known limitations and unsupported behaviors.
 
 ## Scope

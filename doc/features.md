@@ -2,7 +2,9 @@
 
 Everything Trust can generate today, grouped by theme. Each entry says what
 the feature gives you, shows the smallest useful `.tr` snippet, and links
-to the full reference in [keywords.md](keywords.md). Exact generated shapes
+to the full reference in [keywords.md](keywords.md); complete, runnable
+projects using them are in [recipes.md](recipes.md) (11 to 22 for the
+newer features). Exact generated shapes
 are in [conversions.md](conversions.md), CLI flags in [cli.md](cli.md), and
 what is *not* supported in [limitations.md](limitations.md).
 
