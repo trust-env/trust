@@ -34,6 +34,8 @@ pub enum Ty {
     /// `Api.send(...)`: status and body of an HTTP response, whatever the
     /// status (`(i64, String)`).
     Response,
+    /// `Map<K, V>`: keys in order (`BTreeMap`).
+    Map(Box<Ty>, Box<Ty>),
     /// What `xs.push(x)` returns.
     Unit,
     /// What `fail` "returns": fits anywhere.
@@ -66,6 +68,7 @@ impl Ty {
             Ty::Struct(n) | Ty::Enum(n) | Ty::Tagged(n) => n.clone(),
             Ty::RawRequest => "RawRequest".into(),
             Ty::Try(t) => format!("Try<{}>", t.name()),
+            Ty::Map(k, v) => format!("Map<{}, {}>", k.name(), v.name()),
             Ty::Response => "Response".into(),
             Ty::Unit => "nothing".into(),
             Ty::Never => "fail".into(),
@@ -90,6 +93,7 @@ impl Ty {
             Ty::Struct(n) | Ty::Enum(n) | Ty::Tagged(n) => n.clone(),
             Ty::RawRequest => "RawRequest".into(),
             Ty::Try(t) => format!("Result<{}, String>", t.rust()),
+            Ty::Map(k, v) => format!("std::collections::BTreeMap<{}, {}>", k.rust(), v.rust()),
             Ty::Response => "(i64, String)".into(),
             Ty::Unit => "()".into(),
             Ty::Never => "_".into(),
@@ -121,7 +125,8 @@ impl Ty {
             | Ty::Unit
             | Ty::Never
             | Ty::Try(_)
-            | Ty::Response => false,
+            | Ty::Response
+            | Ty::Map(..) => false,
             Ty::Opt(t) | Ty::List(t) => t.is_eq(),
             _ => true,
         }
@@ -173,8 +178,13 @@ pub enum InfraKind {
         entity: String,
         owner: Option<String>,
     },
-    /// `ics`: an `ics_feed {}` (also has `occurrences(from, to)`).
-    HttpClient { ics: bool },
+    /// `ics`: an `ics_feed {}` (also has `occurrences(from, to)`);
+    /// `notify`: a notifications router (`send`), recording into `record`.
+    HttpClient {
+        ics: bool,
+        notify: bool,
+        record: Option<String>,
+    },
     /// Any other kind: named in the error message.
     Other(&'static str),
 }
@@ -190,6 +200,8 @@ pub struct Project {
     pub maps: Vec<(String, String)>,
     /// A `config { tz | locale }` exists: the crate has `crate::tz`.
     pub local_time: bool,
+    /// A `config { locale }` exists: the crate has `crate::fmt`.
+    pub locale: bool,
     /// `extern fn` declarations of top-level `logic {}` blocks.
     pub externs: HashMap<String, Extern>,
 }
@@ -243,6 +255,8 @@ impl Project {
                             }
                             InfraKind::HttpClient {
                                 ics: c.ics.is_some(),
+                                notify: c.notify.is_some(),
+                                record: c.notify.as_ref().and_then(|n| n.record.clone()),
                             }
                         }
                         InfraServiceType::Storage(StorageType::S3(_)) => InfraKind::Other("s3"),
@@ -258,7 +272,10 @@ impl Project {
                         .insert(u.name.clone(), (u.input.clone(), u.output.clone()));
                 }
                 Ast::Map(m) => project.maps.push((m.from.clone(), m.to.clone())),
-                Ast::Config(c) => project.local_time |= c.tz.is_some() || c.locale.is_some(),
+                Ast::Config(c) => {
+                    project.local_time |= c.tz.is_some() || c.locale.is_some();
+                    project.locale |= c.locale.is_some();
+                }
                 _ => {}
             }
         }
@@ -343,6 +360,25 @@ impl Project {
                 })
                 .collect(),
         })
+    }
+
+    /// The fields of `variant` of the tagged enum `name`, if it has it.
+    pub fn variant_fields(&self, name: &str, variant: &str) -> Option<Vec<(String, AllowedType)>> {
+        match self.types.get(name) {
+            Some(TypeDeclaration::Enum(e)) => {
+                e.variants.iter().position(|v| v == variant).map(|i| {
+                    e.fields
+                        .get(i)
+                        .map(|f| {
+                            f.iter()
+                                .map(|f| (f.name.clone(), f.field_type.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                })
+            }
+            _ => None,
+        }
     }
 
     pub fn enum_variants(&self, name: &str) -> Vec<String> {

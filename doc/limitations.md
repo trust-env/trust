@@ -127,8 +127,9 @@
   `s3`, `grpc_client` and notification channels need `code {}`.
 - Types imported from another module (`import`) aren't visible to a
   script; declare them in the project.
-- Tagged enums (variants with fields) can be passed around but not built
-  or matched; struct values can't be compared with `==`.
+- Enums whose values carry fields are built and read with `if let`, but
+  not compared with `==`; neither are struct values. `Map`s live in a
+  script only (no `Map` field in a `type`).
 - Queries can't match `none` and have no `or`; `TaskInfra.query(...)`
   returns at most 1000 rows unless `limit:` says otherwise.
 - `Int` arithmetic other than `/` and `%` wraps on overflow in release

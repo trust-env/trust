@@ -52,6 +52,16 @@ pub enum Cond {
     Bool(Expr),
     /// `if let v = optional { ... }`.
     Let(String, Expr),
+    /// `if let Change.move { start, end: to } = change { ... }`: the
+    /// value is that variant; its fields become variables.
+    Variant {
+        ty: String,
+        variant: String,
+        /// `(field, variable)`.
+        bindings: Vec<(String, String)>,
+        value: Expr,
+        pos: Pos,
+    },
 }
 
 /// `extern fn name(a: T, b: &U) -> R from "./file.rs"` in a top-level
@@ -109,6 +119,13 @@ pub enum ExprKind {
     Fail(String, Option<Box<Expr>>),
     /// `try e`: `e`'s failure becomes a value (`.ok`, `.error`).
     Try(Box<Expr>),
+    /// `Change.move { start: s, end: e }`: a value of an enum whose
+    /// variants carry fields.
+    Variant {
+        ty: String,
+        variant: String,
+        fields: Vec<(String, Expr)>,
+    },
 }
 
 #[derive(Debug, Clone)]

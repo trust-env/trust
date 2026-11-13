@@ -69,11 +69,13 @@ A complete project using most of the language is in
 
 | Expression | Meaning |
 |---|---|
-| `1`, `2.5`, `true`, `none`, `"text {expr}"` | Literals. Strings interpolate `{expr}`; `{{` `}}` are braces. |
+| `1`, `2.5`, `true`, `none`, `"text {expr}"` | Literals. Strings interpolate `{expr}` (strings may appear inside: `"at {t.format("HH:mm")}"`); `{{` `}}` are braces. |
 | `[a, b]` | A `List`. With one item per line, commas may be left out. |
 | `Task { title: t, done: false }` | A struct. Option, List and `id` fields may be left out, and so may the owner field of an entity whose infra has `owner:` (`create`/`update` fill it). `..base` copies the other fields: `Task { done: true, ..task }`. |
 | `{ key: value, other }` | A `Json` object (`{ other }` is `{ other: other }`). |
 | `Status.done` | An enum value (as written in the `enum`). |
+| `Change.move { id: 1, start: t }`, `Change.reset` | A value of an enum whose values carry fields (Option and List fields may be left out). |
+| `{}` | An empty `Map` (where one is expected: `var m: Map<Int, Float> = {}`). |
 | `+ - * / %` | Numbers of one type (`.to_float()` converts). `+` also joins strings. Integer `/` by zero fails with `StorageError`. |
 | `== != < <= > >=` | Comparisons (no chaining). |
 | `and or not`, `x in list`, `x not in list` | Logic. |
@@ -179,7 +181,7 @@ Trust checks each call against the declaration and includes the file in
 the crate of the use cases that use it (like `code { include }`: its `pub`
 items are at the crate root, `crate::*` is in scope). `&T` passes the value
 by reference (`&String` fits a Rust `&str`); the path is relative to the
-`.tr` file. The declaration is trusted: Trust doesn't read the Rust, so a
+`.tr` file (a path that only exists from the working directory is accepted too, like every path of a `.tr` file — the examples use that so they also work when read from the repository root). The declaration is trusted: Trust doesn't read the Rust, so a
 wrong signature is reported by rustc, and the function can do anything Rust
 can — keep these files small and pure. They are callable inside
 `x => ...` (they can't fail).
@@ -196,7 +198,9 @@ can — keep these files small and pure. They are callable inside
 | `Date` | `add_days(n) days_since(d) weekday() day() month() year()` |
 | a type with a [`map`](keywords.md#map) | `item.to_task()` for `map Item -> Task` |
 | `Option` | `is_some() is_none()` |
-| `List` | `len() is_empty() first() last() get(i) contains(x) take(n) skip(n) reverse() sum() min() max() join(sep) push(x)`, and with `x => ...`: `map filter any all find count sort_by sort_by_desc` |
+| `List` | `len() is_empty() first() last() get(i) contains(x) take(n) skip(n) reverse() distinct() sum() min() max() join(sep) push(x)`, and with `x => ...`: `map filter filter_map any all find count sort_by sort_by_desc group_by to_map` |
+| `Map<K, V>` | `len() is_empty() keys() values() get(k)` (`Option<V>`) `contains(k)`, and on a `var`: `set(k, v) remove(k)` |
+| an enum with fields | `c.is(Change.move)` |
 | `RawRequest` | `body`, `header("name")` |
 
 Functions: `now()`, `today()` (the date in the app's `config { tz }`, UTC
@@ -216,7 +220,34 @@ name, so every variable a script reads shows in the source; fails with
 | `week_start()` | this week's Monday 0:00 in the app's time zone |
 | `log_warn(text)` | logs a warning (`tracing`), tagged with the use case |
 
-`weekday()` is 1 for Monday to 7 for Sunday. Dates and instants compare
+`weekday()` is 1 for Monday to 7 for Sunday. `t.format("EEE dd/MM HH:mm")`
+(on a `DateTime` or a `Date`) writes it in the app's time zone and language
+— it needs `config { locale }`.
+
+`filter_map(x => optional)` keeps the set values; `group_by(x => key)` gives a
+`Map<K, List<T>>`, `to_map(x => key)` a `Map<K, T>` (the last item of a key
+wins). A `Map`'s keys are `Int`, `String`, `Bool`, `Date`, `DateTime` or
+`Uuid`, kept in order.
+
+An enum whose values carry fields is read with `if let`, which also names
+the fields it needs:
+
+```tr
+if let Change.move { event_id, start, end: until } = change {
+    journal_entry("moved to {start.format("EEE HH:mm")}", requires_ack: true)
+} else if let Change.reset = change {
+    ...
+}
+```
+
+Within a use case declaring `journal:`, `journal("text")` names the current
+undo-journal entry and `journal_entry("text", requires_ack: true)` starts a
+new one: the writes that follow belong to it.
+
+**Notifications**: the router a `notifications Notify { ... }` block declares
+sends with `Notify.send(kind, text)`, and `Notify.send_recorded(kind, text)`
+also records the notification in its `infra:` and returns the row (`kind`
+is a `String` or an enum value). Dates and instants compare
 with `< <= > >= ==`; `d.add_days(-1)` goes back.
 
 Inside `x => ...` nothing that can fail runs (infra and use case calls,

@@ -52,3 +52,12 @@ fn logic_journal_example_compiles() {
 fn logic_calendar_example_compiles() {
     assert_example_builds_cleanly("logic_calendar_example.tr");
 }
+
+/// Week planning: `Map`, `group_by`, `distinct`, an enum whose values carry
+/// fields (built, tested with `is`, destructured with `if let`),
+/// `journal_entry(..., requires_ack: true)`, localized `format`, and a
+/// recorded notification.
+#[test]
+fn logic_planner_example_compiles() {
+    assert_example_builds_cleanly("logic_planner_example.tr");
+}

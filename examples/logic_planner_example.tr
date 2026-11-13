@@ -1,0 +1,104 @@
+// logic {} planning a week: Maps, an enum whose values carry fields, undo
+// journal entries that need an acknowledgement, localized dates and
+// recorded notifications.
+config { tz: "Europe/Paris" locale: "fr" }
+
+enum Domain { work perso }
+enum NotificationKind { brief conflict }
+enum NotificationStatus { sent failed logged }
+enum Change {
+    move { event_id: Int, start: DateTime, end: DateTime, reason: String }
+    create { title: String, start: DateTime, end: DateTime, note: Option<String> }
+    reset
+}
+
+type Project { id: Int, user_id: Int, name: String, domain: Domain, weekly_budget_h: Float }
+type Event { id: Int, user_id: Int, title: String, project_id: Option<Int>, start_at: DateTime, end_at: DateTime }
+type Action { id: Int, user_id: Int, kind: String, text: String, changes: Json, undone: Bool, at: DateTime, requires_ack: Bool }
+type Notification { id: Int, user_id: Int, kind: NotificationKind, at: DateTime, channel: String, text: String, status: NotificationStatus, error: Option<String>, external_id: Option<String> }
+type PlanRequest { send: Option<Bool> }
+type PlanResult { moved: Int, created: Int, budgets: List<String>, message: String, notified: Bool }
+
+infra ProjectInfra { storage { psql { entity: Project owner: user_id } } }
+infra EventInfra { storage { psql { entity: Event owner: user_id } } }
+infra ActionInfra { storage { psql { entity: Action owner: user_id } } }
+infra NotificationInfra { storage { psql { entity: Notification owner: user_id } } }
+
+journal Actions { infra: ActionInfra owner: user_id undo: "/actions/:id/toggle" conflict: refuse }
+channel Telegram { telegram { token: "${TELEGRAM_BOT_TOKEN}" chat: "${TELEGRAM_CHAT_ID}" } }
+notifications Notify { infra: NotificationInfra default: Telegram fallback: log }
+
+use_case PlanWeekUseCase {
+    input: PlanRequest
+    output: PlanResult
+    journal: Actions
+    transaction: true
+    logic {
+        let from = week_start()
+        let to = from.add_days(7)
+        let events = EventInfra.query(start_at >= from, start_at < to, order_by: start_at)
+
+        // Hours already planned per project.
+        var planned: Map<Int, Float> = {}
+        for e in events {
+            if let project = e.project_id {
+                planned.set(project, (planned.get(project) ?? 0.0) + e.end_at.minutes_since(e.start_at).to_float() / 60.0)
+            }
+        }
+        let by_domain = ProjectInfra.all().group_by(p => p.name.lower())
+        var budgets: List<String> = []
+        for name in by_domain.keys() {
+            for p in by_domain.get(name) ?? [] {
+                budgets.push("{p.name}: {planned.get(p.id) ?? 0.0}/{p.weekly_budget_h} h")
+            }
+        }
+
+        // Events overlapping the next one move after it.
+        var changes: List<Change> = []
+        var previous_end = from
+        for e in events {
+            if e.start_at < previous_end {
+                let length = e.end_at.seconds_since(e.start_at)
+                changes.push(Change.move { event_id: e.id, start: previous_end, end: previous_end.add_seconds(length), reason: "chevauchement" })
+            }
+            previous_end = max(previous_end, e.end_at)
+        }
+        if events.is_empty() {
+            changes.push(Change.create { title: "Revue de la semaine", start: from.add_hours(9), end: from.add_hours(10) })
+        }
+        changes.push(Change.reset)
+
+        var moved = 0
+        var created = 0
+        for change in changes {
+            if let Change.move { event_id, start, end, reason } = change {
+                let event = EventInfra.get(event_id)
+                journal_entry("« {event.title} » déplacé au {start.format("EEE dd/MM HH:mm")} ({reason})", requires_ack: true)
+                EventInfra.update(Event { start_at: start, end_at: end, ..event })
+                moved = moved + 1
+            } else if let Change.create { title, start, end } = change {
+                journal_entry("« {title} » ajouté")
+                EventInfra.create(Event { title: title, start_at: start, end_at: end })
+                created = created + 1
+            }
+        }
+        let moves = changes.count(c => c.is(Change.move))
+        let message = "{moves} déplacement(s), {created} création(s), semaine du {from.format("EEEE d MMMM")}"
+        var notified = false
+        if input.send ?? false {
+            let sent = Notify.send_recorded(NotificationKind.brief, message)
+            notified = sent.status == NotificationStatus.sent
+        }
+        return PlanResult { moved: moved, created: created, budgets: budgets.distinct(), message: message, notified: notified }
+    }
+}
+
+adapter Api {
+    http {
+        on: "0.0.0.0:8080"
+        auth: required
+        resources { Actions }
+        routes { POST "/plan" { use_case: PlanWeekUseCase } }
+    }
+}
+app Main: run { Api }
