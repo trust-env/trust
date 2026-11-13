@@ -669,6 +669,13 @@ fn environment_urls_dates_and_logs() {
     assert!(code.contains("std::env::var(\"CALENDAR_ID\").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())"), "{code}");
     assert!(code.contains("chrono::DateTime::parse_from_rfc3339(trust_text).ok().map(|d| d.with_timezone(&chrono::Utc)).or_else(|| chrono::NaiveDate::parse_from_str(trust_text, \"%Y-%m-%d\").ok().map(|d| d.and_time(chrono::NaiveTime::MIN).and_utc()))"), "{code}");
     assert!(code.contains("tracing::warn!(use_case = \"SubjectUseCase\", \"{}\", format!(\"id {}\", urlencoding::encode(&id).into_owned()));"), "{code}");
+    let code = rust("let n = input.id\nif n > 0 { log_info(\"imported: {n}\") }\nfail NotFound");
+    assert!(
+        code.contains(
+            "tracing::info!(use_case = \"SubjectUseCase\", \"{}\", format!(\"imported: {}\", n));"
+        ),
+        "{code}"
+    );
     assert!(error("let x = env_opt(\"lower\")\nfail NotFound").contains("literal UPPER_CASE name"));
     // In the app's time zone when there is one.
     let code = local(

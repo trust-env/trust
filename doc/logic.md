@@ -219,7 +219,7 @@ name, so every variable a script reads shows in the source; fails with
 | `parse_datetime(text)` | `Option<DateTime>` from RFC 3339, or a date alone (`2026-01-02`, midnight in the app's time zone) |
 | `parse_date(text)` | `Option<Date>` from a date or an RFC 3339 instant |
 | `week_start()` | this week's Monday 0:00 in the app's time zone |
-| `log_warn(text)` | logs a warning (`tracing`), tagged with the use case |
+| `log_warn(text)`, `log_info(text)` | logs a warning / an info line (`tracing`), tagged with the use case |
 
 `weekday()` is 1 for Monday to 7 for Sunday. `t.format("EEE dd/MM HH:mm")`
 (on a `DateTime` or a `Date`) writes it in the app's time zone and language

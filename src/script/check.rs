@@ -202,6 +202,7 @@ pub const BUILTINS: &[&str] = &[
     "parse_date",
     "week_start",
     "log_warn",
+    "log_info",
 ];
 
 /// A written type (`List<Task>`), resolved against the project.
@@ -1592,16 +1593,18 @@ impl Lowerer<'_> {
                 };
                 Ok((Ty::DateTime, code))
             }
-            "log_warn" => {
-                let [text] = self.positional(args, 1, "log_warn(text)", pos)?[..] else {
+            "log_warn" | "log_info" => {
+                let [text] = self.positional(args, 1, &format!("{}(text)", name), pos)?[..] else {
                     unreachable!()
                 };
                 let text = bare(&self.expect(text, &Ty::Str)?);
                 self.dep("tracing", "0.1");
+                let level = name.trim_start_matches("log_");
                 Ok((
                     Ty::Unit,
                     format!(
-                        "tracing::warn!(use_case = {}, \"{{}}\", {})",
+                        "tracing::{}!(use_case = {}, \"{{}}\", {})",
+                        level,
                         literal(self.t.name),
                         text
                     ),
