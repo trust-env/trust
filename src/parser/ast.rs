@@ -952,6 +952,9 @@ pub enum Ast {
     InfraSet(String, Vec<String>),
     Journal(JournalDeclaration),
     Map(MapDeclaration),
+    /// A top-level `logic { extern fn ... }` block: declarations every
+    /// `logic {}` script of the project can use.
+    LogicLibrary(LogicSpec),
     /// Expanded into a use case before generation.
     Mirror(MirrorDeclaration),
     /// Expanded into a notify-mode `http_client` infra before generation.

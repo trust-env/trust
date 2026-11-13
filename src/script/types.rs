@@ -174,9 +174,29 @@ pub struct Project {
     pub maps: Vec<(String, String)>,
     /// A `config { tz | locale }` exists: the crate has `crate::tz`.
     pub local_time: bool,
+    /// `extern fn` declarations of top-level `logic {}` blocks.
+    pub externs: HashMap<String, Extern>,
+}
+
+/// A Rust function scripts may call (see `ExternFn`), resolved.
+#[derive(Debug, Clone)]
+pub struct Extern {
+    /// `(type, passed by reference)`.
+    pub params: Vec<(Ty, bool)>,
+    pub ret: Ty,
+    /// The Rust file, resolved: included in the crate when used.
+    pub file: String,
 }
 
 impl Project {
+    /// The owner field of every entity stored in an `owner:` psql infra:
+    /// `create` / `update` fill it, so struct literals may leave it out.
+    pub fn is_owner_field(&self, entity: &str, field: &str) -> bool {
+        self.infras.values().any(|k| {
+            matches!(k, InfraKind::Psql { entity: e, owner: Some(o) } if e == entity && o == field)
+        })
+    }
+
     pub fn new(asts: &[Ast]) -> Self {
         let mut project = Project::default();
         for ast in asts {

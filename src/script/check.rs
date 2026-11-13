@@ -49,6 +49,8 @@ pub struct Lowered {
     pub use_cases: Vec<String>,
     pub errors: Vec<String>,
     pub deps: Vec<(String, String)>,
+    /// Rust files of the `extern fn`s the script calls.
+    pub includes: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -159,6 +161,47 @@ fn bare(code: &str) -> String {
 #[cfg(test)]
 pub fn bare_for_tests(code: &str) -> String {
     bare(code)
+}
+
+/// Functions every script has (an `extern fn` can't take these names).
+pub const BUILTINS: &[&str] = &[
+    "now",
+    "today",
+    "env",
+    "sha256",
+    "hmac_sha256",
+    "secure_eq",
+    "to_json",
+    "min",
+    "max",
+    "journal",
+];
+
+/// A written type (`List<Task>`), resolved against the project.
+pub fn resolve_type(p: &Project, t: &TypeExpr) -> R<Ty> {
+    match t {
+        TypeExpr::Named(name, pos) => Ok(match name.as_str() {
+            "Int" => Ty::Int,
+            "Float" => Ty::Float,
+            "Decimal" => Ty::Decimal,
+            "Bool" => Ty::Bool,
+            "String" => Ty::Str,
+            "Uuid" => Ty::Uuid,
+            "DateTime" => Ty::DateTime,
+            "Date" => Ty::Date,
+            "Time" => Ty::Time,
+            "Json" => Ty::Json,
+            other => p.named(other).or_else(|e| err(*pos, e))?,
+        }),
+        TypeExpr::Generic(name, args, pos) => match (name.as_str(), args.as_slice()) {
+            ("List", [inner]) => Ok(Ty::list(resolve_type(p, inner)?)),
+            ("Option", [inner]) => Ok(Ty::opt(resolve_type(p, inner)?)),
+            _ => err(
+                *pos,
+                format!("unknown type '{}<...>' (List<T> and Option<T> exist)", name),
+            ),
+        },
+    }
 }
 
 /// A Rust string literal holding `text`.
@@ -283,29 +326,7 @@ impl Lowerer<'_> {
     // ---- types --------------------------------------------------------
 
     fn type_expr(&self, t: &TypeExpr) -> R<Ty> {
-        match t {
-            TypeExpr::Named(name, pos) => Ok(match name.as_str() {
-                "Int" => Ty::Int,
-                "Float" => Ty::Float,
-                "Decimal" => Ty::Decimal,
-                "Bool" => Ty::Bool,
-                "String" => Ty::Str,
-                "Uuid" => Ty::Uuid,
-                "DateTime" => Ty::DateTime,
-                "Date" => Ty::Date,
-                "Time" => Ty::Time,
-                "Json" => Ty::Json,
-                other => self.p.named(other).or_else(|e| err(*pos, e))?,
-            }),
-            TypeExpr::Generic(name, args, pos) => match (name.as_str(), args.as_slice()) {
-                ("List", [inner]) => Ok(Ty::list(self.type_expr(inner)?)),
-                ("Option", [inner]) => Ok(Ty::opt(self.type_expr(inner)?)),
-                _ => err(
-                    *pos,
-                    format!("unknown type '{}<...>' (List<T> and Option<T> exist)", name),
-                ),
-            },
-        }
+        resolve_type(self.p, t)
     }
 
     fn field_ty(&self, ty: &Ty, field: &str, pos: Pos) -> R<Ty> {
@@ -880,7 +901,10 @@ impl Lowerer<'_> {
             None => {
                 let mut missing = Vec::new();
                 for (field, declared) in &fields {
-                    if given.iter().any(|(g, _)| g == field) || field == "id" {
+                    if given.iter().any(|(g, _)| g == field)
+                        || field == "id"
+                        || self.p.is_owner_field(name, field)
+                    {
                         continue;
                     }
                     if !matches!(self.p.ty(declared), Ok(Ty::Opt(_)) | Ok(Ty::List(_))) {
@@ -891,7 +915,7 @@ impl Lowerer<'_> {
                     return err(
                         pos,
                         format!(
-                            "{} is missing {} (only Option, List and id fields may be left out)",
+                            "{} is missing {} (only Option, List, id and owner fields may be left out)",
                             name,
                             missing.join(", ")
                         ),
@@ -996,7 +1020,21 @@ impl Lowerer<'_> {
                             self.fail_code(variant, message.as_deref(), right.pos)?
                         )
                     }
-                    _ => self.expect(right, &inner)?,
+                    _ => {
+                        let (rty, rcode) = self.expr(right, Some(&inner))?;
+                        // `a ?? b` between two Options is still an Option.
+                        if rty == Ty::opt((*inner).clone()) {
+                            return Ok((
+                                rty,
+                                format!(
+                                    "match {} {{ Some(trust_value) => Some(trust_value), None => {} }}",
+                                    lcode,
+                                    bare(&rcode)
+                                ),
+                            ));
+                        }
+                        bare(&self.coerce(&rty, rcode, &inner, right.pos)?)
+                    }
                 };
                 Ok((
                     *inner,
@@ -1266,6 +1304,37 @@ impl Lowerer<'_> {
                     format!("std::cmp::{}({}, {})", name, l.1, r.1)
                 };
                 Ok((l.0, code))
+            }
+            _ if self.p.externs.contains_key(name) => {
+                let ext = self.p.externs[name].clone();
+                if args.len() != ext.params.len() || args.iter().any(|a| a.name.is_some()) {
+                    let sig = ext
+                        .params
+                        .iter()
+                        .map(|(t, r)| format!("{}{}", if *r { "&" } else { "" }, t.name()))
+                        .collect::<Vec<_>>();
+                    return err(pos, format!("expected {}({})", name, sig.join(", ")));
+                }
+                let mut codes = Vec::new();
+                for (arg, (ty, by_ref)) in args.iter().zip(&ext.params) {
+                    if *by_ref {
+                        // A place is lent as is, anything else as a temporary.
+                        match self.place(&arg.value)? {
+                            Some(place) if place.ty == *ty => codes.push(if place.bare_ref {
+                                place.code
+                            } else {
+                                format!("&{}", place.code)
+                            }),
+                            _ => codes.push(format!("&{}", self.expect(&arg.value, ty)?)),
+                        }
+                    } else {
+                        codes.push(bare(&self.expect(&arg.value, ty)?));
+                    }
+                }
+                if !self.out.includes.contains(&ext.file) {
+                    self.out.includes.push(ext.file.clone());
+                }
+                Ok((ext.ret, format!("crate::{}({})", name, codes.join(", "))))
             }
             _ if self.p.types.contains_key(name) => err(
                 pos,

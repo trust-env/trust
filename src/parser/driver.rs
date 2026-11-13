@@ -28,6 +28,19 @@ impl Parser {
             Some(Token::Identifier(word)) if word == "resource" => self.try_resource_declaration(),
             Some(Token::Identifier(word)) if word == "infra_set" => self.try_infra_set(),
             Some(Token::Identifier(word)) if word == "journal" => self.try_journal_declaration(),
+            Some(Token::Identifier(word)) if word == "logic" => {
+                let start = self.current;
+                self.next_token();
+                match self.next_token() {
+                    Some(Token::Script(source, offset)) => {
+                        Ok(Ast::LogicLibrary(crate::parser::LogicSpec { source, offset, ..Default::default() }))
+                    }
+                    _ => {
+                        self.reset(start);
+                        Err("Expected '{' after 'logic'".to_string())
+                    }
+                }
+            }
             Some(Token::Identifier(word)) if word == "include" => {
                 let start = self.current;
                 self.next_token();

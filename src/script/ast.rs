@@ -54,6 +54,18 @@ pub enum Cond {
     Let(String, Expr),
 }
 
+/// `extern fn name(a: T, b: &U) -> R from "./file.rs"` in a top-level
+/// `logic {}` block: a `pub fn` of a Rust file, callable from scripts.
+#[derive(Debug, Clone)]
+pub struct ExternFn {
+    pub name: String,
+    /// `(name, type, passed by reference)`.
+    pub params: Vec<(String, TypeExpr, bool)>,
+    pub ret: TypeExpr,
+    pub from: String,
+    pub pos: Pos,
+}
+
 #[derive(Debug, Clone)]
 pub enum TypeExpr {
     Named(String, Pos),

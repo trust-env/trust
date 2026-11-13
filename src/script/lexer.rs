@@ -27,8 +27,8 @@ pub struct Token {
 
 /// Longest first, so `==` wins over `=`.
 const SYMBOLS: &[&str] = &[
-    "==", "!=", "<=", ">=", "=>", "??", "..", "=", "<", ">", "+", "-", "*", "/", "%", "(", ")",
-    "[", "]", "{", "}", ",", ":", ".",
+    "==", "!=", "<=", ">=", "=>", "->", "??", "..", "=", "<", ">", "+", "-", "*", "/", "%", "(",
+    ")", "[", "]", "{", "}", ",", ":", ".", "&",
 ];
 
 /// What people coming from other languages type, and what to write instead.
@@ -128,6 +128,19 @@ impl Lexer<'_> {
                 tok: Tok::Str(self.string(pos)?),
                 pos,
             });
+        }
+        // `&&` / `||` before `&` is read as a symbol.
+        for (foreign, hint) in &FOREIGN[..2] {
+            if foreign
+                .chars()
+                .enumerate()
+                .all(|(k, f)| self.peek(k) == Some(f))
+            {
+                return Err(ScriptError::new(
+                    pos,
+                    format!("unexpected '{}': {}", foreign, hint),
+                ));
+            }
         }
         for symbol in SYMBOLS {
             let len = symbol.chars().count();

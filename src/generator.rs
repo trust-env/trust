@@ -1137,7 +1137,7 @@ impl CodeGen {
                 ),
                 Ast::TypeDecl(t) => self.gen_domain(&mut context, t, domain_path.clone()),
                 // Generated with the app that runs them.
-                Ast::App(_) | Ast::Schedule(_) | Ast::Config(_) | Ast::Include(_) | Ast::Database(_) | Ast::Resource(_) | Ast::InfraSet(..) | Ast::Journal(_) | Ast::Map(_) | Ast::Mirror(_) | Ast::Channel(_) | Ast::Notifications(_) | Ast::Bot(_) => Ok(()),
+                Ast::App(_) | Ast::Schedule(_) | Ast::Config(_) | Ast::Include(_) | Ast::Database(_) | Ast::Resource(_) | Ast::InfraSet(..) | Ast::Journal(_) | Ast::Map(_) | Ast::Mirror(_) | Ast::Channel(_) | Ast::Notifications(_) | Ast::Bot(_) | Ast::LogicLibrary(_) => Ok(()),
                 Ast::Plugin(plugin_ast) => self.generate_plugin(
                     &mut context,
                     plugin_ast,

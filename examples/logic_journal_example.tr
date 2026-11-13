@@ -7,7 +7,7 @@ type InboxItem { id: Int, user_id: Int, text: String }
 type Action { id: Int, user_id: Int, kind: String, text: String, changes: Json, undone: Bool, at: DateTime, requires_ack: Bool }
 type AcceptRequest { id: Int }
 type MoveRequest { id: Int, start_at: DateTime }
-type DayInfo { weekday: Int, hour: Int, preview: String, morning: Bool, days_to_monday: Int }
+type DayInfo { weekday: Int, hour: Int, preview: String, morning: Bool, quiet: Bool, days_to_monday: Int }
 type Empty {}
 type FeedWindow { from: DateTime, to: DateTime }
 type FeedItem { id: String, title: String, start: DateTime, end: DateTime }
@@ -20,6 +20,13 @@ infra ActionInfra { storage { psql { entity: Action owner: user_id } } }
 journal Actions { infra: ActionInfra owner: user_id undo: "/actions/:id/toggle" conflict: refuse }
 
 map InboxItem -> Task { title: text  note: "from the inbox" }
+
+// Rust functions every script may call, typed here; the file is included
+// in the crate of any use case that calls them.
+logic {
+    extern fn guess_estimate(text: &String) -> Int from "examples/logic/rules.rs"
+    extern fn is_weekend(at: DateTime) -> Bool from "examples/logic/rules.rs"
+}
 
 use_case AcceptInboxUseCase {
     input: AcceptRequest
@@ -54,13 +61,19 @@ use_case DayInfoUseCase {
     logic {
         let moment = now()
         let day = today()
-        let preview = TaskInfra.all().map(t => t.title).join(", ").take(60)
+        let tasks = TaskInfra.all()
+        let first = tasks.find(t => t.note == "feed") ?? tasks.first()
+        let load = tasks.map(t => guess_estimate(t.title)).sum()
+        let titles = tasks.map(t => t.title).join(", ")
+        let preview = "{titles} ({load} min)".take(60)
+        let quiet = is_weekend(moment) or first.is_none()
         let monday = day.add_days(8 - day.weekday())
         return DayInfo {
             weekday: day.weekday()
             hour: moment.hour()
             preview: preview
             morning: moment.hour() < 12
+            quiet: quiet
             days_to_monday: monday.days_since(day)
         }
     }

@@ -71,13 +71,13 @@ A complete project using most of the language is in
 |---|---|
 | `1`, `2.5`, `true`, `none`, `"text {expr}"` | Literals. Strings interpolate `{expr}`; `{{` `}}` are braces. |
 | `[a, b]` | A `List`. |
-| `Task { title: t, done: false }` | A struct. Option, List and `id` fields may be left out. `..base` copies the other fields: `Task { done: true, ..task }`. |
+| `Task { title: t, done: false }` | A struct. Option, List and `id` fields may be left out, and so may the owner field of an entity whose infra has `owner:` (`create`/`update` fill it). `..base` copies the other fields: `Task { done: true, ..task }`. |
 | `{ key: value, other }` | A `Json` object (`{ other }` is `{ other: other }`). |
 | `Status.done` | An enum value (as written in the `enum`). |
 | `+ - * / %` | Numbers of one type (`.to_float()` converts). `+` also joins strings. Integer `/` by zero fails with `StorageError`. |
 | `== != < <= > >=` | Comparisons (no chaining). |
 | `and or not`, `x in list`, `x not in list` | Logic. |
-| `a ?? b`, `a ?? fail E` | Default of an Option. |
+| `a ?? b`, `a ?? fail E` | Default of an Option. When `b` is itself an `Option`, the result is an `Option` (first one set). `??` groups to the right: `a ?? b ?? fail E` is `a ?? (b ?? fail E)`. |
 
 ## Infras
 
@@ -126,6 +126,35 @@ otherwise. `Json` values read with `j.field`, `j.get("key")`, then
 adds itself — a mirror's `{Name}MirrorUseCase`, a resource's
 `Create{Entity}UseCase`, a journal's `Toggle{Journal}UseCase`. Other infra kinds (`s3`,
 `grpc_client`) aren't available yet: use `code {}`.
+
+## Shared Rust functions (`extern fn`)
+
+Rules several scripts — or Rust code, like a psql `defaults {}` — share
+stay in one Rust file. A top-level `logic {}` block declares them with
+their types:
+
+```tr
+logic {
+    extern fn guess_domain(text: &String, at: DateTime) -> Domain from "./shared/rules.rs"
+    extern fn guess_estimate(text: &String) -> Int from "./shared/rules.rs"
+}
+```
+
+```rust
+// shared/rules.rs
+pub fn guess_domain(text: &str, at: chrono::DateTime<chrono::Utc>) -> crate::Domain { ... }
+pub fn guess_estimate(text: &str) -> i64 { ... }
+```
+
+Every script of the project can then call `guess_domain(item.text, now())`;
+Trust checks each call against the declaration and includes the file in
+the crate of the use cases that use it (like `code { include }`: its `pub`
+items are at the crate root, `crate::*` is in scope). `&T` passes the value
+by reference (`&String` fits a Rust `&str`); the path is relative to the
+`.tr` file. The declaration is trusted: Trust doesn't read the Rust, so a
+wrong signature is reported by rustc, and the function can do anything Rust
+can — keep these files small and pure. They are callable inside
+`x => ...` (they can't fail).
 
 ## Methods and functions
 
