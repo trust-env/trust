@@ -221,6 +221,8 @@ a { color: var(--accent); }
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const ms = (v) => v == null ? '–' : (v < 1 ? v.toFixed(2) : v < 10 ? v.toFixed(1) : nf.format(v)) + ' ms';
   const mb = (v) => v == null ? '–' : nf1.format(v) + ' Mo';
+  // Requests per billion CPU cycles: req/s ÷ cores used ÷ GHz. Stable across clock swings.
+  const perGcycle = (r) => r.app_mhz && r.cpu_cores ? r.rps / r.cpu_cores / (r.app_mhz / 1000) : null;
   const noiseOf = (r) => (r.interference_cores || 0) + (r.sibling_cores || 0) + (r.rest_cores || 0);
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
@@ -253,7 +255,9 @@ a { color: var(--accent); }
       ['Débit', nf.format(r.rps) + ' req/s'],
       ['Latence p50', ms(r.latency_ms.p50)], ['p90', ms(r.latency_ms.p90)],
       ['p99', ms(r.latency_ms.p99)], ['p99,9', ms(r.latency_ms.p999)],
-      ['CPU app', nf1.format(r.cpu_cores) + ' cœurs'], ['RAM pic', mb(r.mem_peak_mb)],
+      ['CPU app', nf1.format(r.cpu_cores) + ' cœurs'],
+      ...(r.app_mhz ? [['Fréquence CPU app', nf.format(r.app_mhz) + ' MHz']] : []),
+      ['RAM pic', mb(r.mem_peak_mb)],
       ['Succès', (r.success_rate * 100).toFixed(2) + ' %'],
       ...(r.noisy ? [
         ['⚠ Autres process sur les CPU app', nf1.format(r.interference_cores) + ' cœur'],
@@ -417,6 +421,7 @@ a { color: var(--accent); }
     $('#meta').innerHTML = [
       ['Run', new Date(data.meta.date).toLocaleString('fr-FR', { dateStyle: 'medium', timeStyle: 'short' })],
       ['Commit', data.meta.trust_commit || '–'], ['CPU', h.cpu], ['Noyau', h.kernel],
+      ...(h.power ? [['Alimentation', { ac: 'secteur', battery: '⚠ batterie', unknown: 'inconnue' }[h.power] || h.power]] : []),
     ].map(([k, v]) => `<span>${k} <b>${esc(v)}</b></span>`).join('');
 
     main.innerHTML = '';
@@ -444,6 +449,9 @@ a { color: var(--accent); }
       + ratioTile('go', 'vs Go');
     main.appendChild(tiles);
 
+    if (h.power === 'battery') {
+      main.insertAdjacentHTML('beforeend', `<div class="warnbox" role="status"><b>⚠ Mesuré sur batterie</b> : le processeur réduit alors sa puissance et la fréquence des cœurs varie fortement. Les écarts entre stacks peuvent venir de la fréquence du moment plutôt que du code ; relancez le bench sur secteur.</div>`);
+    }
     const noisy = cur.filter((x) => x.r.noisy);
     if (noisy.length) {
       main.insertAdjacentHTML('beforeend', `<div class="warnbox" role="status"><b>⚠ Mesure perturbée</b> : d’autres programmes utilisaient les CPU de l’app pendant la mesure de ${noisy.map((x) => esc(x.app.name)).join(', ')}. Ces valeurs sont sous-estimées ; relancez ces stacks sur une machine calme.</div>`);
@@ -461,8 +469,13 @@ a { color: var(--accent); }
 
       const g2 = document.createElement('div'); g2.className = 'grid2';
       g2.appendChild(card('Montée en charge', `Débit de « ${esc(scen.label)} » selon le nombre de connexions simultanées (axe en échelle logarithmique).`, lineChart()));
-      g2.appendChild(card('Efficacité CPU', 'Requêtes par seconde pour chaque cœur CPU réellement consommé par l’app (mesuré via cgroup). Indépendant de la saturation du générateur de charge.',
-        hbars(cur.filter((i) => i.r.rps_per_core), { value: (i) => i.r.rps_per_core, label: (i) => nf.format(i.r.rps_per_core), tipFn: (i) => runTip(i.app, i.r), unitNote: 'req/s par cœur' })));
+      const byCycles = cur.every((i) => perGcycle(i.r));
+      g2.appendChild(card('Efficacité CPU', byCycles
+        ? 'Requêtes servies par milliard de cycles CPU consommés par l’app (temps CPU du cgroup × fréquence mesurée). Ne dépend ni de la fréquence du moment ni de la saturation du générateur de charge.'
+        : 'Requêtes par seconde pour chaque cœur CPU réellement consommé par l’app (mesuré via cgroup). Indépendant de la saturation du générateur de charge.',
+        hbars(cur.filter((i) => byCycles ? perGcycle(i.r) : i.r.rps_per_core), byCycles
+          ? { value: (i) => perGcycle(i.r), label: (i) => nf.format(perGcycle(i.r)), tipFn: (i) => runTip(i.app, i.r), unitNote: 'requêtes par milliard de cycles' }
+          : { value: (i) => i.r.rps_per_core, label: (i) => nf.format(i.r.rps_per_core), tipFn: (i) => runTip(i.app, i.r), unitNote: 'req/s par cœur' })));
       main.appendChild(g2);
     }
 
@@ -512,7 +525,9 @@ a { color: var(--accent); }
       { h: 'Succès', n: 1, get: (r) => r.success_rate, html: (r) => (r.success_rate * 100).toFixed(2) + ' %' },
       { h: 'CPU', n: 1, get: (r) => r.cpu_cores, html: (r) => nf1.format(r.cpu_cores) },
       { h: 'req/s/cœur', n: 1, get: (r) => r.rps_per_core || 0, html: (r) => r.rps_per_core ? nf.format(r.rps_per_core) : '–' },
+      { h: 'req/Gcycle', n: 1, get: (r) => perGcycle(r) || 0, html: (r) => perGcycle(r) ? nf.format(perGcycle(r)) : '–' },
       { h: 'RAM pic', n: 1, get: (r) => r.mem_peak_mb, html: (r) => mb(r.mem_peak_mb) },
+      { h: 'MHz app', n: 1, get: (r) => r.app_mhz || 0, html: (r) => r.app_mhz ? nf.format(r.app_mhz) : '–' },
       { h: 'Bruit (cœurs)', n: 1, get: noiseOf, html: (r) => r.interference_cores == null ? '–'
         : `<span title="CPU app ${r.interference_cores} · jumeaux HT ${r.sibling_cores ?? '–'} · Postgres/oha ${r.rest_cores ?? '–'}">${r.noisy ? '<span class="warn">⚠</span> ' : ''}${nf1.format(noiseOf(r))}</span>` },
     ], all, (r) => r.app === ME ? 'me' : ''));
@@ -564,9 +579,9 @@ a { color: var(--accent); }
       ? `<div class="tile"><span class="eyebrow">Postgres pendant l’écriture</span>
           ${Object.entries(pa.pg_waits_pct).slice(0, 4).map(([k, v]) => `<span class="d"><b class="num">${nf1.format(v)} %</b> ${esc(k.replace('CPU', 'en calcul'))}</span>`).join('')}
           <span class="d muted">Part des connexions actives, par état d’attente.</span></div>` : '';
-    facts.innerHTML = `<div class="tile"><span class="eyebrow">Tracing (inclusif)</span>
-        <span class="v num">${nf1.format(pa.tracing_inclusive_pct)} %</span>
-        <span class="d">du CPU de ${esc(appName(a))} passe sous une fonction de tracing, contre ${nf1.format(pb.tracing_inclusive_pct)} % pour ${esc(appName(b))}.</span></div>
+    facts.innerHTML = `<div class="tile"><span class="eyebrow">Coût du tracing</span>
+        <span class="v num">${nf1.format(pa.tracing_cost_pct ?? 0)} %</span>
+        <span class="d">du CPU de ${esc(appName(a))} est passé dans le tracing lui-même (spans, filtrage), contre ${nf1.format(pb.tracing_cost_pct ?? 0)} % pour ${esc(appName(b))}.</span></div>
       <div class="tile"><span class="eyebrow">Débit sous profilage</span>
         <span class="v num">${nf.format(pa.rps)}</span>
         <span class="d">req/s pour ${esc(appName(a))}, ${nf.format(pb.rps)} pour ${esc(appName(b))} (${nf.format((pa.rps / pb.rps) * 100)} %).</span></div>` + waits;

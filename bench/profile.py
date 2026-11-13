@@ -55,9 +55,13 @@ COMPONENTS = [
     ("libc", "libc (mémoire, chaînes)", re.compile(r"mem(cpy|move|set|cmp)|str(len|cmp)|libc")),
 ]
 OTHER = ("other", "Autre")
+# tracing's generic future wrapper: its inclusive time is the wrapped work, not tracing.
+WRAPPER = re.compile(r"Instrumented<.*> as core::future::future::Future>::poll|drop_in_place<tracing::instrument::Instrumented")
 
 
 def classify(leaf: str) -> str:
+    if WRAPPER.search(leaf):
+        return "runtime"  # inlined async machinery of the wrapped future, not tracing work
     for key, _, rx in COMPONENTS:
         if rx.search(leaf):
             return key
@@ -78,13 +82,16 @@ def breakdown(folded: Path) -> dict:
         total += n
         self_time[classify(frames[-1])] += n
         top[frames[-1]] += n
-        if any(COMPONENTS[1][2].search(f) for f in frames):
+        # Time inside tracing itself (span creation, enter/exit, filtering): a stack counts
+        # once it reaches a tracing function other than the generic future wrapper,
+        # whose inclusive time is just the work the span wraps (e.g. a whole SQL query).
+        if any(COMPONENTS[1][2].search(f) and not WRAPPER.search(f) for f in frames):
             tracing_incl += n
     pct = lambda v: round(100 * v / total, 2) if total else 0
     return {
         "samples": total,
         "self_pct": {k: pct(v) for k, v in self_time.items()},
-        "tracing_inclusive_pct": pct(tracing_incl),
+        "tracing_cost_pct": pct(tracing_incl),
         "top_functions": [{"name": f, "pct": pct(v)} for f, v in top.most_common(12)],
     }
 
@@ -139,11 +146,16 @@ def profile_point(app: dict, scenario: dict, c: int, args) -> dict:
     # perf container: same PID namespace as the app (its PID 1), its own CPU so
     # sampling overhead lands outside the app's cpuset.
     script = (f"perf-bin record -q -F 1999 -g -p 1 -o /out/{name}.data -- sleep {args.duration} >/dev/null 2>&1; "
-              f"perf-bin script -i /out/{name}.data 2>/dev/null | /fg/stackcollapse-perf.pl --kernel > /out/{name}.folded; "
+              f"perf-bin script --no-inline -i /out/{name}.data 2>/dev/null | /fg/stackcollapse-perf.pl --kernel > /out/{name}.folded; "
               f"chown -R {os.getuid()}:{os.getgid()} /out")
+    # perf resolves symbols by path in its *own* filesystem: give it the app's
+    # binary at the same path (/app), and CAP_SYSLOG for kernel symbols.
+    binary = out / f"{app['id']}.bin"
+    if not binary.exists():
+        bench.sh("docker", "cp", f"{bench.APP}:/app", str(binary))
     bench.sh("docker", "run", "--rm", f"--pid=container:{bench.APP}", "--cap-add", "PERFMON",
-             "--cap-add", "SYS_PTRACE", "--cpuset-cpus", args.perf_cpus, "-v", f"{out}:/out",
-             PERF_IMAGE, "sh", "-c", script)
+             "--cap-add", "SYS_PTRACE", "--cap-add", "SYSLOG", "--cpuset-cpus", args.perf_cpus,
+             "-v", f"{out}:/out", "-v", f"{binary}:/app:ro", PERF_IMAGE, "sh", "-c", script)
     waits.stop_flag.set()
     waits.join()
     raw = load.communicate()[0]
@@ -159,7 +171,7 @@ def profile_point(app: dict, scenario: dict, c: int, args) -> dict:
                  "-v", f"{out}:/out", "-v", f"{FLAME}:/flame", PERF_IMAGE, "sh", "-c",
              f"/fg/flamegraph.pl --title '{title}' --width 1400 --colors rust /out/{name}.folded > /flame/{name}.svg")
     bench.log(f"  {name}: {info['samples']} samples, {rps:,.0f} req/s, "
-              f"tracing {info['tracing_inclusive_pct']} % (inclusive)")
+              f"tracing cost {info["tracing_cost_pct"]} %")
     return info
 
 

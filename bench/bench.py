@@ -174,6 +174,25 @@ def mem_bytes(cg: Path) -> int:
     return int((cg / "memory.current").read_text())
 
 
+def cpu_mhz(cpu: int) -> float | None:
+    f = Path(f"/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_cur_freq")
+    return int(f.read_text()) / 1000 if f.exists() else None
+
+
+def cpu_mhz_max(cpu: int) -> float | None:
+    f = Path(f"/sys/devices/system/cpu/cpu{cpu}/cpufreq/cpuinfo_max_freq")
+    return int(f.read_text()) / 1000 if f.exists() else None
+
+
+def power_source() -> str:
+    """'ac', 'battery', or 'unknown' (desktop, VM): laptops cap CPU power on battery."""
+    supplies = list(Path("/sys/class/power_supply").glob("*"))
+    for d in supplies:
+        if (d / "type").exists() and (d / "type").read_text().strip() == "Mains":
+            return "ac" if (d / "online").read_text().strip() == "1" else "battery"
+    return "unknown"
+
+
 def slice_usec() -> int:
     d = Path("/sys/fs/cgroup") / SLICE
     return cpu_usec(d) if (d / "cpu.stat").exists() else 0
@@ -261,8 +280,10 @@ class Sampler(threading.Thread):
         self.rest_cpus = sorted(set(cpu_list(args.pg_cpus)) | set(cpu_list(args.load_cpus)))
 
     def run(self):
+        self.mhz: list[float] = []
         while not self.stop_flag.is_set():
             self.peak = max(self.peak, mem_bytes(self.cg))
+            self.mhz.extend(m for m in (cpu_mhz(c) for c in self.app_cpus) if m)
             time.sleep(0.1)
 
     def __enter__(self):
@@ -277,6 +298,7 @@ class Sampler(threading.Thread):
         self.stop_flag.set()
         self.join()
         self.cpu_seconds = (cpu_usec(self.cg) - self.cpu0) / 1e6
+        self.avg_mhz = sum(self.mhz) / len(self.mhz) if self.mhz else None
         self.wall = time.monotonic() - self.t0
         foreign = cpu_busy_seconds(self.app_cpus) - self.busy0 - self.cpu_seconds
         self.interference_cores = max(0.0, foreign / self.wall)
@@ -433,11 +455,18 @@ def main() -> int:
                     help="seconds to wait for a quiet machine before measuring anyway (flagged noisy)")
     ap.add_argument("--retry-noisy", action="store_true",
                     help="measure again only the points results/latest.json flags noisy (no rebuild)")
+    ap.add_argument("--allow-battery", action="store_true",
+                    help="measure even when a laptop runs on battery (results swing with the CPU clock)")
     ap.add_argument("--nice", type=int, default=NICE,
                     help="nice value given to the app and postgres threads (0 leaves them alone)")
     args = ap.parse_args()
     globals()["NICE"] = args.nice
     pin_harness(args)
+    if power_source() == "battery" and not args.allow_battery:
+        print("The machine runs on battery: a laptop then caps CPU power, and the app's clock swings "
+              "(1.3-3.4 GHz seen instead of 4.8), which moves results by up to 2x. Plug it in, or pass "
+              "--allow-battery to measure anyway (the report records it).", file=sys.stderr)
+        return 2
     if args.retry_noisy:
         return retry_noisy(args)
 
@@ -456,6 +485,8 @@ def main() -> int:
             "date": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
             "trust_commit": commit,
             "host": {"cpu": cpu_model, "threads": os.cpu_count(), "kernel": platform.release(),
+                     "power": power_source(),
+                     "max_mhz": cpu_mhz_max(cpu_list(args.app_cpus)[0]),
                      "docker": sh("docker", "version", "--format", "{{.Server.Version}}", check=False).strip()},
             "config": {"duration_s": args.duration, "warmup_s": args.warmup, "connections": levels,
                        "app_cpus": args.app_cpus, "pg_cpus": args.pg_cpus, "load_cpus": args.load_cpus,
@@ -613,6 +644,7 @@ def measure(app: dict, scenario: dict, c: int, cg: Path, args) -> dict:
     run["interference_cores"] = round(sample.interference_cores, 2)
     run["sibling_cores"] = round(sample.sibling_cores, 2)
     run["rest_cores"] = round(sample.rest_cores, 2)
+    run["app_mhz"] = round(sample.avg_mhz) if sample.avg_mhz else None
     run["host_busy_before"] = round(busy_before, 2) if busy_before is not None else None
     run["noisy"] = (run["interference_cores"] > NOISY_INTERFERENCE
                     or run["sibling_cores"] > NOISY_SIBLING

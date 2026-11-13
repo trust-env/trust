@@ -5,5 +5,5 @@ FROM debian:bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends linux-perf perl git ca-certificates \
  && git clone --depth 1 https://github.com/brendangregg/FlameGraph /fg \
- && ln -s "$(ls /usr/bin/perf_* | head -1)" /usr/local/bin/perf-bin \
+ && ln -s /usr/bin/perf /usr/local/bin/perf-bin \
  && rm -rf /var/lib/apt/lists/*

@@ -1,11 +1,13 @@
 {
   "meta": {
-    "date": "2026-11-13T14:27:12+01:00",
-    "trust_commit": "eb7f178",
+    "date": "2026-11-13T15:58:24+01:00",
+    "trust_commit": "cbe0cfb",
     "host": {
       "cpu": "Intel(R) Core(TM) Ultra 7 155H",
       "threads": 22,
       "kernel": "7.0.0-42-generic",
+      "power": "ac",
+      "max_mhz": 4800.0,
       "docker": "29.1.3"
     },
     "config": {
@@ -48,7 +50,7 @@
         "desc": "JSON body validation + INSERT \u2026 RETURNING"
       }
     ],
-    "merged_from": "2026-11-13T14:15:35+01:00"
+    "merged_from": "2026-11-13T15:53:42+01:00"
   },
   "apps": [
     {
@@ -65,8 +67,8 @@
         "bench/apps/trust/ping.rs"
       ],
       "generated_loc": 1101,
-      "startup_ms": 539.2,
-      "idle_mem_mb": 8.3
+      "startup_ms": 1563.7,
+      "idle_mem_mb": 9.1
     },
     {
       "id": "rust-axum",
@@ -80,8 +82,8 @@
       "sources": [
         "bench/apps/rust-axum/src/main.rs"
       ],
-      "startup_ms": 303.2,
-      "idle_mem_mb": 4.5
+      "startup_ms": 207.4,
+      "idle_mem_mb": 4.8
     },
     {
       "id": "go",
@@ -95,8 +97,8 @@
       "sources": [
         "bench/apps/go/main.go"
       ],
-      "startup_ms": 230.7,
-      "idle_mem_mb": 8.8
+      "startup_ms": 228.9,
+      "idle_mem_mb": 13.4
     },
     {
       "id": "fastify",
@@ -110,8 +112,8 @@
       "sources": [
         "bench/apps/fastify/server.js"
       ],
-      "startup_ms": 419.2,
-      "idle_mem_mb": 64.7
+      "startup_ms": 561.7,
+      "idle_mem_mb": 131.1
     },
     {
       "id": "nestjs-express",
@@ -125,8 +127,8 @@
       "sources": [
         "bench/apps/nestjs/src/main.ts"
       ],
-      "startup_ms": 1408.1,
-      "idle_mem_mb": 107.4
+      "startup_ms": 952.8,
+      "idle_mem_mb": 120.9
     },
     {
       "id": "nestjs-fastify",
@@ -140,8 +142,8 @@
       "sources": [
         "bench/apps/nestjs/src/main.ts"
       ],
-      "startup_ms": 919.6,
-      "idle_mem_mb": 104.1
+      "startup_ms": 913.8,
+      "idle_mem_mb": 100.5
     },
     {
       "id": "fastapi",
@@ -155,8 +157,8 @@
       "sources": [
         "bench/apps/fastapi/main.py"
       ],
-      "startup_ms": 979.0,
-      "idle_mem_mb": 107.2
+      "startup_ms": 793.1,
+      "idle_mem_mb": 129.4
     }
   ],
   "runs": [
@@ -164,2208 +166,2436 @@
       "app": "trust",
       "scenario": "ping",
       "connections": 16,
-      "rps": 181639.5,
-      "requests": 1818386,
+      "rps": 245977.1,
+      "requests": 2461069,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 0.086,
-        "p50": 0.083,
-        "p90": 0.119,
-        "p99": 0.162,
-        "p999": 0.247,
-        "max": 18.52
+        "avg": 0.063,
+        "p50": 0.061,
+        "p90": 0.085,
+        "p99": 0.135,
+        "p999": 0.22,
+        "max": 13.939
       },
       "status_codes": {
-        "200": 1818386
+        "200": 2461069
       },
       "errors": {},
       "cpu_cores": 1.98,
-      "mem_peak_mb": 11.0,
-      "rps_per_core": 91836.9,
+      "mem_peak_mb": 11.1,
+      "rps_per_core": 124316.6,
       "interference_cores": 0.0,
-      "sibling_cores": 0.5,
-      "rest_cores": 1.7,
-      "host_busy_before": 1.51,
-      "noisy": true
+      "sibling_cores": 0.15,
+      "rest_cores": 0.0,
+      "app_mhz": 3223,
+      "host_busy_before": 1.18,
+      "noisy": false
     },
     {
       "app": "trust",
       "scenario": "ping",
       "connections": 64,
-      "rps": 227503.8,
-      "requests": 2278044,
+      "rps": 215772.4,
+      "requests": 2160510,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 0.278,
-        "p50": 0.278,
-        "p90": 0.376,
-        "p99": 0.464,
-        "p999": 0.863,
-        "max": 20.859
+        "avg": 0.294,
+        "p50": 0.287,
+        "p90": 0.411,
+        "p99": 0.64,
+        "p999": 0.982,
+        "max": 18.586
       },
       "status_codes": {
-        "200": 2278044
+        "200": 2160510
       },
       "errors": {},
       "cpu_cores": 1.96,
       "mem_peak_mb": 12.6,
-      "rps_per_core": 116057.4,
+      "rps_per_core": 109896.7,
       "interference_cores": 0.0,
-      "sibling_cores": 0.11,
-      "rest_cores": 0.85,
-      "host_busy_before": 1.48,
-      "noisy": true
+      "sibling_cores": 0.24,
+      "rest_cores": 0.22,
+      "app_mhz": 2710,
+      "host_busy_before": 0.27,
+      "noisy": false
     },
     {
       "app": "trust",
       "scenario": "ping",
       "connections": 256,
-      "rps": 229437.3,
-      "requests": 2295934,
+      "rps": 214021.4,
+      "requests": 2141777,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 1.109,
-        "p50": 1.103,
-        "p90": 1.538,
-        "p99": 2.05,
-        "p999": 3.137,
-        "max": 60.458
+        "avg": 1.19,
+        "p50": 1.179,
+        "p90": 1.65,
+        "p99": 2.196,
+        "p999": 3.488,
+        "max": 41.66
       },
       "status_codes": {
-        "200": 2295934
+        "200": 2141777
       },
       "errors": {},
       "cpu_cores": 1.99,
-      "mem_peak_mb": 20.4,
-      "rps_per_core": 115436.1,
-      "interference_cores": 0.0,
-      "sibling_cores": 0.06,
-      "rest_cores": 0.0,
-      "host_busy_before": 0.7,
-      "noisy": false
-    },
-    {
-      "app": "trust",
-      "scenario": "get",
-      "connections": 16,
-      "rps": 25348.5,
-      "requests": 253553,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 0.622,
-        "p50": 0.601,
-        "p90": 0.794,
-        "p99": 1.102,
-        "p999": 3.542,
-        "max": 39.875
-      },
-      "status_codes": {
-        "200": 253553
-      },
-      "errors": {},
-      "cpu_cores": 1.91,
-      "mem_peak_mb": 19.6,
-      "rps_per_core": 13288.7,
-      "interference_cores": 0.0,
-      "sibling_cores": 0.44,
-      "rest_cores": 0.43,
-      "host_busy_before": 1.34,
-      "noisy": true
-    },
-    {
-      "app": "trust",
-      "scenario": "get",
-      "connections": 64,
-      "rps": 23539.5,
-      "requests": 235385,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 2.707,
-        "p50": 2.571,
-        "p90": 3.483,
-        "p99": 4.744,
-        "p999": 7.033,
-        "max": 267.973
-      },
-      "status_codes": {
-        "200": 235385
-      },
-      "errors": {},
-      "cpu_cores": 1.88,
-      "mem_peak_mb": 21.3,
-      "rps_per_core": 12510.4,
-      "interference_cores": 0.0,
-      "sibling_cores": 0.74,
-      "rest_cores": 0.5,
-      "host_busy_before": 1.37,
-      "noisy": true
-    },
-    {
-      "app": "trust",
-      "scenario": "get",
-      "connections": 256,
-      "rps": 22542.6,
-      "requests": 225316,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 11.311,
-        "p50": 10.923,
-        "p90": 12.754,
-        "p99": 19.043,
-        "p999": 20.835,
-        "max": 222.313
-      },
-      "status_codes": {
-        "200": 225316
-      },
-      "errors": {},
-      "cpu_cores": 1.88,
-      "mem_peak_mb": 32.1,
-      "rps_per_core": 11989.6,
-      "interference_cores": 0.0,
-      "sibling_cores": 0.25,
-      "rest_cores": 0.62,
-      "host_busy_before": 0.65,
-      "noisy": true
-    },
-    {
-      "app": "trust",
-      "scenario": "list",
-      "connections": 16,
-      "rps": 12085.5,
-      "requests": 120869,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 1.313,
-        "p50": 1.239,
-        "p90": 1.793,
-        "p99": 3.914,
-        "p999": 5.396,
-        "max": 60.48
-      },
-      "status_codes": {
-        "200": 120869
-      },
-      "errors": {},
-      "cpu_cores": 1.56,
-      "mem_peak_mb": 30.4,
-      "rps_per_core": 7736.0,
-      "interference_cores": 0.01,
-      "sibling_cores": 0.52,
-      "rest_cores": 0.65,
-      "host_busy_before": 1.81,
-      "noisy": true
-    },
-    {
-      "app": "trust",
-      "scenario": "list",
-      "connections": 64,
-      "rps": 15993.9,
-      "requests": 159964,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 3.984,
-        "p50": 3.869,
-        "p90": 4.766,
-        "p99": 6.414,
-        "p999": 8.882,
-        "max": 215.169
-      },
-      "status_codes": {
-        "200": 159964
-      },
-      "errors": {},
-      "cpu_cores": 1.9,
-      "mem_peak_mb": 31.4,
-      "rps_per_core": 8410.6,
-      "interference_cores": 0.0,
-      "sibling_cores": 0.26,
-      "rest_cores": 0.34,
-      "host_busy_before": 0.57,
-      "noisy": false
-    },
-    {
-      "app": "trust",
-      "scenario": "list",
-      "connections": 256,
-      "rps": 15453.0,
-      "requests": 154384,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 16.502,
-        "p50": 15.836,
-        "p90": 18.09,
-        "p99": 27.138,
-        "p999": 33.485,
-        "max": 159.896
-      },
-      "status_codes": {
-        "200": 154384
-      },
-      "errors": {},
-      "cpu_cores": 1.87,
-      "mem_peak_mb": 32.6,
-      "rps_per_core": 8252.2,
+      "mem_peak_mb": 20.6,
+      "rps_per_core": 107541.7,
       "interference_cores": 0.0,
       "sibling_cores": 0.19,
-      "rest_cores": 0.41,
-      "host_busy_before": 1.01,
+      "rest_cores": 0.54,
+      "app_mhz": 2903,
+      "host_busy_before": 0.74,
       "noisy": false
     },
     {
       "app": "trust",
-      "scenario": "create",
+      "scenario": "get",
       "connections": 16,
-      "rps": 7024.8,
-      "requests": 70246,
+      "rps": 38251.6,
+      "requests": 382662,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 2.273,
-        "p50": 2.089,
-        "p90": 3.363,
-        "p99": 4.081,
-        "p999": 7.399,
-        "max": 46.357
+        "avg": 0.414,
+        "p50": 0.404,
+        "p90": 0.523,
+        "p99": 0.7,
+        "p999": 1.724,
+        "max": 17.288
       },
       "status_codes": {
-        "200": 70246
-      },
-      "errors": {},
-      "cpu_cores": 0.41,
-      "mem_peak_mb": 31.3,
-      "rps_per_core": 17336.9,
-      "interference_cores": 0.0,
-      "sibling_cores": 0.17,
-      "rest_cores": 0.21,
-      "host_busy_before": 0.81,
-      "noisy": false
-    },
-    {
-      "app": "trust",
-      "scenario": "create",
-      "connections": 64,
-      "rps": 12114.5,
-      "requests": 121118,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 5.27,
-        "p50": 4.809,
-        "p90": 6.809,
-        "p99": 9.656,
-        "p999": 49.69,
-        "max": 65.461
-      },
-      "status_codes": {
-        "200": 121118
-      },
-      "errors": {},
-      "cpu_cores": 0.94,
-      "mem_peak_mb": 31.9,
-      "rps_per_core": 12866.6,
-      "interference_cores": 0.0,
-      "sibling_cores": 0.21,
-      "rest_cores": 0.46,
-      "host_busy_before": 1.27,
-      "noisy": false
-    },
-    {
-      "app": "trust",
-      "scenario": "create",
-      "connections": 256,
-      "rps": 13066.7,
-      "requests": 130452,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 19.552,
-        "p50": 18.443,
-        "p90": 21.97,
-        "p99": 32.703,
-        "p999": 83.44,
-        "max": 89.668
-      },
-      "status_codes": {
-        "200": 130452
-      },
-      "errors": {},
-      "cpu_cores": 0.93,
-      "mem_peak_mb": 31.4,
-      "rps_per_core": 14111.2,
-      "interference_cores": 0.0,
-      "sibling_cores": 0.29,
-      "rest_cores": 0.1,
-      "host_busy_before": 0.52,
-      "noisy": false
-    },
-    {
-      "app": "rust-axum",
-      "scenario": "ping",
-      "connections": 16,
-      "rps": 143032.6,
-      "requests": 1431310,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 0.11,
-        "p50": 0.085,
-        "p90": 0.155,
-        "p99": 0.946,
-        "p999": 1.999,
-        "max": 16.269
-      },
-      "status_codes": {
-        "200": 1431310
-      },
-      "errors": {},
-      "cpu_cores": 1.52,
-      "mem_peak_mb": 6.2,
-      "rps_per_core": 94263.1,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.36,
-      "noisy": false
-    },
-    {
-      "app": "rust-axum",
-      "scenario": "ping",
-      "connections": 64,
-      "rps": 254476.1,
-      "requests": 2548144,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 0.249,
-        "p50": 0.247,
-        "p90": 0.336,
-        "p99": 0.491,
-        "p999": 0.834,
-        "max": 16.203
-      },
-      "status_codes": {
-        "200": 2548144
+        "200": 382662
       },
       "errors": {},
       "cpu_cores": 1.97,
-      "mem_peak_mb": 7.4,
-      "rps_per_core": 129418.4,
+      "mem_peak_mb": 16.3,
+      "rps_per_core": 19424.6,
       "interference_cores": 0.0,
-      "host_busy_before": 0.22,
+      "sibling_cores": 0.17,
+      "rest_cores": 0.02,
+      "app_mhz": 2476,
+      "host_busy_before": 0.64,
       "noisy": false
     },
     {
-      "app": "rust-axum",
-      "scenario": "ping",
-      "connections": 256,
-      "rps": 264037.0,
-      "requests": 2642089,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 0.964,
-        "p50": 0.959,
-        "p90": 1.328,
-        "p99": 1.689,
-        "p999": 4.026,
-        "max": 52.563
-      },
-      "status_codes": {
-        "200": 2642089
-      },
-      "errors": {},
-      "cpu_cores": 1.98,
-      "mem_peak_mb": 15.0,
-      "rps_per_core": 133507.0,
-      "interference_cores": 0.0,
-      "host_busy_before": 1.08,
-      "noisy": false
-    },
-    {
-      "app": "rust-axum",
+      "app": "trust",
       "scenario": "get",
-      "connections": 16,
-      "rps": 51019.1,
-      "requests": 510394,
+      "connections": 64,
+      "rps": 46403.0,
+      "requests": 464109,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 0.31,
-        "p50": 0.303,
-        "p90": 0.39,
-        "p99": 0.522,
-        "p999": 1.045,
-        "max": 17.297
+        "avg": 1.373,
+        "p50": 1.337,
+        "p90": 1.6,
+        "p99": 2.139,
+        "p999": 2.844,
+        "max": 109.256
       },
       "status_codes": {
-        "200": 510394
+        "200": 464109
       },
       "errors": {},
       "cpu_cores": 1.96,
-      "mem_peak_mb": 14.6,
-      "rps_per_core": 26076.4,
+      "mem_peak_mb": 19.9,
+      "rps_per_core": 23654.5,
       "interference_cores": 0.0,
-      "host_busy_before": 0.51,
-      "noisy": false
-    },
-    {
-      "app": "rust-axum",
-      "scenario": "get",
-      "connections": 64,
-      "rps": 51129.1,
-      "requests": 511394,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 1.247,
-        "p50": 1.216,
-        "p90": 1.411,
-        "p99": 2.029,
-        "p999": 2.669,
-        "max": 156.194
-      },
-      "status_codes": {
-        "200": 511394
-      },
-      "errors": {},
-      "cpu_cores": 1.94,
-      "mem_peak_mb": 16.3,
-      "rps_per_core": 26401.0,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.35,
-      "noisy": false
-    },
-    {
-      "app": "rust-axum",
-      "scenario": "get",
-      "connections": 256,
-      "rps": 46935.7,
-      "requests": 469265,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 5.432,
-        "p50": 5.206,
-        "p90": 6.06,
-        "p99": 9.547,
-        "p999": 12.252,
-        "max": 126.246
-      },
-      "status_codes": {
-        "200": 469265
-      },
-      "errors": {},
-      "cpu_cores": 1.93,
-      "mem_peak_mb": 22.5,
-      "rps_per_core": 24277.8,
-      "interference_cores": 0.0,
+      "sibling_cores": 0.13,
+      "rest_cores": 0.0,
+      "app_mhz": 3011,
       "host_busy_before": 0.23,
       "noisy": false
     },
     {
-      "app": "rust-axum",
-      "scenario": "list",
-      "connections": 16,
-      "rps": 27847.3,
-      "requests": 278563,
+      "app": "trust",
+      "scenario": "get",
+      "connections": 256,
+      "rps": 49888.2,
+      "requests": 498857,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 0.57,
-        "p50": 0.536,
-        "p90": 0.815,
-        "p99": 1.276,
-        "p999": 3.381,
-        "max": 33.791
+        "avg": 5.116,
+        "p50": 5.039,
+        "p90": 5.498,
+        "p99": 6.641,
+        "p999": 9.126,
+        "max": 145.855
       },
       "status_codes": {
-        "200": 278563
+        "200": 498857
       },
       "errors": {},
-      "cpu_cores": 1.76,
-      "mem_peak_mb": 20.8,
-      "rps_per_core": 15812.4,
+      "cpu_cores": 1.97,
+      "mem_peak_mb": 26.6,
+      "rps_per_core": 25363.7,
       "interference_cores": 0.0,
+      "sibling_cores": 0.1,
+      "rest_cores": 0.0,
+      "app_mhz": 3358,
+      "host_busy_before": 1.23,
+      "noisy": false
+    },
+    {
+      "app": "trust",
+      "scenario": "list",
+      "connections": 16,
+      "rps": 29759.5,
+      "requests": 297726,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 0.534,
+        "p50": 0.507,
+        "p90": 0.75,
+        "p99": 1.1,
+        "p999": 2.457,
+        "max": 28.086
+      },
+      "status_codes": {
+        "200": 297726
+      },
+      "errors": {},
+      "cpu_cores": 1.86,
+      "mem_peak_mb": 26.9,
+      "rps_per_core": 15978.3,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.09,
+      "rest_cores": 0.0,
+      "app_mhz": 3212,
+      "host_busy_before": 1.26,
+      "noisy": false
+    },
+    {
+      "app": "trust",
+      "scenario": "list",
+      "connections": 64,
+      "rps": 26668.7,
+      "requests": 266716,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 2.393,
+        "p50": 2.308,
+        "p90": 2.949,
+        "p99": 3.973,
+        "p999": 6.624,
+        "max": 95.347
+      },
+      "status_codes": {
+        "200": 266716
+      },
+      "errors": {},
+      "cpu_cores": 1.82,
+      "mem_peak_mb": 27.4,
+      "rps_per_core": 14629.2,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.13,
+      "rest_cores": 0.1,
+      "app_mhz": 2918,
+      "host_busy_before": 0.83,
+      "noisy": false
+    },
+    {
+      "app": "trust",
+      "scenario": "list",
+      "connections": 256,
+      "rps": 21318.8,
+      "requests": 212995,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 11.975,
+        "p50": 11.397,
+        "p90": 14.337,
+        "p99": 22.252,
+        "p999": 28.905,
+        "max": 121.884
+      },
+      "status_codes": {
+        "200": 212995
+      },
+      "errors": {},
+      "cpu_cores": 1.86,
+      "mem_peak_mb": 30.8,
+      "rps_per_core": 11438.0,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.18,
+      "rest_cores": 0.28,
+      "app_mhz": 2502,
+      "host_busy_before": 0.59,
+      "noisy": false
+    },
+    {
+      "app": "trust",
+      "scenario": "create",
+      "connections": 16,
+      "rps": 7137.0,
+      "requests": 71372,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 2.237,
+        "p50": 2.06,
+        "p90": 3.31,
+        "p99": 4.036,
+        "p999": 7.547,
+        "max": 54.043
+      },
+      "status_codes": {
+        "200": 71372
+      },
+      "errors": {},
+      "cpu_cores": 0.34,
+      "mem_peak_mb": 28.9,
+      "rps_per_core": 20752.4,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.03,
+      "rest_cores": 0.0,
+      "app_mhz": 3129,
+      "host_busy_before": 0.3,
+      "noisy": false
+    },
+    {
+      "app": "trust",
+      "scenario": "create",
+      "connections": 64,
+      "rps": 12294.5,
+      "requests": 122922,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 5.184,
+        "p50": 4.205,
+        "p90": 5.608,
+        "p99": 41.29,
+        "p999": 68.89,
+        "max": 72.194
+      },
+      "status_codes": {
+        "200": 122922
+      },
+      "errors": {},
+      "cpu_cores": 0.5,
+      "mem_peak_mb": 28.6,
+      "rps_per_core": 24649.4,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.02,
+      "rest_cores": 0.0,
+      "app_mhz": 3364,
+      "host_busy_before": 0.15,
+      "noisy": false
+    },
+    {
+      "app": "trust",
+      "scenario": "create",
+      "connections": 256,
+      "rps": 11946.1,
+      "requests": 119249,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 21.255,
+        "p50": 17.872,
+        "p90": 19.254,
+        "p99": 120.921,
+        "p999": 336.825,
+        "max": 338.78
+      },
+      "status_codes": {
+        "200": 119249
+      },
+      "errors": {},
+      "cpu_cores": 0.52,
+      "mem_peak_mb": 31.1,
+      "rps_per_core": 22822.4,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.05,
+      "rest_cores": 0.0,
+      "app_mhz": 3100,
+      "host_busy_before": 0.1,
+      "noisy": false
+    },
+    {
+      "app": "rust-axum",
+      "scenario": "ping",
+      "connections": 16,
+      "rps": 262365.6,
+      "requests": 2625566,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 0.059,
+        "p50": 0.058,
+        "p90": 0.078,
+        "p99": 0.101,
+        "p999": 0.131,
+        "max": 18.644
+      },
+      "status_codes": {
+        "200": 2625566
+      },
+      "errors": {},
+      "cpu_cores": 1.98,
+      "mem_peak_mb": 6.5,
+      "rps_per_core": 132554.5,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.04,
+      "rest_cores": 0.0,
+      "app_mhz": 3184,
+      "host_busy_before": 0.06,
+      "noisy": false
+    },
+    {
+      "app": "rust-axum",
+      "scenario": "ping",
+      "connections": 64,
+      "rps": 248315.5,
+      "requests": 2486082,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 0.255,
+        "p50": 0.253,
+        "p90": 0.346,
+        "p99": 0.5,
+        "p999": 0.787,
+        "max": 34.267
+      },
+      "status_codes": {
+        "200": 2486082
+      },
+      "errors": {},
+      "cpu_cores": 1.96,
+      "mem_peak_mb": 7.8,
+      "rps_per_core": 126794.2,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.06,
+      "rest_cores": 0.0,
+      "app_mhz": 2879,
+      "host_busy_before": 0.41,
+      "noisy": false
+    },
+    {
+      "app": "rust-axum",
+      "scenario": "ping",
+      "connections": 256,
+      "rps": 266405.1,
+      "requests": 2665786,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 0.956,
+        "p50": 0.958,
+        "p90": 1.324,
+        "p99": 1.62,
+        "p999": 2.14,
+        "max": 53.274
+      },
+      "status_codes": {
+        "200": 2665786
+      },
+      "errors": {},
+      "cpu_cores": 1.99,
+      "mem_peak_mb": 13.9,
+      "rps_per_core": 133780.1,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.01,
+      "rest_cores": 0.0,
+      "app_mhz": 3053,
+      "host_busy_before": 0.29,
+      "noisy": false
+    },
+    {
+      "app": "rust-axum",
+      "scenario": "get",
+      "connections": 16,
+      "rps": 54448.4,
+      "requests": 544831,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 0.29,
+        "p50": 0.286,
+        "p90": 0.362,
+        "p99": 0.455,
+        "p999": 0.564,
+        "max": 29.858
+      },
+      "status_codes": {
+        "200": 544831
+      },
+      "errors": {},
+      "cpu_cores": 1.96,
+      "mem_peak_mb": 12.3,
+      "rps_per_core": 27753.8,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.05,
+      "rest_cores": 0.0,
+      "app_mhz": 3197,
+      "host_busy_before": 0.14,
+      "noisy": false
+    },
+    {
+      "app": "rust-axum",
+      "scenario": "get",
+      "connections": 64,
+      "rps": 50146.1,
+      "requests": 501556,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 1.27,
+        "p50": 1.24,
+        "p90": 1.434,
+        "p99": 2.162,
+        "p999": 2.957,
+        "max": 136.577
+      },
+      "status_codes": {
+        "200": 501556
+      },
+      "errors": {},
+      "cpu_cores": 1.93,
+      "mem_peak_mb": 16.0,
+      "rps_per_core": 25930.9,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.1,
+      "rest_cores": 0.0,
+      "app_mhz": 3134,
       "host_busy_before": 0.47,
       "noisy": false
     },
     {
       "app": "rust-axum",
-      "scenario": "list",
-      "connections": 64,
-      "rps": 29121.5,
-      "requests": 291231,
+      "scenario": "get",
+      "connections": 256,
+      "rps": 28708.2,
+      "requests": 286929,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 2.19,
-        "p50": 2.102,
-        "p90": 2.787,
-        "p99": 3.556,
-        "p999": 6.306,
-        "max": 61.117
+        "avg": 8.893,
+        "p50": 8.553,
+        "p90": 10.912,
+        "p99": 14.974,
+        "p999": 25.551,
+        "max": 148.156
       },
       "status_codes": {
-        "200": 291231
+        "200": 286929
       },
       "errors": {},
       "cpu_cores": 1.77,
-      "mem_peak_mb": 21.3,
-      "rps_per_core": 16425.5,
+      "mem_peak_mb": 25.8,
+      "rps_per_core": 16239.6,
       "interference_cores": 0.0,
-      "host_busy_before": 0.59,
-      "noisy": false
+      "sibling_cores": 0.65,
+      "rest_cores": 0.87,
+      "app_mhz": 2324,
+      "host_busy_before": 1.62,
+      "noisy": true
+    },
+    {
+      "app": "rust-axum",
+      "scenario": "list",
+      "connections": 16,
+      "rps": 14387.6,
+      "requests": 167032,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 0.984,
+        "p50": 0.638,
+        "p90": 1.085,
+        "p99": 4.007,
+        "p999": 83.17,
+        "max": 343.004
+      },
+      "status_codes": {
+        "200": 167032
+      },
+      "errors": {},
+      "cpu_cores": 1.01,
+      "mem_peak_mb": 21.9,
+      "rps_per_core": 14304.5,
+      "interference_cores": 0.1,
+      "sibling_cores": 0.47,
+      "rest_cores": 1.22,
+      "app_mhz": 2916,
+      "host_busy_before": 1.89,
+      "noisy": true
+    },
+    {
+      "app": "rust-axum",
+      "scenario": "list",
+      "connections": 64,
+      "rps": 21190.9,
+      "requests": 211912,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 3.012,
+        "p50": 2.853,
+        "p90": 3.864,
+        "p99": 5.787,
+        "p999": 8.776,
+        "max": 96.061
+      },
+      "status_codes": {
+        "200": 211912
+      },
+      "errors": {},
+      "cpu_cores": 1.61,
+      "mem_peak_mb": 24.6,
+      "rps_per_core": 13173.0,
+      "interference_cores": 0.01,
+      "sibling_cores": 0.52,
+      "rest_cores": 0.34,
+      "app_mhz": 2663,
+      "host_busy_before": 1.55,
+      "noisy": true
     },
     {
       "app": "rust-axum",
       "scenario": "list",
       "connections": 256,
-      "rps": 27402.8,
-      "requests": 273890,
+      "rps": 15698.4,
+      "requests": 156816,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 9.309,
-        "p50": 8.692,
-        "p90": 12.093,
-        "p99": 17.252,
-        "p999": 22.493,
-        "max": 131.739
+        "avg": 16.27,
+        "p50": 15.931,
+        "p90": 21.188,
+        "p99": 30.477,
+        "p999": 44.296,
+        "max": 125.251
       },
       "status_codes": {
-        "200": 273890
+        "200": 156816
       },
       "errors": {},
-      "cpu_cores": 1.77,
-      "mem_peak_mb": 23.6,
-      "rps_per_core": 15464.1,
+      "cpu_cores": 1.79,
+      "mem_peak_mb": 28.3,
+      "rps_per_core": 8755.0,
       "interference_cores": 0.0,
-      "host_busy_before": 1.39,
-      "noisy": false
+      "sibling_cores": 1.1,
+      "rest_cores": 2.32,
+      "app_mhz": 2200,
+      "host_busy_before": 1.58,
+      "noisy": true
     },
     {
       "app": "rust-axum",
       "scenario": "create",
       "connections": 16,
-      "rps": 7081.5,
-      "requests": 70816,
+      "rps": 5662.6,
+      "requests": 56627,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 2.254,
-        "p50": 2.061,
-        "p90": 3.359,
-        "p99": 4.11,
-        "p999": 7.85,
-        "max": 49.097
+        "avg": 2.82,
+        "p50": 2.106,
+        "p90": 3.409,
+        "p99": 36.884,
+        "p999": 64.827,
+        "max": 68.954
       },
       "status_codes": {
-        "200": 70816
+        "200": 56627
       },
       "errors": {},
-      "cpu_cores": 0.37,
-      "mem_peak_mb": 22.6,
-      "rps_per_core": 19333.6,
-      "interference_cores": 0.01,
-      "host_busy_before": 0.57,
+      "cpu_cores": 0.29,
+      "mem_peak_mb": 26.9,
+      "rps_per_core": 19647.9,
+      "interference_cores": 0.1,
+      "sibling_cores": 0.13,
+      "rest_cores": 0.28,
+      "app_mhz": 3003,
+      "host_busy_before": 0.74,
       "noisy": false
     },
     {
       "app": "rust-axum",
       "scenario": "create",
       "connections": 64,
-      "rps": 14061.3,
-      "requests": 140588,
+      "rps": 13615.0,
+      "requests": 136134,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 4.54,
-        "p50": 4.216,
-        "p90": 5.595,
-        "p99": 6.469,
-        "p999": 21.787,
-        "max": 53.501
+        "avg": 4.69,
+        "p50": 4.236,
+        "p90": 5.684,
+        "p99": 12.21,
+        "p999": 24.125,
+        "max": 58.47
       },
       "status_codes": {
-        "200": 140588
+        "200": 136134
       },
       "errors": {},
-      "cpu_cores": 0.6,
-      "mem_peak_mb": 22.3,
-      "rps_per_core": 23511.5,
+      "cpu_cores": 0.56,
+      "mem_peak_mb": 26.4,
+      "rps_per_core": 24287.5,
       "interference_cores": 0.0,
-      "host_busy_before": 0.76,
+      "sibling_cores": 0.25,
+      "rest_cores": 0.29,
+      "app_mhz": 3459,
+      "host_busy_before": 1.48,
       "noisy": false
     },
     {
       "app": "rust-axum",
       "scenario": "create",
       "connections": 256,
-      "rps": 13960.4,
-      "requests": 139390,
+      "rps": 11213.5,
+      "requests": 111922,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 18.278,
-        "p50": 17.944,
-        "p90": 18.707,
-        "p99": 23.815,
-        "p999": 72.279,
-        "max": 74.268
+        "avg": 22.77,
+        "p50": 17.918,
+        "p90": 23.162,
+        "p99": 81.663,
+        "p999": 535.275,
+        "max": 597.796
       },
       "status_codes": {
-        "200": 139390
+        "200": 111922
       },
       "errors": {},
-      "cpu_cores": 0.61,
-      "mem_peak_mb": 25.5,
-      "rps_per_core": 23059.8,
+      "cpu_cores": 0.51,
+      "mem_peak_mb": 27.4,
+      "rps_per_core": 22204.7,
       "interference_cores": 0.0,
-      "host_busy_before": 0.15,
+      "sibling_cores": 0.11,
+      "rest_cores": 0.03,
+      "app_mhz": 3120,
+      "host_busy_before": 0.9,
       "noisy": false
     },
     {
       "app": "go",
       "scenario": "ping",
       "connections": 16,
-      "rps": 116678.3,
-      "requests": 1167449,
+      "rps": 116155.4,
+      "requests": 1162159,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 0.135,
+        "avg": 0.136,
         "p50": 0.101,
-        "p90": 0.218,
-        "p99": 0.494,
-        "p999": 3.377,
-        "max": 13.08
+        "p90": 0.219,
+        "p99": 0.527,
+        "p999": 3.397,
+        "max": 18.021
       },
       "status_codes": {
-        "200": 1167449
+        "200": 1162159
       },
       "errors": {},
       "cpu_cores": 1.56,
-      "mem_peak_mb": 16.3,
-      "rps_per_core": 74895.1,
+      "mem_peak_mb": 20.4,
+      "rps_per_core": 74690.3,
       "interference_cores": 0.0,
-      "host_busy_before": 0.51,
-      "noisy": false
-    },
-    {
-      "app": "go",
-      "scenario": "ping",
-      "connections": 64,
-      "rps": 130655.5,
-      "requests": 1307276,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 0.487,
-        "p50": 0.402,
-        "p90": 0.967,
-        "p99": 1.659,
-        "p999": 4.406,
-        "max": 22.277
-      },
-      "status_codes": {
-        "200": 1307276
-      },
-      "errors": {},
-      "cpu_cores": 1.92,
-      "mem_peak_mb": 16.7,
-      "rps_per_core": 68163.4,
-      "interference_cores": 0.0,
+      "sibling_cores": 0.01,
+      "rest_cores": 0.0,
+      "app_mhz": 3324,
       "host_busy_before": 0.24,
       "noisy": false
     },
     {
       "app": "go",
       "scenario": "ping",
-      "connections": 256,
-      "rps": 125884.1,
-      "requests": 1259416,
+      "connections": 64,
+      "rps": 132755.5,
+      "requests": 1328302,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 2.024,
-        "p50": 1.892,
-        "p90": 3.536,
-        "p99": 5.986,
-        "p999": 8.522,
-        "max": 46.779
+        "avg": 0.48,
+        "p50": 0.395,
+        "p90": 0.951,
+        "p99": 1.648,
+        "p999": 4.329,
+        "max": 20.639
       },
       "status_codes": {
-        "200": 1259416
+        "200": 1328302
       },
       "errors": {},
-      "cpu_cores": 1.92,
-      "mem_peak_mb": 21.7,
-      "rps_per_core": 65491.4,
+      "cpu_cores": 1.9,
+      "mem_peak_mb": 21.1,
+      "rps_per_core": 69741.4,
       "interference_cores": 0.0,
+      "sibling_cores": 0.03,
+      "rest_cores": 0.0,
+      "app_mhz": 3152,
+      "host_busy_before": 0.49,
+      "noisy": false
+    },
+    {
+      "app": "go",
+      "scenario": "ping",
+      "connections": 256,
+      "rps": 130593.6,
+      "requests": 1306449,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 1.951,
+        "p50": 1.854,
+        "p90": 3.371,
+        "p99": 5.355,
+        "p999": 7.272,
+        "max": 59.207
+      },
+      "status_codes": {
+        "200": 1306449
+      },
+      "errors": {},
+      "cpu_cores": 1.95,
+      "mem_peak_mb": 26.3,
+      "rps_per_core": 66880.0,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.02,
+      "rest_cores": 0.0,
+      "app_mhz": 3081,
+      "host_busy_before": 0.58,
+      "noisy": false
+    },
+    {
+      "app": "go",
+      "scenario": "get",
+      "connections": 16,
+      "rps": 51278.9,
+      "requests": 513033,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 0.309,
+        "p50": 0.235,
+        "p90": 0.444,
+        "p99": 2.928,
+        "p999": 4.496,
+        "max": 20.713
+      },
+      "status_codes": {
+        "200": 513033
+      },
+      "errors": {},
+      "cpu_cores": 1.58,
+      "mem_peak_mb": 21.8,
+      "rps_per_core": 32480.3,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.04,
+      "rest_cores": 0.0,
+      "app_mhz": 3275,
+      "host_busy_before": 0.29,
+      "noisy": false
+    },
+    {
+      "app": "go",
+      "scenario": "get",
+      "connections": 64,
+      "rps": 53255.3,
+      "requests": 532674,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 1.197,
+        "p50": 0.964,
+        "p90": 1.946,
+        "p99": 4.837,
+        "p999": 7.602,
+        "max": 33.134
+      },
+      "status_codes": {
+        "200": 532674
+      },
+      "errors": {},
+      "cpu_cores": 1.66,
+      "mem_peak_mb": 25.9,
+      "rps_per_core": 32081.5,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.1,
+      "rest_cores": 0.0,
+      "app_mhz": 3359,
+      "host_busy_before": 0.6,
+      "noisy": false
+    },
+    {
+      "app": "go",
+      "scenario": "get",
+      "connections": 256,
+      "rps": 48086.6,
+      "requests": 480800,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 5.303,
+        "p50": 4.535,
+        "p90": 7.692,
+        "p99": 11.692,
+        "p999": 18.291,
+        "max": 82.577
+      },
+      "status_codes": {
+        "200": 480800
+      },
+      "errors": {},
+      "cpu_cores": 1.58,
+      "mem_peak_mb": 35.8,
+      "rps_per_core": 30409.8,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.11,
+      "rest_cores": 0.0,
+      "app_mhz": 3213,
       "host_busy_before": 0.53,
       "noisy": false
     },
     {
       "app": "go",
-      "scenario": "get",
-      "connections": 16,
-      "rps": 48680.5,
-      "requests": 486912,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 0.325,
-        "p50": 0.241,
-        "p90": 0.47,
-        "p99": 3.118,
-        "p999": 4.914,
-        "max": 25.297
-      },
-      "status_codes": {
-        "200": 486912
-      },
-      "errors": {},
-      "cpu_cores": 1.53,
-      "mem_peak_mb": 18.7,
-      "rps_per_core": 31897.4,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.6,
-      "noisy": false
-    },
-    {
-      "app": "go",
-      "scenario": "get",
-      "connections": 64,
-      "rps": 49965.9,
-      "requests": 499769,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 1.275,
-        "p50": 1.005,
-        "p90": 2.137,
-        "p99": 5.115,
-        "p999": 7.378,
-        "max": 54.448
-      },
-      "status_codes": {
-        "200": 499769
-      },
-      "errors": {},
-      "cpu_cores": 1.6,
-      "mem_peak_mb": 22.6,
-      "rps_per_core": 31189.7,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.74,
-      "noisy": false
-    },
-    {
-      "app": "go",
-      "scenario": "get",
-      "connections": 256,
-      "rps": 40319.2,
-      "requests": 403117,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 6.324,
-        "p50": 5.683,
-        "p90": 9.831,
-        "p99": 16.382,
-        "p999": 27.087,
-        "max": 71.293
-      },
-      "status_codes": {
-        "200": 403117
-      },
-      "errors": {},
-      "cpu_cores": 1.55,
-      "mem_peak_mb": 32.6,
-      "rps_per_core": 25962.4,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.59,
-      "noisy": false
-    },
-    {
-      "app": "go",
       "scenario": "list",
       "connections": 16,
-      "rps": 28158.6,
-      "requests": 281685,
+      "rps": 29088.6,
+      "requests": 291008,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 0.564,
-        "p50": 0.421,
-        "p90": 0.872,
-        "p99": 3.235,
-        "p999": 5.663,
-        "max": 39.419
+        "avg": 0.546,
+        "p50": 0.408,
+        "p90": 0.829,
+        "p99": 3.446,
+        "p999": 4.816,
+        "max": 19.778
       },
       "status_codes": {
-        "200": 281685
+        "200": 291008
       },
       "errors": {},
-      "cpu_cores": 1.3,
-      "mem_peak_mb": 21.4,
-      "rps_per_core": 21668.3,
+      "cpu_cores": 1.32,
+      "mem_peak_mb": 27.8,
+      "rps_per_core": 22019.8,
       "interference_cores": 0.0,
-      "host_busy_before": 1.09,
+      "sibling_cores": 0.02,
+      "rest_cores": 0.02,
+      "app_mhz": 3205,
+      "host_busy_before": 0.47,
       "noisy": false
     },
     {
       "app": "go",
       "scenario": "list",
       "connections": 64,
-      "rps": 24509.0,
-      "requests": 245089,
+      "rps": 28775.5,
+      "requests": 287764,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 2.603,
-        "p50": 2.091,
-        "p90": 4.865,
-        "p99": 8.728,
-        "p999": 13.279,
-        "max": 33.94
+        "avg": 2.216,
+        "p50": 1.818,
+        "p90": 3.872,
+        "p99": 7.178,
+        "p999": 10.161,
+        "max": 42.586
       },
       "status_codes": {
-        "200": 245089
+        "200": 287764
       },
       "errors": {},
-      "cpu_cores": 1.27,
-      "mem_peak_mb": 24.3,
-      "rps_per_core": 19361.4,
-      "interference_cores": 0.07,
-      "host_busy_before": 0.55,
+      "cpu_cores": 1.34,
+      "mem_peak_mb": 29.3,
+      "rps_per_core": 21544.6,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.07,
+      "rest_cores": 0.0,
+      "app_mhz": 3257,
+      "host_busy_before": 0.61,
       "noisy": false
     },
     {
       "app": "go",
       "scenario": "list",
       "connections": 256,
-      "rps": 26758.1,
-      "requests": 267412,
+      "rps": 27067.1,
+      "requests": 270510,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 9.541,
-        "p50": 9.344,
-        "p90": 12.481,
-        "p99": 17.983,
-        "p999": 26.409,
-        "max": 65.104
+        "avg": 9.42,
+        "p50": 9.025,
+        "p90": 11.879,
+        "p99": 15.837,
+        "p999": 23.986,
+        "max": 99.426
       },
       "status_codes": {
-        "200": 267412
+        "200": 270510
       },
       "errors": {},
-      "cpu_cores": 1.49,
-      "mem_peak_mb": 32.0,
-      "rps_per_core": 17978.0,
+      "cpu_cores": 1.26,
+      "mem_peak_mb": 36.9,
+      "rps_per_core": 21419.2,
       "interference_cores": 0.0,
-      "host_busy_before": 1.55,
+      "sibling_cores": 0.05,
+      "rest_cores": 0.0,
+      "app_mhz": 3076,
+      "host_busy_before": 0.32,
       "noisy": false
     },
     {
       "app": "go",
       "scenario": "create",
       "connections": 16,
-      "rps": 7058.0,
-      "requests": 70577,
+      "rps": 7018.9,
+      "requests": 70187,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 2.261,
-        "p50": 2.059,
-        "p90": 3.37,
-        "p99": 4.238,
-        "p999": 9.007,
-        "max": 48.443
+        "avg": 2.273,
+        "p50": 2.074,
+        "p90": 3.352,
+        "p99": 4.293,
+        "p999": 8.124,
+        "max": 47.027
       },
       "status_codes": {
-        "200": 70577
+        "200": 70187
       },
       "errors": {},
-      "cpu_cores": 0.38,
-      "mem_peak_mb": 20.2,
-      "rps_per_core": 18393.8,
-      "interference_cores": 0.07,
-      "host_busy_before": 0.46,
-      "noisy": false
-    },
-    {
-      "app": "go",
-      "scenario": "create",
-      "connections": 64,
-      "rps": 13380.5,
-      "requests": 133781,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 4.77,
-        "p50": 4.277,
-        "p90": 5.819,
-        "p99": 9.64,
-        "p999": 49.724,
-        "max": 80.455
-      },
-      "status_codes": {
-        "200": 133781
-      },
-      "errors": {},
-      "cpu_cores": 0.6,
-      "mem_peak_mb": 26.0,
-      "rps_per_core": 22283.1,
-      "interference_cores": 0.08,
-      "host_busy_before": 0.6,
-      "noisy": false
-    },
-    {
-      "app": "go",
-      "scenario": "create",
-      "connections": 256,
-      "rps": 13395.2,
-      "requests": 133753,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 19.041,
-        "p50": 17.963,
-        "p90": 20.849,
-        "p99": 38.601,
-        "p999": 63.553,
-        "max": 98.095
-      },
-      "status_codes": {
-        "200": 133753
-      },
-      "errors": {},
-      "cpu_cores": 0.61,
-      "mem_peak_mb": 33.9,
-      "rps_per_core": 21786.5,
-      "interference_cores": 0.1,
+      "cpu_cores": 0.36,
+      "mem_peak_mb": 24.8,
+      "rps_per_core": 19469.6,
+      "interference_cores": 0.04,
+      "sibling_cores": 0.09,
+      "rest_cores": 0.03,
+      "app_mhz": 3095,
       "host_busy_before": 0.5,
       "noisy": false
     },
     {
-      "app": "fastify",
-      "scenario": "ping",
-      "connections": 16,
-      "rps": 85980.8,
-      "requests": 860215,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 0.184,
-        "p50": 0.191,
-        "p90": 0.246,
-        "p99": 0.482,
-        "p999": 1.246,
-        "max": 11.02
-      },
-      "status_codes": {
-        "200": 860215
-      },
-      "errors": {},
-      "cpu_cores": 1.98,
-      "mem_peak_mb": 69.0,
-      "rps_per_core": 43446.2,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.17,
-      "noisy": false
-    },
-    {
-      "app": "fastify",
-      "scenario": "ping",
+      "app": "go",
+      "scenario": "create",
       "connections": 64,
-      "rps": 81787.2,
-      "requests": 818125,
+      "rps": 13656.4,
+      "requests": 136521,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 0.78,
-        "p50": 0.719,
-        "p90": 0.971,
-        "p99": 1.637,
-        "p999": 2.303,
-        "max": 28.924
+        "avg": 4.676,
+        "p50": 4.274,
+        "p90": 5.725,
+        "p99": 7.287,
+        "p999": 42.13,
+        "max": 59.948
       },
       "status_codes": {
-        "200": 818125
+        "200": 136521
       },
       "errors": {},
-      "cpu_cores": 2.0,
-      "mem_peak_mb": 71.1,
-      "rps_per_core": 40958.1,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.7,
+      "cpu_cores": 0.55,
+      "mem_peak_mb": 30.5,
+      "rps_per_core": 24766.4,
+      "interference_cores": 0.01,
+      "sibling_cores": 0.05,
+      "rest_cores": 0.0,
+      "app_mhz": 3428,
+      "host_busy_before": 0.38,
       "noisy": false
     },
     {
-      "app": "fastify",
-      "scenario": "ping",
+      "app": "go",
+      "scenario": "create",
       "connections": 256,
-      "rps": 76089.3,
-      "requests": 760945,
+      "rps": 13819.4,
+      "requests": 137994,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 3.349,
-        "p50": 3.168,
-        "p90": 3.968,
-        "p99": 6.136,
-        "p999": 8.318,
-        "max": 235.572
+        "avg": 18.45,
+        "p50": 17.864,
+        "p90": 19.303,
+        "p99": 26.26,
+        "p999": 72.046,
+        "max": 103.642
       },
       "status_codes": {
-        "200": 760945
+        "200": 137994
       },
       "errors": {},
-      "cpu_cores": 1.99,
-      "mem_peak_mb": 73.6,
-      "rps_per_core": 38215.9,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.77,
+      "cpu_cores": 0.61,
+      "mem_peak_mb": 38.0,
+      "rps_per_core": 22506.0,
+      "interference_cores": 0.03,
+      "sibling_cores": 0.1,
+      "rest_cores": 0.0,
+      "app_mhz": 3353,
+      "host_busy_before": 0.45,
       "noisy": false
     },
     {
       "app": "fastify",
-      "scenario": "get",
+      "scenario": "ping",
       "connections": 16,
-      "rps": 26106.2,
-      "requests": 261127,
+      "rps": 91007.2,
+      "requests": 910783,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 0.609,
-        "p50": 0.643,
-        "p90": 1.097,
-        "p99": 1.618,
-        "p999": 2.739,
-        "max": 17.153
+        "avg": 0.174,
+        "p50": 0.183,
+        "p90": 0.236,
+        "p99": 0.444,
+        "p999": 0.722,
+        "max": 19.357
       },
       "status_codes": {
-        "200": 261127
-      },
-      "errors": {},
-      "cpu_cores": 1.98,
-      "mem_peak_mb": 76.3,
-      "rps_per_core": 13192.3,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.77,
-      "noisy": false
-    },
-    {
-      "app": "fastify",
-      "scenario": "get",
-      "connections": 64,
-      "rps": 24391.0,
-      "requests": 243980,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 2.603,
-        "p50": 2.461,
-        "p90": 3.475,
-        "p99": 4.978,
-        "p999": 7.042,
-        "max": 29.189
-      },
-      "status_codes": {
-        "200": 243980
-      },
-      "errors": {},
-      "cpu_cores": 2.01,
-      "mem_peak_mb": 78.6,
-      "rps_per_core": 12150.0,
-      "interference_cores": 0.0,
-      "host_busy_before": 1.62,
-      "noisy": false
-    },
-    {
-      "app": "fastify",
-      "scenario": "get",
-      "connections": 256,
-      "rps": 23501.3,
-      "requests": 234869,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 10.853,
-        "p50": 10.377,
-        "p90": 13.503,
-        "p99": 15.709,
-        "p999": 31.708,
-        "max": 161.205
-      },
-      "status_codes": {
-        "200": 234869
+        "200": 910783
       },
       "errors": {},
       "cpu_cores": 2.0,
-      "mem_peak_mb": 89.9,
-      "rps_per_core": 11768.0,
+      "mem_peak_mb": 136.9,
+      "rps_per_core": 45535.0,
       "interference_cores": 0.0,
-      "host_busy_before": 1.0,
+      "sibling_cores": 0.02,
+      "rest_cores": 0.0,
+      "app_mhz": 3364,
+      "host_busy_before": 0.31,
       "noisy": false
     },
     {
       "app": "fastify",
-      "scenario": "list",
-      "connections": 16,
-      "rps": 11320.5,
-      "requests": 113219,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 1.406,
-        "p50": 1.013,
-        "p90": 2.77,
-        "p99": 4.59,
-        "p999": 8.211,
-        "max": 19.633
-      },
-      "status_codes": {
-        "200": 113219
-      },
-      "errors": {},
-      "cpu_cores": 1.95,
-      "mem_peak_mb": 87.3,
-      "rps_per_core": 5814.5,
-      "interference_cores": 0.0,
-      "host_busy_before": 1.12,
-      "noisy": false
-    },
-    {
-      "app": "fastify",
-      "scenario": "list",
+      "scenario": "ping",
       "connections": 64,
-      "rps": 18530.9,
-      "requests": 185303,
+      "rps": 83634.8,
+      "requests": 836718,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 3.444,
-        "p50": 3.283,
-        "p90": 4.462,
-        "p99": 5.994,
-        "p999": 9.223,
-        "max": 32.241
+        "avg": 0.763,
+        "p50": 0.735,
+        "p90": 0.994,
+        "p99": 1.669,
+        "p999": 2.281,
+        "max": 22.156
       },
       "status_codes": {
-        "200": 185303
+        "200": 836718
       },
       "errors": {},
       "cpu_cores": 2.0,
-      "mem_peak_mb": 89.3,
-      "rps_per_core": 9279.7,
+      "mem_peak_mb": 138.2,
+      "rps_per_core": 41874.5,
       "interference_cores": 0.0,
+      "sibling_cores": 0.04,
+      "rest_cores": 0.54,
+      "app_mhz": 3168,
       "host_busy_before": 0.68,
       "noisy": false
     },
     {
       "app": "fastify",
-      "scenario": "list",
+      "scenario": "ping",
       "connections": 256,
-      "rps": 13774.0,
-      "requests": 137544,
+      "rps": 83805.2,
+      "requests": 838141,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 18.52,
-        "p50": 17.463,
-        "p90": 22.108,
-        "p99": 36.014,
-        "p999": 134.207,
-        "max": 290.703
+        "avg": 3.044,
+        "p50": 2.981,
+        "p90": 3.649,
+        "p99": 4.948,
+        "p999": 7.257,
+        "max": 220.512
       },
       "status_codes": {
-        "200": 137544
+        "200": 838141
       },
       "errors": {},
       "cpu_cores": 1.99,
-      "mem_peak_mb": 97.9,
-      "rps_per_core": 6937.9,
+      "mem_peak_mb": 140.9,
+      "rps_per_core": 42029.9,
       "interference_cores": 0.0,
-      "host_busy_before": 0.6,
+      "sibling_cores": 0.04,
+      "rest_cores": 0.21,
+      "app_mhz": 3150,
+      "host_busy_before": 0.38,
       "noisy": false
     },
     {
       "app": "fastify",
-      "scenario": "create",
+      "scenario": "get",
       "connections": 16,
-      "rps": 6997.8,
-      "requests": 69975,
+      "rps": 26458.4,
+      "requests": 264691,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 2.281,
-        "p50": 2.079,
-        "p90": 3.354,
-        "p99": 4.319,
-        "p999": 9.146,
-        "max": 56.241
+        "avg": 0.601,
+        "p50": 0.561,
+        "p90": 0.817,
+        "p99": 1.17,
+        "p999": 3.835,
+        "max": 19.285
       },
       "status_codes": {
-        "200": 69975
-      },
-      "errors": {},
-      "cpu_cores": 0.64,
-      "mem_peak_mb": 96.7,
-      "rps_per_core": 10950.3,
-      "interference_cores": 0.04,
-      "host_busy_before": 0.86,
-      "noisy": false
-    },
-    {
-      "app": "fastify",
-      "scenario": "create",
-      "connections": 64,
-      "rps": 10554.2,
-      "requests": 105501,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 6.051,
-        "p50": 5.755,
-        "p90": 7.975,
-        "p99": 12.416,
-        "p999": 25.239,
-        "max": 92.938
-      },
-      "status_codes": {
-        "200": 105501
-      },
-      "errors": {},
-      "cpu_cores": 1.57,
-      "mem_peak_mb": 96.3,
-      "rps_per_core": 6720.4,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.94,
-      "noisy": false
-    },
-    {
-      "app": "fastify",
-      "scenario": "create",
-      "connections": 256,
-      "rps": 11961.0,
-      "requests": 119398,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 21.355,
-        "p50": 20.148,
-        "p90": 26.651,
-        "p99": 37.427,
-        "p999": 70.76,
-        "max": 78.03
-      },
-      "status_codes": {
-        "200": 119398
-      },
-      "errors": {},
-      "cpu_cores": 1.27,
-      "mem_peak_mb": 97.5,
-      "rps_per_core": 9413.8,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.81,
-      "noisy": false
-    },
-    {
-      "app": "nestjs-express",
-      "scenario": "ping",
-      "connections": 16,
-      "rps": 18142.4,
-      "requests": 181438,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 0.879,
-        "p50": 0.695,
-        "p90": 1.294,
-        "p99": 5.937,
-        "p999": 12.33,
-        "max": 23.374
-      },
-      "status_codes": {
-        "200": 181438
-      },
-      "errors": {},
-      "cpu_cores": 1.96,
-      "mem_peak_mb": 137.5,
-      "rps_per_core": 9264.5,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.76,
-      "noisy": false
-    },
-    {
-      "app": "nestjs-express",
-      "scenario": "ping",
-      "connections": 64,
-      "rps": 18706.4,
-      "requests": 187068,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 3.414,
-        "p50": 2.849,
-        "p90": 4.081,
-        "p99": 14.499,
-        "p999": 17.859,
-        "max": 79.798
-      },
-      "status_codes": {
-        "200": 187068
-      },
-      "errors": {},
-      "cpu_cores": 1.99,
-      "mem_peak_mb": 131.4,
-      "rps_per_core": 9405.1,
-      "interference_cores": 0.0,
-      "host_busy_before": 1.44,
-      "noisy": false
-    },
-    {
-      "app": "nestjs-express",
-      "scenario": "ping",
-      "connections": 256,
-      "rps": 18581.7,
-      "requests": 185626,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 13.735,
-        "p50": 11.797,
-        "p90": 21.231,
-        "p99": 28.098,
-        "p999": 48.209,
-        "max": 1010.206
-      },
-      "status_codes": {
-        "200": 185626
+        "200": 264691
       },
       "errors": {},
       "cpu_cores": 1.98,
-      "mem_peak_mb": 139.3,
-      "rps_per_core": 9363.7,
+      "mem_peak_mb": 143.4,
+      "rps_per_core": 13331.3,
       "interference_cores": 0.0,
-      "host_busy_before": 0.91,
-      "noisy": false
-    },
-    {
-      "app": "nestjs-express",
-      "scenario": "get",
-      "connections": 16,
-      "rps": 9526.1,
-      "requests": 95266,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 1.674,
-        "p50": 1.404,
-        "p90": 2.161,
-        "p99": 7.396,
-        "p999": 14.805,
-        "max": 20.783
-      },
-      "status_codes": {
-        "200": 95266
-      },
-      "errors": {},
-      "cpu_cores": 1.95,
-      "mem_peak_mb": 123.7,
-      "rps_per_core": 4883.8,
-      "interference_cores": 0.0,
-      "host_busy_before": 1.4,
-      "noisy": false
-    },
-    {
-      "app": "nestjs-express",
-      "scenario": "get",
-      "connections": 64,
-      "rps": 9684.5,
-      "requests": 96807,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 6.596,
-        "p50": 5.757,
-        "p90": 9.196,
-        "p99": 22.035,
-        "p999": 33.287,
-        "max": 129.049
-      },
-      "status_codes": {
-        "200": 96807
-      },
-      "errors": {},
-      "cpu_cores": 1.87,
-      "mem_peak_mb": 127.2,
-      "rps_per_core": 5165.4,
-      "interference_cores": 0.04,
-      "host_busy_before": 1.69,
-      "noisy": false
-    },
-    {
-      "app": "nestjs-express",
-      "scenario": "get",
-      "connections": 256,
-      "rps": 8518.9,
-      "requests": 84968,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 29.988,
-        "p50": 26.583,
-        "p90": 44.253,
-        "p99": 60.377,
-        "p999": 249.17,
-        "max": 415.407
-      },
-      "status_codes": {
-        "200": 84968
-      },
-      "errors": {},
-      "cpu_cores": 1.96,
-      "mem_peak_mb": 130.0,
-      "rps_per_core": 4343.2,
-      "interference_cores": 0.0,
-      "host_busy_before": 1.83,
-      "noisy": false
-    },
-    {
-      "app": "nestjs-express",
-      "scenario": "list",
-      "connections": 16,
-      "rps": 7459.4,
-      "requests": 74590,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 2.138,
-        "p50": 1.956,
-        "p90": 2.776,
-        "p99": 8.07,
-        "p999": 17.421,
-        "max": 27.933
-      },
-      "status_codes": {
-        "200": 74590
-      },
-      "errors": {},
-      "cpu_cores": 1.97,
-      "mem_peak_mb": 129.4,
-      "rps_per_core": 3784.0,
-      "interference_cores": 0.07,
-      "host_busy_before": 1.71,
-      "noisy": false
-    },
-    {
-      "app": "nestjs-express",
-      "scenario": "list",
-      "connections": 64,
-      "rps": 7155.8,
-      "requests": 71513,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 8.927,
-        "p50": 7.982,
-        "p90": 12.282,
-        "p99": 27.005,
-        "p999": 39.716,
-        "max": 61.189
-      },
-      "status_codes": {
-        "200": 71513
-      },
-      "errors": {},
-      "cpu_cores": 1.97,
-      "mem_peak_mb": 127.1,
-      "rps_per_core": 3629.8,
-      "interference_cores": 0.0,
-      "host_busy_before": 1.51,
-      "noisy": false
-    },
-    {
-      "app": "nestjs-express",
-      "scenario": "list",
-      "connections": 256,
-      "rps": 6219.0,
-      "requests": 61962,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 41.095,
-        "p50": 37.019,
-        "p90": 54.835,
-        "p99": 70.912,
-        "p999": 404.103,
-        "max": 611.105
-      },
-      "status_codes": {
-        "200": 61962
-      },
-      "errors": {},
-      "cpu_cores": 2.0,
-      "mem_peak_mb": 128.9,
-      "rps_per_core": 3111.5,
-      "interference_cores": 0.0,
-      "host_busy_before": 1.81,
-      "noisy": false
-    },
-    {
-      "app": "nestjs-express",
-      "scenario": "create",
-      "connections": 16,
-      "rps": 4089.8,
-      "requests": 40891,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 3.907,
-        "p50": 3.47,
-        "p90": 5.891,
-        "p99": 11.611,
-        "p999": 18.822,
-        "max": 29.439
-      },
-      "status_codes": {
-        "201": 40891
-      },
-      "errors": {},
-      "cpu_cores": 1.09,
-      "mem_peak_mb": 128.3,
-      "rps_per_core": 3738.5,
-      "interference_cores": 0.64,
-      "host_busy_before": 1.63,
-      "noisy": true
-    },
-    {
-      "app": "nestjs-express",
-      "scenario": "create",
-      "connections": 64,
-      "rps": 8027.7,
-      "requests": 80230,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 7.957,
-        "p50": 7.018,
-        "p90": 10.647,
-        "p99": 24.09,
-        "p999": 50.2,
-        "max": 131.473
-      },
-      "status_codes": {
-        "201": 80230
-      },
-      "errors": {},
-      "cpu_cores": 1.91,
-      "mem_peak_mb": 128.8,
-      "rps_per_core": 4210.0,
-      "interference_cores": 0.0,
-      "host_busy_before": 1.03,
-      "noisy": false
-    },
-    {
-      "app": "nestjs-express",
-      "scenario": "create",
-      "connections": 256,
-      "rps": 5573.4,
-      "requests": 55504,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 45.885,
-        "p50": 33.051,
-        "p90": 56.385,
-        "p99": 241.03,
-        "p999": 348.671,
-        "max": 383.344
-      },
-      "status_codes": {
-        "201": 55504
-      },
-      "errors": {},
-      "cpu_cores": 1.56,
-      "mem_peak_mb": 129.4,
-      "rps_per_core": 3577.3,
-      "interference_cores": 0.0,
+      "sibling_cores": 0.02,
+      "rest_cores": 0.0,
+      "app_mhz": 3189,
       "host_busy_before": 0.44,
       "noisy": false
     },
     {
-      "app": "nestjs-fastify",
-      "scenario": "ping",
-      "connections": 16,
-      "rps": 85772.9,
-      "requests": 858100,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 0.185,
-        "p50": 0.163,
-        "p90": 0.296,
-        "p99": 0.463,
-        "p999": 0.748,
-        "max": 17.254
-      },
-      "status_codes": {
-        "200": 858100
-      },
-      "errors": {},
-      "cpu_cores": 2.0,
-      "mem_peak_mb": 109.1,
-      "rps_per_core": 42918.8,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.36,
-      "noisy": false
-    },
-    {
-      "app": "nestjs-fastify",
-      "scenario": "ping",
+      "app": "fastify",
+      "scenario": "get",
       "connections": 64,
-      "rps": 79866.0,
-      "requests": 798810,
+      "rps": 29914.9,
+      "requests": 299171,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 0.798,
-        "p50": 0.709,
-        "p90": 1.034,
-        "p99": 1.765,
-        "p999": 2.574,
-        "max": 38.469
+        "avg": 2.133,
+        "p50": 2.073,
+        "p90": 2.72,
+        "p99": 3.398,
+        "p999": 5.55,
+        "max": 33.982
       },
       "status_codes": {
-        "200": 798810
+        "200": 299171
       },
       "errors": {},
       "cpu_cores": 2.0,
-      "mem_peak_mb": 101.9,
-      "rps_per_core": 40000.4,
+      "mem_peak_mb": 147.4,
+      "rps_per_core": 14978.6,
       "interference_cores": 0.0,
-      "host_busy_before": 0.72,
+      "sibling_cores": 0.01,
+      "rest_cores": 0.0,
+      "app_mhz": 3442,
+      "host_busy_before": 0.28,
       "noisy": false
     },
     {
-      "app": "nestjs-fastify",
-      "scenario": "ping",
+      "app": "fastify",
+      "scenario": "get",
       "connections": 256,
-      "rps": 88919.4,
-      "requests": 889345,
+      "rps": 25733.7,
+      "requests": 257175,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 2.869,
-        "p50": 2.799,
-        "p90": 3.401,
-        "p99": 3.974,
-        "p999": 5.724,
-        "max": 217.899
+        "avg": 9.903,
+        "p50": 9.579,
+        "p90": 11.579,
+        "p99": 14.582,
+        "p999": 24.208,
+        "max": 240.103
       },
       "status_codes": {
-        "200": 889345
+        "200": 257175
       },
       "errors": {},
       "cpu_cores": 1.99,
-      "mem_peak_mb": 105.1,
-      "rps_per_core": 44616.0,
+      "mem_peak_mb": 146.0,
+      "rps_per_core": 12932.5,
       "interference_cores": 0.0,
-      "host_busy_before": 1.95,
+      "sibling_cores": 0.01,
+      "rest_cores": 0.0,
+      "app_mhz": 3327,
+      "host_busy_before": 0.12,
       "noisy": false
     },
     {
-      "app": "nestjs-fastify",
-      "scenario": "get",
+      "app": "fastify",
+      "scenario": "list",
       "connections": 16,
-      "rps": 24952.6,
-      "requests": 249571,
+      "rps": 18021.2,
+      "requests": 180239,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 0.637,
-        "p50": 0.567,
-        "p90": 0.836,
-        "p99": 1.418,
-        "p999": 5.662,
-        "max": 24.319
+        "avg": 0.883,
+        "p50": 0.815,
+        "p90": 1.21,
+        "p99": 1.858,
+        "p999": 3.697,
+        "max": 16.153
       },
       "status_codes": {
-        "200": 249571
-      },
-      "errors": {},
-      "cpu_cores": 1.98,
-      "mem_peak_mb": 110.3,
-      "rps_per_core": 12628.1,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.55,
-      "noisy": false
-    },
-    {
-      "app": "nestjs-fastify",
-      "scenario": "get",
-      "connections": 64,
-      "rps": 27947.5,
-      "requests": 279481,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 2.282,
-        "p50": 2.224,
-        "p90": 2.926,
-        "p99": 3.586,
-        "p999": 4.782,
-        "max": 37.133
-      },
-      "status_codes": {
-        "200": 279481
-      },
-      "errors": {},
-      "cpu_cores": 2.0,
-      "mem_peak_mb": 110.4,
-      "rps_per_core": 14005.9,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.48,
-      "noisy": false
-    },
-    {
-      "app": "nestjs-fastify",
-      "scenario": "get",
-      "connections": 256,
-      "rps": 24632.1,
-      "requests": 246155,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 10.349,
-        "p50": 10.549,
-        "p90": 12.174,
-        "p99": 13.87,
-        "p999": 35.459,
-        "max": 181.658
-      },
-      "status_codes": {
-        "200": 246155
+        "200": 180239
       },
       "errors": {},
       "cpu_cores": 1.99,
-      "mem_peak_mb": 116.2,
-      "rps_per_core": 12368.3,
+      "mem_peak_mb": 146.9,
+      "rps_per_core": 9047.5,
       "interference_cores": 0.0,
+      "sibling_cores": 0.11,
+      "rest_cores": 0.31,
+      "app_mhz": 3265,
       "host_busy_before": 0.69,
       "noisy": false
     },
     {
-      "app": "nestjs-fastify",
-      "scenario": "list",
-      "connections": 16,
-      "rps": 18983.2,
-      "requests": 189875,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 0.838,
-        "p50": 0.829,
-        "p90": 1.078,
-        "p99": 1.557,
-        "p999": 3.413,
-        "max": 17.388
-      },
-      "status_codes": {
-        "200": 189875
-      },
-      "errors": {},
-      "cpu_cores": 1.99,
-      "mem_peak_mb": 117.5,
-      "rps_per_core": 9531.1,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.76,
-      "noisy": false
-    },
-    {
-      "app": "nestjs-fastify",
+      "app": "fastify",
       "scenario": "list",
       "connections": 64,
-      "rps": 18646.9,
-      "requests": 186452,
+      "rps": 19110.1,
+      "requests": 191108,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 3.424,
-        "p50": 3.313,
-        "p90": 4.435,
-        "p99": 5.578,
-        "p999": 7.13,
-        "max": 35.255
+        "avg": 3.339,
+        "p50": 3.154,
+        "p90": 4.26,
+        "p99": 6.147,
+        "p999": 11.15,
+        "max": 49.368
       },
       "status_codes": {
-        "200": 186452
+        "200": 191108
       },
       "errors": {},
-      "cpu_cores": 2.0,
-      "mem_peak_mb": 118.9,
-      "rps_per_core": 9337.3,
+      "cpu_cores": 1.99,
+      "mem_peak_mb": 149.6,
+      "rps_per_core": 9581.1,
       "interference_cores": 0.0,
-      "host_busy_before": 0.58,
+      "sibling_cores": 0.04,
+      "rest_cores": 0.0,
+      "app_mhz": 3304,
+      "host_busy_before": 0.16,
       "noisy": false
     },
     {
-      "app": "nestjs-fastify",
+      "app": "fastify",
       "scenario": "list",
       "connections": 256,
-      "rps": 16571.3,
-      "requests": 165514,
+      "rps": 15590.6,
+      "requests": 155706,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 15.387,
-        "p50": 14.302,
-        "p90": 18.585,
-        "p99": 33.747,
-        "p999": 51.055,
-        "max": 206.148
+        "avg": 16.369,
+        "p50": 15.774,
+        "p90": 21.245,
+        "p99": 33.305,
+        "p999": 53.979,
+        "max": 235.159
       },
       "status_codes": {
-        "200": 165514
+        "200": 155706
+      },
+      "errors": {},
+      "cpu_cores": 1.92,
+      "mem_peak_mb": 164.7,
+      "rps_per_core": 8100.0,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.05,
+      "rest_cores": 0.12,
+      "app_mhz": 3182,
+      "host_busy_before": 0.25,
+      "noisy": false
+    },
+    {
+      "app": "fastify",
+      "scenario": "create",
+      "connections": 16,
+      "rps": 7030.7,
+      "requests": 70304,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 2.27,
+        "p50": 2.069,
+        "p90": 3.35,
+        "p99": 4.295,
+        "p999": 9.233,
+        "max": 46.679
+      },
+      "status_codes": {
+        "200": 70304
+      },
+      "errors": {},
+      "cpu_cores": 0.66,
+      "mem_peak_mb": 163.7,
+      "rps_per_core": 10688.2,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.09,
+      "rest_cores": 0.09,
+      "app_mhz": 3413,
+      "host_busy_before": 0.22,
+      "noisy": false
+    },
+    {
+      "app": "fastify",
+      "scenario": "create",
+      "connections": 64,
+      "rps": 13984.5,
+      "requests": 139816,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 4.565,
+        "p50": 4.292,
+        "p90": 5.854,
+        "p99": 7.382,
+        "p999": 33.95,
+        "max": 49.302
+      },
+      "status_codes": {
+        "200": 139816
+      },
+      "errors": {},
+      "cpu_cores": 1.1,
+      "mem_peak_mb": 164.0,
+      "rps_per_core": 12705.7,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.03,
+      "rest_cores": 0.02,
+      "app_mhz": 3534,
+      "host_busy_before": 0.56,
+      "noisy": false
+    },
+    {
+      "app": "fastify",
+      "scenario": "create",
+      "connections": 256,
+      "rps": 13302.3,
+      "requests": 132826,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 19.189,
+        "p50": 19.868,
+        "p90": 23.098,
+        "p99": 33.697,
+        "p999": 71.697,
+        "max": 123.615
+      },
+      "status_codes": {
+        "200": 132826
+      },
+      "errors": {},
+      "cpu_cores": 1.24,
+      "mem_peak_mb": 165.2,
+      "rps_per_core": 10757.9,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.06,
+      "rest_cores": 0.0,
+      "app_mhz": 3386,
+      "host_busy_before": 0.12,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-express",
+      "scenario": "ping",
+      "connections": 16,
+      "rps": 20329.2,
+      "requests": 203331,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 0.785,
+        "p50": 0.625,
+        "p90": 1.113,
+        "p99": 5.341,
+        "p999": 10.126,
+        "max": 26.261
+      },
+      "status_codes": {
+        "200": 203331
       },
       "errors": {},
       "cpu_cores": 1.99,
-      "mem_peak_mb": 128.3,
-      "rps_per_core": 8339.1,
+      "mem_peak_mb": 149.6,
+      "rps_per_core": 10202.3,
       "interference_cores": 0.0,
-      "host_busy_before": 0.42,
+      "sibling_cores": 0.01,
+      "rest_cores": 0.04,
+      "app_mhz": 3546,
+      "host_busy_before": 0.38,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-express",
+      "scenario": "ping",
+      "connections": 64,
+      "rps": 20233.9,
+      "requests": 202339,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 3.155,
+        "p50": 2.594,
+        "p90": 3.488,
+        "p99": 13.187,
+        "p999": 17.648,
+        "max": 82.105
+      },
+      "status_codes": {
+        "200": 202339
+      },
+      "errors": {},
+      "cpu_cores": 2.0,
+      "mem_peak_mb": 141.5,
+      "rps_per_core": 10123.3,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.03,
+      "rest_cores": 0.05,
+      "app_mhz": 3546,
+      "host_busy_before": 0.1,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-express",
+      "scenario": "ping",
+      "connections": 256,
+      "rps": 18745.4,
+      "requests": 187272,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 13.599,
+        "p50": 11.754,
+        "p90": 20.609,
+        "p99": 27.565,
+        "p999": 58.608,
+        "max": 910.527
+      },
+      "status_codes": {
+        "200": 187272
+      },
+      "errors": {},
+      "cpu_cores": 1.99,
+      "mem_peak_mb": 150.8,
+      "rps_per_core": 9416.9,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.02,
+      "rest_cores": 0.32,
+      "app_mhz": 3526,
+      "host_busy_before": 0.18,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-express",
+      "scenario": "get",
+      "connections": 16,
+      "rps": 10186.3,
+      "requests": 101864,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 1.565,
+        "p50": 1.37,
+        "p90": 2.01,
+        "p99": 7.421,
+        "p999": 14.319,
+        "max": 21.289
+      },
+      "status_codes": {
+        "200": 101864
+      },
+      "errors": {},
+      "cpu_cores": 1.99,
+      "mem_peak_mb": 151.3,
+      "rps_per_core": 5115.4,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.05,
+      "rest_cores": 0.06,
+      "app_mhz": 3238,
+      "host_busy_before": 0.23,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-express",
+      "scenario": "get",
+      "connections": 64,
+      "rps": 10389.4,
+      "requests": 103859,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 6.15,
+        "p50": 5.59,
+        "p90": 7.558,
+        "p99": 21.564,
+        "p999": 27.528,
+        "max": 71.429
+      },
+      "status_codes": {
+        "200": 103859
+      },
+      "errors": {},
+      "cpu_cores": 1.99,
+      "mem_peak_mb": 149.3,
+      "rps_per_core": 5230.1,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.01,
+      "rest_cores": 0.16,
+      "app_mhz": 3215,
+      "host_busy_before": 0.21,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-express",
+      "scenario": "get",
+      "connections": 256,
+      "rps": 8949.6,
+      "requests": 89270,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 28.542,
+        "p50": 25.641,
+        "p90": 41.778,
+        "p99": 57.049,
+        "p999": 216.592,
+        "max": 377.606
+      },
+      "status_codes": {
+        "200": 89270
+      },
+      "errors": {},
+      "cpu_cores": 2.0,
+      "mem_peak_mb": 151.2,
+      "rps_per_core": 4484.8,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.01,
+      "rest_cores": 0.06,
+      "app_mhz": 3309,
+      "host_busy_before": 0.41,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-express",
+      "scenario": "list",
+      "connections": 16,
+      "rps": 7878.9,
+      "requests": 78787,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 2.024,
+        "p50": 1.794,
+        "p90": 2.713,
+        "p99": 7.976,
+        "p999": 16.518,
+        "max": 24.137
+      },
+      "status_codes": {
+        "200": 78787
+      },
+      "errors": {},
+      "cpu_cores": 2.0,
+      "mem_peak_mb": 149.8,
+      "rps_per_core": 3942.6,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.03,
+      "rest_cores": 0.07,
+      "app_mhz": 3031,
+      "host_busy_before": 0.15,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-express",
+      "scenario": "list",
+      "connections": 64,
+      "rps": 9181.5,
+      "requests": 91771,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 6.956,
+        "p50": 6.362,
+        "p90": 8.942,
+        "p99": 20.925,
+        "p999": 27.896,
+        "max": 119.675
+      },
+      "status_codes": {
+        "200": 91771
+      },
+      "errors": {},
+      "cpu_cores": 1.98,
+      "mem_peak_mb": 150.8,
+      "rps_per_core": 4634.3,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.01,
+      "rest_cores": 0.19,
+      "app_mhz": 3507,
+      "host_busy_before": 0.29,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-express",
+      "scenario": "list",
+      "connections": 256,
+      "rps": 7355.8,
+      "requests": 73328,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 34.714,
+        "p50": 30.773,
+        "p90": 47.283,
+        "p99": 58.587,
+        "p999": 265.244,
+        "max": 471.941
+      },
+      "status_codes": {
+        "200": 73328
+      },
+      "errors": {},
+      "cpu_cores": 1.99,
+      "mem_peak_mb": 151.6,
+      "rps_per_core": 3692.7,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.02,
+      "rest_cores": 0.18,
+      "app_mhz": 3461,
+      "host_busy_before": 0.53,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-express",
+      "scenario": "create",
+      "connections": 16,
+      "rps": 5604.1,
+      "requests": 56037,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 2.85,
+        "p50": 2.344,
+        "p90": 4.174,
+        "p99": 8.421,
+        "p999": 16.418,
+        "max": 49.086
+      },
+      "status_codes": {
+        "201": 56037
+      },
+      "errors": {},
+      "cpu_cores": 1.38,
+      "mem_peak_mb": 150.9,
+      "rps_per_core": 4059.7,
+      "interference_cores": 0.02,
+      "sibling_cores": 0.09,
+      "rest_cores": 0.42,
+      "app_mhz": 3377,
+      "host_busy_before": 0.2,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-express",
+      "scenario": "create",
+      "connections": 64,
+      "rps": 8386.4,
+      "requests": 83822,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 7.62,
+        "p50": 6.763,
+        "p90": 9.854,
+        "p99": 23.896,
+        "p999": 40.318,
+        "max": 49.116
+      },
+      "status_codes": {
+        "201": 83822
+      },
+      "errors": {},
+      "cpu_cores": 1.9,
+      "mem_peak_mb": 151.1,
+      "rps_per_core": 4406.8,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.03,
+      "rest_cores": 0.25,
+      "app_mhz": 3512,
+      "host_busy_before": 0.62,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-express",
+      "scenario": "create",
+      "connections": 256,
+      "rps": 6840.0,
+      "requests": 68166,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 37.348,
+        "p50": 32.982,
+        "p90": 50.792,
+        "p99": 70.419,
+        "p999": 182.018,
+        "max": 286.573
+      },
+      "status_codes": {
+        "201": 68166
+      },
+      "errors": {},
+      "cpu_cores": 1.92,
+      "mem_peak_mb": 151.8,
+      "rps_per_core": 3557.2,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.02,
+      "rest_cores": 0.52,
+      "app_mhz": 3502,
+      "host_busy_before": 0.61,
       "noisy": false
     },
     {
       "app": "nestjs-fastify",
-      "scenario": "create",
+      "scenario": "ping",
       "connections": 16,
-      "rps": 6971.1,
-      "requests": 69708,
+      "rps": 86448.7,
+      "requests": 864897,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 2.289,
-        "p50": 2.086,
-        "p90": 3.354,
-        "p99": 4.255,
-        "p999": 8.84,
-        "max": 48.751
+        "avg": 0.183,
+        "p50": 0.185,
+        "p90": 0.256,
+        "p99": 0.437,
+        "p999": 0.646,
+        "max": 26.016
       },
       "status_codes": {
-        "201": 69708
+        "200": 864897
       },
       "errors": {},
-      "cpu_cores": 0.64,
-      "mem_peak_mb": 125.6,
-      "rps_per_core": 10915.1,
+      "cpu_cores": 2.0,
+      "mem_peak_mb": 105.6,
+      "rps_per_core": 43262.8,
       "interference_cores": 0.0,
-      "host_busy_before": 0.78,
+      "sibling_cores": 0.02,
+      "rest_cores": 0.1,
+      "app_mhz": 3207,
+      "host_busy_before": 0.7,
       "noisy": false
     },
     {
       "app": "nestjs-fastify",
-      "scenario": "create",
-      "connections": 64,
-      "rps": 13291.3,
-      "requests": 132885,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 4.805,
-        "p50": 4.319,
-        "p90": 6.01,
-        "p99": 9.251,
-        "p999": 23.052,
-        "max": 54.22
-      },
-      "status_codes": {
-        "201": 132885
-      },
-      "errors": {},
-      "cpu_cores": 1.17,
-      "mem_peak_mb": 126.7,
-      "rps_per_core": 11319.9,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.52,
-      "noisy": false
-    },
-    {
-      "app": "nestjs-fastify",
-      "scenario": "create",
-      "connections": 256,
-      "rps": 12795.3,
-      "requests": 127753,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 19.956,
-        "p50": 18.647,
-        "p90": 23.889,
-        "p99": 31.812,
-        "p999": 73.835,
-        "max": 114.777
-      },
-      "status_codes": {
-        "201": 127753
-      },
-      "errors": {},
-      "cpu_cores": 1.28,
-      "mem_peak_mb": 126.3,
-      "rps_per_core": 10012.0,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.66,
-      "noisy": false
-    },
-    {
-      "app": "fastapi",
       "scenario": "ping",
-      "connections": 16,
-      "rps": 23529.9,
-      "requests": 235346,
+      "connections": 64,
+      "rps": 98302.1,
+      "requests": 983266,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 0.678,
-        "p50": 0.562,
-        "p90": 1.092,
-        "p99": 1.628,
-        "p999": 2.743,
-        "max": 15.428
+        "avg": 0.649,
+        "p50": 0.605,
+        "p90": 0.81,
+        "p99": 1.23,
+        "p999": 1.517,
+        "max": 41.639
       },
       "status_codes": {
-        "200": 235346
+        "200": 983266
       },
       "errors": {},
       "cpu_cores": 2.0,
-      "mem_peak_mb": 108.8,
-      "rps_per_core": 11767.8,
+      "mem_peak_mb": 98.5,
+      "rps_per_core": 49236.1,
       "interference_cores": 0.0,
-      "host_busy_before": 0.54,
-      "noisy": false
-    },
-    {
-      "app": "fastapi",
-      "scenario": "ping",
-      "connections": 64,
-      "rps": 23900.7,
-      "requests": 239032,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 2.673,
-        "p50": 2.456,
-        "p90": 3.353,
-        "p99": 6.095,
-        "p999": 8.446,
-        "max": 50.87
-      },
-      "status_codes": {
-        "200": 239032
-      },
-      "errors": {},
-      "cpu_cores": 1.99,
-      "mem_peak_mb": 109.9,
-      "rps_per_core": 11987.7,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.72,
-      "noisy": false
-    },
-    {
-      "app": "fastapi",
-      "scenario": "ping",
-      "connections": 256,
-      "rps": 22711.5,
-      "requests": 226953,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 11.23,
-        "p50": 10.074,
-        "p90": 14.396,
-        "p99": 26.154,
-        "p999": 33.785,
-        "max": 515.494
-      },
-      "status_codes": {
-        "200": 226953
-      },
-      "errors": {},
-      "cpu_cores": 1.99,
-      "mem_peak_mb": 112.1,
-      "rps_per_core": 11394.2,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.68,
-      "noisy": false
-    },
-    {
-      "app": "fastapi",
-      "scenario": "get",
-      "connections": 16,
-      "rps": 9231.1,
-      "requests": 92309,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 1.728,
-        "p50": 1.667,
-        "p90": 2.095,
-        "p99": 2.795,
-        "p999": 3.531,
-        "max": 19.733
-      },
-      "status_codes": {
-        "200": 92309
-      },
-      "errors": {},
-      "cpu_cores": 2.0,
-      "mem_peak_mb": 111.3,
-      "rps_per_core": 4617.2,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.8,
-      "noisy": false
-    },
-    {
-      "app": "fastapi",
-      "scenario": "get",
-      "connections": 64,
-      "rps": 11177.9,
-      "requests": 111744,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 5.717,
-        "p50": 5.613,
-        "p90": 6.79,
-        "p99": 9.216,
-        "p999": 17.874,
-        "max": 24.035
-      },
-      "status_codes": {
-        "200": 111744
-      },
-      "errors": {},
-      "cpu_cores": 2.0,
-      "mem_peak_mb": 112.4,
-      "rps_per_core": 5593.9,
-      "interference_cores": 0.0,
-      "host_busy_before": 0.55,
-      "noisy": false
-    },
-    {
-      "app": "fastapi",
-      "scenario": "get",
-      "connections": 256,
-      "rps": 9241.2,
-      "requests": 92206,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 27.625,
-        "p50": 25.721,
-        "p90": 48.455,
-        "p99": 59.353,
-        "p999": 95.214,
-        "max": 138.629
-      },
-      "status_codes": {
-        "200": 92206
-      },
-      "errors": {},
-      "cpu_cores": 1.99,
-      "mem_peak_mb": 116.0,
-      "rps_per_core": 4632.4,
-      "interference_cores": 0.0,
+      "sibling_cores": 0.02,
+      "rest_cores": 0.0,
+      "app_mhz": 3469,
       "host_busy_before": 0.48,
       "noisy": false
     },
     {
-      "app": "fastapi",
-      "scenario": "list",
-      "connections": 16,
-      "rps": 4577.5,
-      "requests": 45770,
+      "app": "nestjs-fastify",
+      "scenario": "ping",
+      "connections": 256,
+      "rps": 90614.3,
+      "requests": 906243,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 3.487,
-        "p50": 3.443,
-        "p90": 4.118,
-        "p99": 4.753,
-        "p999": 6.244,
-        "max": 25.422
+        "avg": 2.814,
+        "p50": 2.762,
+        "p90": 3.072,
+        "p99": 4.354,
+        "p999": 5.857,
+        "max": 217.56
       },
       "status_codes": {
-        "200": 45770
+        "200": 906243
+      },
+      "errors": {},
+      "cpu_cores": 1.99,
+      "mem_peak_mb": 101.5,
+      "rps_per_core": 45441.4,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.01,
+      "rest_cores": 0.0,
+      "app_mhz": 3287,
+      "host_busy_before": 0.43,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-fastify",
+      "scenario": "get",
+      "connections": 16,
+      "rps": 26305.7,
+      "requests": 263136,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 0.604,
+        "p50": 0.554,
+        "p90": 0.814,
+        "p99": 1.12,
+        "p999": 1.527,
+        "max": 22.616
+      },
+      "status_codes": {
+        "200": 263136
       },
       "errors": {},
       "cpu_cores": 2.0,
-      "mem_peak_mb": 115.7,
-      "rps_per_core": 2289.5,
+      "mem_peak_mb": 104.7,
+      "rps_per_core": 13157.6,
       "interference_cores": 0.0,
-      "host_busy_before": 0.52,
+      "sibling_cores": 0.02,
+      "rest_cores": 0.03,
+      "app_mhz": 3254,
+      "host_busy_before": 0.19,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-fastify",
+      "scenario": "get",
+      "connections": 64,
+      "rps": 27314.0,
+      "requests": 273155,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 2.335,
+        "p50": 2.256,
+        "p90": 3.005,
+        "p99": 3.785,
+        "p999": 6.191,
+        "max": 35.848
+      },
+      "status_codes": {
+        "200": 273155
+      },
+      "errors": {},
+      "cpu_cores": 2.0,
+      "mem_peak_mb": 107.0,
+      "rps_per_core": 13668.9,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.02,
+      "rest_cores": 0.14,
+      "app_mhz": 3327,
+      "host_busy_before": 0.33,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-fastify",
+      "scenario": "get",
+      "connections": 256,
+      "rps": 25563.9,
+      "requests": 255483,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 9.981,
+        "p50": 10.036,
+        "p90": 11.602,
+        "p99": 13.198,
+        "p999": 31.711,
+        "max": 170.765
+      },
+      "status_codes": {
+        "200": 255483
+      },
+      "errors": {},
+      "cpu_cores": 1.99,
+      "mem_peak_mb": 124.1,
+      "rps_per_core": 12817.3,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.01,
+      "rest_cores": 0.4,
+      "app_mhz": 3444,
+      "host_busy_before": 1.11,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-fastify",
+      "scenario": "list",
+      "connections": 16,
+      "rps": 19061.6,
+      "requests": 190664,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 0.835,
+        "p50": 0.818,
+        "p90": 1.1,
+        "p99": 1.725,
+        "p999": 3.262,
+        "max": 15.616
+      },
+      "status_codes": {
+        "200": 190664
+      },
+      "errors": {},
+      "cpu_cores": 1.99,
+      "mem_peak_mb": 124.7,
+      "rps_per_core": 9564.8,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.05,
+      "rest_cores": 0.38,
+      "app_mhz": 3254,
+      "host_busy_before": 0.64,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-fastify",
+      "scenario": "list",
+      "connections": 64,
+      "rps": 18795.5,
+      "requests": 187948,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 3.396,
+        "p50": 3.229,
+        "p90": 4.377,
+        "p99": 6.187,
+        "p999": 10.528,
+        "max": 47.046
+      },
+      "status_codes": {
+        "200": 187948
+      },
+      "errors": {},
+      "cpu_cores": 1.99,
+      "mem_peak_mb": 125.4,
+      "rps_per_core": 9445.8,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.08,
+      "rest_cores": 0.29,
+      "app_mhz": 3248,
+      "host_busy_before": 0.97,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-fastify",
+      "scenario": "list",
+      "connections": 256,
+      "rps": 14682.4,
+      "requests": 146624,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 17.402,
+        "p50": 16.379,
+        "p90": 19.901,
+        "p99": 35.674,
+        "p999": 140.06,
+        "max": 381.743
+      },
+      "status_codes": {
+        "200": 146624
+      },
+      "errors": {},
+      "cpu_cores": 1.99,
+      "mem_peak_mb": 121.9,
+      "rps_per_core": 7362.6,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.06,
+      "rest_cores": 0.54,
+      "app_mhz": 3256,
+      "host_busy_before": 0.83,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-fastify",
+      "scenario": "create",
+      "connections": 16,
+      "rps": 5144.2,
+      "requests": 51440,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 3.105,
+        "p50": 2.105,
+        "p90": 3.572,
+        "p99": 39.199,
+        "p999": 73.627,
+        "max": 165.162
+      },
+      "status_codes": {
+        "201": 51440
+      },
+      "errors": {},
+      "cpu_cores": 0.59,
+      "mem_peak_mb": 120.3,
+      "rps_per_core": 8734.1,
+      "interference_cores": 0.03,
+      "sibling_cores": 0.28,
+      "rest_cores": 0.33,
+      "app_mhz": 3177,
+      "host_busy_before": 1.65,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-fastify",
+      "scenario": "create",
+      "connections": 64,
+      "rps": 13797.4,
+      "requests": 137945,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 4.63,
+        "p50": 4.291,
+        "p90": 5.872,
+        "p99": 7.931,
+        "p999": 23.682,
+        "max": 50.963
+      },
+      "status_codes": {
+        "201": 137945
+      },
+      "errors": {},
+      "cpu_cores": 1.22,
+      "mem_peak_mb": 121.6,
+      "rps_per_core": 11272.5,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.09,
+      "rest_cores": 0.09,
+      "app_mhz": 3590,
+      "host_busy_before": 1.17,
+      "noisy": false
+    },
+    {
+      "app": "nestjs-fastify",
+      "scenario": "create",
+      "connections": 256,
+      "rps": 9545.4,
+      "requests": 95228,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 26.781,
+        "p50": 23.036,
+        "p90": 57.53,
+        "p99": 92.054,
+        "p999": 105.457,
+        "max": 142.862
+      },
+      "status_codes": {
+        "201": 95228
+      },
+      "errors": {},
+      "cpu_cores": 1.09,
+      "mem_peak_mb": 123.6,
+      "rps_per_core": 8748.9,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.06,
+      "rest_cores": 0.06,
+      "app_mhz": 2940,
+      "host_busy_before": 0.36,
+      "noisy": false
+    },
+    {
+      "app": "fastapi",
+      "scenario": "ping",
+      "connections": 16,
+      "rps": 26832.0,
+      "requests": 268414,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 0.594,
+        "p50": 0.508,
+        "p90": 0.982,
+        "p99": 1.217,
+        "p999": 1.674,
+        "max": 19.785
+      },
+      "status_codes": {
+        "200": 268414
+      },
+      "errors": {},
+      "cpu_cores": 2.0,
+      "mem_peak_mb": 130.7,
+      "rps_per_core": 13420.6,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.01,
+      "rest_cores": 0.18,
+      "app_mhz": 3086,
+      "host_busy_before": 0.41,
+      "noisy": false
+    },
+    {
+      "app": "fastapi",
+      "scenario": "ping",
+      "connections": 64,
+      "rps": 29755.7,
+      "requests": 297588,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 2.145,
+        "p50": 1.988,
+        "p90": 2.631,
+        "p99": 4.171,
+        "p999": 6.578,
+        "max": 38.998
+      },
+      "status_codes": {
+        "200": 297588
+      },
+      "errors": {},
+      "cpu_cores": 2.0,
+      "mem_peak_mb": 131.5,
+      "rps_per_core": 14914.2,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.02,
+      "rest_cores": 0.17,
+      "app_mhz": 3324,
+      "host_busy_before": 0.53,
+      "noisy": false
+    },
+    {
+      "app": "fastapi",
+      "scenario": "ping",
+      "connections": 256,
+      "rps": 22096.5,
+      "requests": 220802,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 11.553,
+        "p50": 11.13,
+        "p90": 14.674,
+        "p99": 15.814,
+        "p999": 27.851,
+        "max": 366.087
+      },
+      "status_codes": {
+        "200": 220802
+      },
+      "errors": {},
+      "cpu_cores": 2.0,
+      "mem_peak_mb": 133.8,
+      "rps_per_core": 11072.3,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.01,
+      "rest_cores": 0.07,
+      "app_mhz": 2536,
+      "host_busy_before": 0.31,
+      "noisy": false
+    },
+    {
+      "app": "fastapi",
+      "scenario": "get",
+      "connections": 16,
+      "rps": 7590.9,
+      "requests": 75918,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 2.1,
+        "p50": 1.85,
+        "p90": 2.86,
+        "p99": 3.169,
+        "p999": 3.961,
+        "max": 89.613
+      },
+      "status_codes": {
+        "200": 75918
+      },
+      "errors": {},
+      "cpu_cores": 2.0,
+      "mem_peak_mb": 134.1,
+      "rps_per_core": 3796.6,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.02,
+      "rest_cores": 0.24,
+      "app_mhz": 2408,
+      "host_busy_before": 0.2,
+      "noisy": false
+    },
+    {
+      "app": "fastapi",
+      "scenario": "get",
+      "connections": 64,
+      "rps": 7544.5,
+      "requests": 75405,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 8.461,
+        "p50": 8.293,
+        "p90": 9.647,
+        "p99": 11.679,
+        "p999": 24.393,
+        "max": 44.341
+      },
+      "status_codes": {
+        "200": 75405
+      },
+      "errors": {},
+      "cpu_cores": 2.0,
+      "mem_peak_mb": 134.2,
+      "rps_per_core": 3772.0,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.05,
+      "rest_cores": 0.25,
+      "app_mhz": 2271,
+      "host_busy_before": 0.29,
+      "noisy": false
+    },
+    {
+      "app": "fastapi",
+      "scenario": "get",
+      "connections": 256,
+      "rps": 6919.8,
+      "requests": 68972,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 36.915,
+        "p50": 36.443,
+        "p90": 43.505,
+        "p99": 66.334,
+        "p999": 84.207,
+        "max": 115.297
+      },
+      "status_codes": {
+        "200": 68972
+      },
+      "errors": {},
+      "cpu_cores": 2.0,
+      "mem_peak_mb": 137.7,
+      "rps_per_core": 3465.4,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.06,
+      "rest_cores": 0.28,
+      "app_mhz": 2265,
+      "host_busy_before": 0.38,
+      "noisy": false
+    },
+    {
+      "app": "fastapi",
+      "scenario": "list",
+      "connections": 16,
+      "rps": 4710.9,
+      "requests": 47107,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 3.388,
+        "p50": 3.361,
+        "p90": 4.312,
+        "p99": 5.235,
+        "p999": 6.609,
+        "max": 19.759
+      },
+      "status_codes": {
+        "200": 47107
+      },
+      "errors": {},
+      "cpu_cores": 2.0,
+      "mem_peak_mb": 137.3,
+      "rps_per_core": 2357.9,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.03,
+      "rest_cores": 0.2,
+      "app_mhz": 2740,
+      "host_busy_before": 0.24,
       "noisy": false
     },
     {
       "app": "fastapi",
       "scenario": "list",
       "connections": 64,
-      "rps": 5262.5,
-      "requests": 52574,
+      "rps": 4408.1,
+      "requests": 44029,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 12.141,
-        "p50": 11.312,
-        "p90": 15.011,
-        "p99": 27.149,
-        "p999": 37.699,
-        "max": 52.866
+        "avg": 14.504,
+        "p50": 14.431,
+        "p90": 16.688,
+        "p99": 21.093,
+        "p999": 26.447,
+        "max": 31.006
       },
       "status_codes": {
-        "200": 52574
+        "200": 44029
       },
       "errors": {},
       "cpu_cores": 2.0,
-      "mem_peak_mb": 115.5,
-      "rps_per_core": 2635.0,
+      "mem_peak_mb": 136.1,
+      "rps_per_core": 2205.2,
       "interference_cores": 0.0,
-      "host_busy_before": 0.76,
+      "sibling_cores": 0.03,
+      "rest_cores": 0.15,
+      "app_mhz": 2427,
+      "host_busy_before": 0.35,
       "noisy": false
     },
     {
       "app": "fastapi",
       "scenario": "list",
       "connections": 256,
-      "rps": 4548.2,
-      "requests": 45244,
+      "rps": 4152.0,
+      "requests": 41277,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 56.222,
-        "p50": 53.626,
-        "p90": 82.4,
-        "p99": 140.868,
-        "p999": 194.432,
-        "max": 420.167
+        "avg": 61.603,
+        "p50": 57.859,
+        "p90": 76.996,
+        "p99": 125.855,
+        "p999": 151.329,
+        "max": 232.605
       },
       "status_codes": {
-        "200": 45244
+        "200": 41277
       },
       "errors": {},
       "cpu_cores": 2.0,
-      "mem_peak_mb": 116.5,
-      "rps_per_core": 2271.8,
+      "mem_peak_mb": 136.9,
+      "rps_per_core": 2075.5,
       "interference_cores": 0.0,
+      "sibling_cores": 0.02,
+      "rest_cores": 0.14,
+      "app_mhz": 2340,
+      "host_busy_before": 0.41,
+      "noisy": false
+    },
+    {
+      "app": "fastapi",
+      "scenario": "create",
+      "connections": 16,
+      "rps": 4963.5,
+      "requests": 49628,
+      "success_rate": 1.0,
+      "latency_ms": {
+        "avg": 3.218,
+        "p50": 2.989,
+        "p90": 4.454,
+        "p99": 7.315,
+        "p999": 11.622,
+        "max": 48.165
+      },
+      "status_codes": {
+        "200": 49628
+      },
+      "errors": {},
+      "cpu_cores": 1.69,
+      "mem_peak_mb": 134.1,
+      "rps_per_core": 2941.9,
+      "interference_cores": 0.0,
+      "sibling_cores": 0.09,
+      "rest_cores": 0.41,
+      "app_mhz": 2189,
       "host_busy_before": 0.27,
       "noisy": false
     },
     {
       "app": "fastapi",
       "scenario": "create",
-      "connections": 16,
-      "rps": 6526.4,
-      "requests": 65259,
-      "success_rate": 1.0,
-      "latency_ms": {
-        "avg": 2.447,
-        "p50": 2.15,
-        "p90": 3.493,
-        "p99": 5.178,
-        "p999": 17.88,
-        "max": 47.419
-      },
-      "status_codes": {
-        "200": 65259
-      },
-      "errors": {},
-      "cpu_cores": 1.36,
-      "mem_peak_mb": 113.7,
-      "rps_per_core": 4809.1,
-      "interference_cores": 0.0,
-      "host_busy_before": 1.2,
-      "noisy": false
-    },
-    {
-      "app": "fastapi",
-      "scenario": "create",
       "connections": 64,
-      "rps": 9378.3,
-      "requests": 93748,
+      "rps": 6444.0,
+      "requests": 64389,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 6.814,
-        "p50": 6.203,
-        "p90": 9.686,
-        "p99": 18.122,
-        "p999": 28.512,
-        "max": 68.778
+        "avg": 9.915,
+        "p50": 9.624,
+        "p90": 11.528,
+        "p99": 25.076,
+        "p999": 49.364,
+        "max": 60.574
       },
       "status_codes": {
-        "200": 93748
+        "200": 64389
       },
       "errors": {},
-      "cpu_cores": 1.89,
-      "mem_peak_mb": 113.4,
-      "rps_per_core": 4956.5,
+      "cpu_cores": 1.98,
+      "mem_peak_mb": 132.9,
+      "rps_per_core": 3259.1,
       "interference_cores": 0.0,
-      "host_busy_before": 0.52,
+      "sibling_cores": 0.09,
+      "rest_cores": 0.14,
+      "app_mhz": 2168,
+      "host_busy_before": 0.75,
       "noisy": false
     },
     {
       "app": "fastapi",
       "scenario": "create",
       "connections": 256,
-      "rps": 5675.7,
-      "requests": 56557,
+      "rps": 6052.5,
+      "requests": 60291,
       "success_rate": 1.0,
       "latency_ms": {
-        "avg": 44.938,
-        "p50": 38.351,
-        "p90": 69.428,
-        "p99": 197.419,
-        "p999": 322.954,
-        "max": 482.662
+        "avg": 42.201,
+        "p50": 42.469,
+        "p90": 54.302,
+        "p99": 90.765,
+        "p999": 116.846,
+        "max": 176.798
       },
       "status_codes": {
-        "200": 56557
+        "200": 60291
       },
       "errors": {},
-      "cpu_cores": 1.72,
-      "mem_peak_mb": 113.5,
-      "rps_per_core": 3306.8,
+      "cpu_cores": 1.98,
+      "mem_peak_mb": 134.3,
+      "rps_per_core": 3058.7,
       "interference_cores": 0.0,
-      "host_busy_before": 0.41,
+      "sibling_cores": 0.08,
+      "rest_cores": 0.14,
+      "app_mhz": 2121,
+      "host_busy_before": 0.42,
       "noisy": false
     }
   ]
