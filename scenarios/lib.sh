@@ -50,32 +50,23 @@ scenario_run() {
     fi
 }
 
-# Every private git dependency the generator can emit, and the local checkout
-# each one should be patched to — mirrors tests/support/mod.rs's
-# LOCAL_GIT_DEPENDENCIES so these scripts never need network/SSH access.
-# `out_dir` is the generated *workspace* root: each named `app` is its own
-# member crate with its own Cargo.toml, so every member manifest is scanned
-# for the git URL, but Cargo only honors `[patch]` at the workspace root, so
-# the resulting block always goes into the root Cargo.toml.
+# Rewrites the generated project's runtime git dependencies (`common`,
+# `auth`, fetched from Trust's own repository) into path dependencies on this
+# checkout's `runtime/*` crates — mirrors tests/support/mod.rs's
+# patch_local_dependencies so these scripts never need network access. (A
+# `[patch]` is not enough: an offline build still needs the original git
+# source to resolve a fresh lockfile.) `out_dir` is the generated *workspace*
+# root: each named `app` is its own member crate with its own Cargo.toml.
 scenario_patch_local_dependencies() {
     local out_dir="$1"
-    local root_cargo_toml="$out_dir/Cargo.toml"
+    local url="https://github.com/trust-env/trust.git"
+    local manifest name
 
-    declare -A deps=(
-        ["ssh://git@github.com/BH-World/common.git"]="common"
-        ["ssh://git@github.com/BH-World/auth.git"]="auth"
-        ["ssh://git@github.com/BH-World/user_permission.git"]="user_permission"
-    )
-
-    for url in "${!deps[@]}"; do
-        local name="${deps[$url]}"
-        if grep -qlF "$url" "$out_dir"/*/Cargo.toml 2>/dev/null; then
-            {
-                echo ""
-                echo "[patch.\"$url\"]"
-                echo "$name = { path = \"$SCENARIO_LIB_REPO_ROOT/mod/$name\" }"
-            } >> "$root_cargo_toml"
-        fi
+    for manifest in "$out_dir"/*/Cargo.toml; do
+        [ -f "$manifest" ] || continue
+        for name in common auth; do
+            sed -i "s#^$name = { git = \"$url\" }#$name = { path = \"$SCENARIO_LIB_REPO_ROOT/runtime/$name\" }#" "$manifest"
+        done
     done
 }
 

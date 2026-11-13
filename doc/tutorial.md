@@ -10,9 +10,10 @@ Every command and response below was run against the current compiler.
 
 - Rust 1.85+ and this repository built (`cargo build --release`).
 - Docker (or any Postgres 14+ you can reach).
-- Read access to the private `BH-World/common` repository over SSH: every
-  generated crate depends on it (`common = { git = "ssh://git@github.com/BH-World/common.git" }`).
-  See [CONTRIBUTING.md](../CONTRIBUTING.md#private-repositories).
+- Network access to `https://github.com/trust-env/trust.git` on the first
+  build: every generated crate depends on Trust's `common` runtime crate
+  (`common = { git = "https://github.com/trust-env/trust.git" }`, see
+  [runtime/](../runtime/README.md)).
 
 Work in an empty directory: Trust always writes to `./out` and **deletes
 it first** on every run.

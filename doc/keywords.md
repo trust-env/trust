@@ -1067,8 +1067,9 @@ DELETE "/tasks/:id" {
 This is a **permission-row lookup gated behind JWT identity**, not a bare
 JWT-claims check. At request time the generated handler:
 
-1. Extracts a `UserContext` from the request (JWT decoding, via the external
-   `auth` crate — this logic isn't regenerated per project).
+1. Extracts a `UserContext` from the request (JWT decoding, via Trust's
+   `auth` runtime crate in [`runtime/auth`](../runtime/auth) — this logic
+   isn't regenerated per project).
 2. Queries `infra:`'s storage for a row matching `user_id == <from JWT>`,
    `target == "<target>"`, `action == "<action>"`.
 3. If no matching row is found, the request short-circuits with
@@ -1076,7 +1077,7 @@ JWT-claims check. At request time the generated handler:
    **500**.
 
 `infra:` should point at a storage infra whose entity models permission
-grants (see `mod/user_permission` for a reference shape). Any HTTP adapter
+grants (fields `user_id`, `target`, `action`). Any HTTP adapter
 with at least one `auth`-requiring route pulls in the `auth` crate as a
 dependency, and (in `--dev` mode) gets a scaffolded `JWT_SECRET=changeme`
 line in its `.env` — `auth::UserContext` reads that variable to validate

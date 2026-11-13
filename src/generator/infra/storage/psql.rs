@@ -115,7 +115,7 @@ impl CodeGen {
                     Self::write_migrations(context, rust_type, &indexes, &psql, crate_root)?;
                     context.require_git_dependency(
                         "common",
-                        "ssh://git@github.com/BH-World/common.git",
+                        crate::generator::RUNTIME_GIT_URL,
                     );
                     // Row snapshots (`to_jsonb`) for journaled runs.
                     context.require_version_dependency("serde_json", "1");

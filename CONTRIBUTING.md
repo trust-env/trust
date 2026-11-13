@@ -66,22 +66,11 @@ The e2e tests generate real Rust crates and build them with Cargo.
 
 All required crates.io dependencies (`axum`, `sqlx`, `tokio`, `tonic`, `rust_decimal`, `rust-s3`, etc.) are expected to already exist in your local Cargo registry. Running `cargo build` once in this repository is usually sufficient — except `rust_decimal` and `rust-s3`, which the compiler itself doesn't depend on (only generated projects do), so a fixture using `Decimal` or `s3 {}` storage needs one online `cargo build`/`cargo fetch` against a generated project first to seed it into the offline e2e registry cache.
 
-### Private repositories
+### Runtime crates
 
-Generated projects depend on the private BH-World `common` repository.
+Generated projects depend on the `common` (and, with `auth` routes, `auth`) runtime crates, which live in this repository under [`runtime/`](runtime/README.md) and are fetched from `https://github.com/trust-env/trust.git`.
 
-Clone it into the expected location:
-
-```bash
-git clone git@github.com:BH-World/common.git mod/common
-```
-
-Future fixtures may also require:
-
-* `mod/auth`
-* `mod/user_permission`
-
-The e2e test harness automatically patches Cargo dependencies to these local checkouts. See `LOCAL_GIT_DEPENDENCIES` in `tests/support/mod.rs` for the complete list.
+Nothing to clone: the e2e test harness automatically patches those dependencies to the local `runtime/*` crates. See `patch_local_dependencies` in `tests/support/mod.rs`.
 
 ### Database
 

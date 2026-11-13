@@ -652,7 +652,7 @@ impl CodeGen {
             });
         }
 
-        context.require_git_dependency("common", "ssh://git@github.com/BH-World/common.git");
+        context.require_git_dependency("common", crate::generator::RUNTIME_GIT_URL);
         context.require_version_dependency_with_features("tokio", "1", vec!["full"]);
         context.require_version_dependency("dotenvy", "0.15");
         // Structured logs: `RUST_LOG` filters, `LOG_FORMAT=json` for JSON lines.

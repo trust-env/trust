@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn bare_identifier_import_is_item_all() {
-        let ast = parser_for(r#"import SQLConnector from "./mod/common/common.tr""#)
+        let ast = parser_for(r#"import SQLConnector from "./lib/shared.tr""#)
             .try_import_declaration()
             .unwrap();
         match ast {
@@ -94,7 +94,7 @@ mod tests {
                     other => panic!("expected ImportItem::All, got {:?}", other),
                 }
                 match decl.module {
-                    ModuleKind::Path(path) => assert_eq!(path, PathBuf::from("./mod/common/common.tr")),
+                    ModuleKind::Path(path) => assert_eq!(path, PathBuf::from("./lib/shared.tr")),
                     other => panic!("expected ModuleKind::Path, got {:?}", other),
                 }
             }

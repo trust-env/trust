@@ -15,6 +15,9 @@ pub mod types;
 pub mod use_case;
 mod workspace;
 
+/// Git source of the runtime crates (`common`, `auth`) every generated
+/// project depends on: they live under `runtime/` in Trust's own repository.
+pub const RUNTIME_GIT_URL: &str = "https://github.com/trust-env/trust.git";
 
 use std::{
     collections::HashMap,

@@ -1,6 +1,8 @@
-//! `--vendor=<dir>`: makes a generated project build without network or
-//! SSH access to the private git dependencies it pulls in (`common`,
-//! `auth`, `user`, ...).
+//! `--vendor=<dir>`: makes a generated project build without network
+//! access to the git dependencies it pulls in (the `common` and `auth`
+//! runtime crates, plus any git dependency of a vendored crate). Pass
+//! `--vendor=<trust repo>/runtime` to use the runtime crates of a local
+//! checkout of Trust.
 //!
 //! Every git dependency found in the generated manifests whose crate has a
 //! local copy under `<dir>/<name>` is copied into `<out>/vendor/<name>`
@@ -28,8 +30,7 @@ pub struct GitDependency {
 }
 
 /// Every `name = { git = "..." }` dependency of a manifest. Only the inline
-/// table form is recognised — the form Trust generates and the BH-World
-/// crates use.
+/// table form is recognised — the form Trust generates.
 pub fn git_dependencies(manifest: &str) -> Vec<GitDependency> {
     manifest
         .lines()
@@ -89,9 +90,10 @@ fn rewrite_git_dependencies(
     out
 }
 
-/// The most recent checkout of git crate `name` in Cargo's cache
-/// (`$CARGO_HOME/git/checkouts/<name>-<hash>/<rev>/`) — where a crate that
-/// was ever built over SSH (e.g. `user`, pulled in by `auth`) still lives.
+/// The most recent checkout of git crate `name` in Cargo's cache: either a
+/// repository of its own (`$CARGO_HOME/git/checkouts/<name>-<hash>/<rev>/`)
+/// or one of Trust's runtime crates (`.../trust-<hash>/<rev>/runtime/<name>/`)
+/// — wherever a crate that was ever built from git still lives.
 fn default_cargo_home() -> Option<PathBuf> {
     std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
@@ -100,21 +102,23 @@ fn default_cargo_home() -> Option<PathBuf> {
 
 fn cargo_git_checkout(cargo_home: Option<&Path>, name: &str) -> Option<PathBuf> {
     let cargo_home = cargo_home?;
-    let prefix = format!("{}-", name);
     let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
     for repo in fs::read_dir(cargo_home.join("git").join("checkouts")).ok()?.flatten() {
         let repo_name = repo.file_name().to_string_lossy().to_string();
-        let Some(hash) = repo_name.strip_prefix(&prefix) else { continue };
-        if hash.contains('-') {
-            continue;
-        }
+        // Where the crate sits inside one checkout of this repository.
+        let in_runtime = match repo_name.rsplit_once('-') {
+            Some((repo, _)) if repo == name => false,
+            Some(("trust", _)) => true,
+            _ => continue,
+        };
         for rev in fs::read_dir(repo.path()).into_iter().flatten().flatten() {
-            let manifest = rev.path().join("Cargo.toml");
+            let dir = if in_runtime { rev.path().join("runtime").join(name) } else { rev.path() };
+            let manifest = dir.join("Cargo.toml");
             let declares_name = fs::read_to_string(&manifest)
                 .is_ok_and(|m| m.contains(&format!("name = \"{}\"", name)));
             if declares_name {
                 let modified = fs::metadata(&manifest).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
-                candidates.push((modified, rev.path()));
+                candidates.push((modified, dir));
             }
         }
     }
@@ -259,8 +263,8 @@ mod tests {
     #[test]
     fn git_dependencies_reads_inline_git_tables_only() {
         let manifest = r#"[dependencies]
-common = { git = "ssh://git@github.com/BH-World/common.git" }
-auth = { git = "ssh://git@github.com/BH-World/auth.git", branch = "main" }
+common = { git = "https://github.com/trust-env/trust.git" }
+auth = { git = "ssh://git@example.com/acme/auth.git", branch = "main" }
 serde = { version = "1", features = ["derive"] }
 tokio = "1"
 "#;
@@ -269,11 +273,11 @@ tokio = "1"
             vec![
                 GitDependency {
                     name: "common".into(),
-                    url: "ssh://git@github.com/BH-World/common.git".into()
+                    url: "https://github.com/trust-env/trust.git".into()
                 },
                 GitDependency {
                     name: "auth".into(),
-                    url: "ssh://git@github.com/BH-World/auth.git".into()
+                    url: "ssh://git@example.com/acme/auth.git".into()
                 },
             ]
         );
@@ -330,5 +334,19 @@ tokio = "1"
         fs::create_dir_all(tmp.path().join("mod")).unwrap();
         let err = vendor_dependencies_from(&out, &tmp.path().join("mod"), None).unwrap_err();
         assert!(err.contains("no local copy of common"), "{}", err);
+    }
+
+    #[test]
+    fn finds_trust_runtime_crates_in_cargo_git_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let checkouts = tmp.path().join("git/checkouts");
+        let manifest = "[package]\nname = \"common\"\n";
+        write(&checkouts.join("trust-0123abcd/f00ba12/runtime/common/Cargo.toml"), manifest);
+        write(&checkouts.join("other-0123abcd/f00ba12/runtime/common/Cargo.toml"), manifest);
+        assert_eq!(
+            cargo_git_checkout(Some(tmp.path()), "common"),
+            Some(checkouts.join("trust-0123abcd/f00ba12/runtime/common"))
+        );
+        assert_eq!(cargo_git_checkout(Some(tmp.path()), "auth"), None);
     }
 }

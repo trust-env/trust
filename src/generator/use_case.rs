@@ -805,7 +805,7 @@ impl CodeGen {
             .generate_body(&context_description, &ai.prompt)
             .map_err(|e| format!("UseCase '{}': {}", use_case.name, e))?;
 
-        context.require_git_dependency("common", "ssh://git@github.com/BH-World/common.git");
+        context.require_git_dependency("common", crate::generator::RUNTIME_GIT_URL);
         context.require_version_dependency_with_features("serde", "1", vec!["derive"]);
 
         let mut file = AiUseCaseFile::new(use_case.name.clone(), input_type, output_type, infra, body, folder)?;
@@ -852,7 +852,7 @@ impl CodeGen {
         let storage_type = format!("S3{}Storage", entity_type.name);
         let infra_field = blob.target.to_snake_case();
 
-        context.require_git_dependency("common", "ssh://git@github.com/BH-World/common.git");
+        context.require_git_dependency("common", crate::generator::RUNTIME_GIT_URL);
         context.require_version_dependency_with_features("serde", "1", vec!["derive"]);
 
         let mut file = BlobUseCaseFile::new(use_case.name.clone(), operation, infra_field, storage_type, folder)?;
@@ -979,7 +979,7 @@ impl CodeGen {
             )
         })?;
 
-        context.require_git_dependency("common", "ssh://git@github.com/BH-World/common.git");
+        context.require_git_dependency("common", crate::generator::RUNTIME_GIT_URL);
         context.require_version_dependency_with_features("serde", "1", vec!["derive"]);
         for (name, version) in &code.deps {
             context.require_version_dependency(name, version);
@@ -1086,7 +1086,7 @@ impl CodeGen {
             Some(shape) => {
                 context.require_git_dependency(
                     "common",
-                    "ssh://git@github.com/BH-World/common.git",
+                    crate::generator::RUNTIME_GIT_URL,
                 );
                 context.require_version_dependency_with_features("serde", "1", vec!["derive"]);
                 if LocalImports::from_fields(&shape.input_type.fields, &shape.input_type.name)
