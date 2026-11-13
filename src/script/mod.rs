@@ -98,7 +98,8 @@ pub fn lower_use_case(
         name: &use_case.name,
         input: resolve(&use_case.input, "input")?,
         output: resolve(&use_case.output, "output")?,
-        unscoped: use_case.owner.as_deref() == Some("none"),
+        unscoped: spec.unscoped,
+        journal: use_case.journal.is_some(),
     };
     let lowered = check::lower(project, &target, &body).map_err(located)?;
     let origin = if spec.file.is_empty() {

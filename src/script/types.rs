@@ -170,6 +170,10 @@ pub struct Project {
     pub infras: HashMap<String, InfraKind>,
     /// `(input, output)` of every use case.
     pub use_cases: HashMap<String, (Option<AllowedType>, Option<AllowedType>)>,
+    /// `map A -> B` declarations: `(A, B)`.
+    pub maps: Vec<(String, String)>,
+    /// A `config { tz | locale }` exists: the crate has `crate::tz`.
+    pub local_time: bool,
 }
 
 impl Project {
@@ -208,6 +212,8 @@ impl Project {
                         .use_cases
                         .insert(u.name.clone(), (u.input.clone(), u.output.clone()));
                 }
+                Ast::Map(m) => project.maps.push((m.from.clone(), m.to.clone())),
+                Ast::Config(c) => project.local_time |= c.tz.is_some() || c.locale.is_some(),
                 _ => {}
             }
         }

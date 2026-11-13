@@ -714,6 +714,9 @@ impl Parser {
                 }
             }
         }
+        if let Some(logic) = &mut logic {
+            logic.unscoped = owner.as_deref() == Some("none");
+        }
         Ok(UseCaseService {
             name,
             input,

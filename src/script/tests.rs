@@ -308,3 +308,136 @@ fn bare_strips_only_one_wrapping_pair() {
     assert_eq!(super::check::bare_for_tests("(a) + (b)"), "(a) + (b)");
     assert_eq!(super::check::bare_for_tests("(\")\" == x)"), "\")\" == x");
 }
+
+const LOCAL_PROJECT: &str = r#"
+config { tz: "Europe/Paris" }
+type Item { id: Int, user_id: Int, text: String }
+type Task { id: Int, user_id: Int, title: String, start_at: Option<DateTime> }
+type Action { id: Int, user_id: Int, kind: String, text: String, changes: Json, undone: Bool, at: DateTime, requires_ack: Bool }
+type Ref { id: Int }
+type Out { n: Int, text: String }
+infra ItemInfra { storage { psql { entity: Item owner: user_id } } }
+infra TaskInfra { storage { psql { entity: Task owner: user_id } } }
+infra ActionInfra { storage { psql { entity: Action owner: user_id } } }
+journal Actions { infra: ActionInfra owner: user_id undo: "/actions/:id/toggle" conflict: refuse }
+map Item -> Task { title: text }
+"#;
+
+/// Lowered through the whole desugar pass (journals, mirrors, ...).
+fn local(header: &str, body: &str) -> Result<String, String> {
+    let src = format!(
+        "{}\nuse_case SubjectUseCase {{ input: Ref output: Out {} logic {{\n{}\n}} }}",
+        LOCAL_PROJECT, header, body
+    );
+    let tokens = Lexer::new(&src).run()?;
+    let asts = Parser::new(tokens).run()?;
+    let asts = crate::generator::desugar::desugar(asts)?;
+    asts.into_iter()
+        .find_map(|a| match a {
+            Ast::UseCase(u) if u.name == "SubjectUseCase" => u.code.and_then(|c| c.inline),
+            _ => None,
+        })
+        .ok_or_else(|| "no code".to_string())
+}
+
+#[test]
+fn dates_use_the_app_time_zone() {
+    let code = local(
+        "",
+        "let d = today()\nlet t = now()\nlet ok = d.add_days(-1) < d and t.date() == d\nreturn Out { n: d.weekday() + t.hour() + t.minute(), text: \"{ok}\" }",
+    )
+    .unwrap();
+    assert!(code.contains("let d = crate::tz::today();"), "{code}");
+    assert!(
+        code.contains("(d + chrono::Duration::days(-1i64)) < d"),
+        "{code}"
+    );
+    assert!(code.contains("crate::tz::local(t).date_naive()"), "{code}");
+    assert!(
+        code.contains("chrono::Datelike::weekday(&d).number_from_monday() as i64"),
+        "{code}"
+    );
+    assert!(
+        code.contains("chrono::Timelike::hour(&crate::tz::local(t)) as i64"),
+        "{code}"
+    );
+}
+
+#[test]
+fn durations_between_instants_and_dates() {
+    let code = local(
+        "",
+        "let t = now()\nlet later = t.add_seconds(90)\nreturn Out { n: later.minutes_since(t) + later.seconds_since(t) + today().days_since(today()), text: \"\" }",
+    )
+    .unwrap();
+    assert!(code.contains("(later - t).num_minutes()"), "{code}");
+    assert!(code.contains("(later - t).num_seconds()"), "{code}");
+    assert!(
+        code.contains("((crate::tz::today()) - crate::tz::today()).num_days()"),
+        "{code}"
+    );
+    let e = local(
+        "",
+        "return Out { n: today().minutes_since(today()), text: \"\" }",
+    )
+    .unwrap_err();
+    assert!(e.contains("a Date has no method 'minutes_since'"), "{e}");
+}
+
+#[test]
+fn strings_take_and_skip_characters() {
+    let code = local(
+        "",
+        "return Out { n: 0, text: \"héllo\".take(2) + \"x\".skip(1) }",
+    )
+    .unwrap();
+    assert!(
+        code.contains(".chars().take(usize::try_from(2i64).unwrap_or(0)).collect::<String>()"),
+        "{code}"
+    );
+}
+
+#[test]
+fn map_conversions_are_methods() {
+    let code = local(
+        "",
+        "let item = ItemInfra.get(input.id)\nlet t = TaskInfra.create(item.to_task())\nreturn Out { n: t.id, text: t.title }",
+    )
+    .unwrap();
+    assert!(code.contains("trust_row = item.to_task();"), "{code}");
+    let e = local(
+        "",
+        "let item = ItemInfra.get(input.id)\nlet t = item.to_note()\nfail NotFound",
+    )
+    .unwrap_err();
+    assert!(e.contains("a Item has no method 'to_note'"), "{e}");
+}
+
+#[test]
+fn journal_names_the_entry_of_journaled_use_cases() {
+    let code = local(
+        "journal: Actions",
+        "journal(\"done {input.id}\")\nreturn Out { n: 0, text: \"\" }",
+    )
+    .unwrap();
+    assert!(
+        code.contains("self.trust_journal.text(format!(\"done {}\", input.id));"),
+        "{code}"
+    );
+    let e = local("", "journal(\"x\")\nfail NotFound").unwrap_err();
+    assert!(
+        e.contains("journal() names the entry of a use case with 'journal: <Journal>'"),
+        "{e}"
+    );
+}
+
+#[test]
+fn use_cases_added_by_desugaring_can_be_run() {
+    // The journal's undo use case only exists after desugaring.
+    let code = local(
+        "",
+        "let a = ToggleActionsUseCase.run(ActionsToggleRequest { id: input.id })\nreturn Out { n: a.id, text: a.text }",
+    )
+    .unwrap();
+    assert!(code.contains("self.toggle_actions_use_case.execute(user, ActionsToggleRequest { id: input.id }).await?"), "{code}");
+}

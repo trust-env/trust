@@ -648,8 +648,6 @@ Ok(BotAck {{ handled: true, reply, error }})
 }
 
 pub fn desugar(asts: Vec<Ast>) -> Result<Vec<Ast>, String> {
-    // `logic {}` scripts become the `code {}` they stand for.
-    let asts = crate::script::lower_all(asts)?;
     let mut infra_entities: HashMap<String, String> = HashMap::new();
     let mut infra_owners: HashMap<String, String> = HashMap::new();
     for ast in &asts {
@@ -896,5 +894,7 @@ pub fn desugar(asts: Vec<Ast>) -> Result<Vec<Ast>, String> {
             _ => {}
         }
     }
-    Ok(out)
+    // `logic {}` scripts become the `code {}` they stand for — last, so
+    // they can run the use cases resources, journals and mirrors add.
+    crate::script::lower_all(out)
 }

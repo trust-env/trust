@@ -122,7 +122,9 @@ otherwise. `Json` values read with `j.field`, `j.get("key")`, then
 `.str() .int() .float() .bool()` (`Option`s), `.list()`, `.is_null()`.
 
 **Other use cases**: `PlanUseCase.run(input)` returns its output (its
-`input` and `output` must be declared). Other infra kinds (`s3`,
+`input` and `output` must be declared). That includes the use cases Trust
+adds itself — a mirror's `{Name}MirrorUseCase`, a resource's
+`Create{Entity}UseCase`, a journal's `Toggle{Journal}UseCase`. Other infra kinds (`s3`,
 `grpc_client`) aren't available yet: use `code {}`.
 
 ## Methods and functions
@@ -130,20 +132,26 @@ otherwise. `Json` values read with `j.field`, `j.get("key")`, then
 | On | Methods |
 |---|---|
 | any printable value | `to_string()` |
-| `String` | `len() is_empty() trim() lower() upper() contains(s) starts_with(s) ends_with(s) split(sep) replace(a, b) to_int() to_float()` |
+| `String` | `len() is_empty() trim() lower() upper() contains(s) starts_with(s) ends_with(s) split(sep) replace(a, b) take(n) skip(n) to_int() to_float()` (`take`/`skip` count characters) |
 | `Int` | `to_float() abs()` |
 | `Float` | `round() floor() ceil()` (to `Int`), `abs()` |
-| `DateTime` | `add_days(n) add_hours(n) add_minutes(n) date()` |
-| `Date` | `add_days(n)` |
+| `DateTime` | `add_days(n) add_hours(n) add_minutes(n) add_seconds(n) minutes_since(t) seconds_since(t)`, and in the app's time zone: `date() weekday() hour() minute() day() month() year()` |
+| `Date` | `add_days(n) days_since(d) weekday() day() month() year()` |
+| a type with a [`map`](keywords.md#map) | `item.to_task()` for `map Item -> Task` |
 | `Option` | `is_some() is_none()` |
 | `List` | `len() is_empty() first() last() get(i) contains(x) take(n) skip(n) reverse() sum() min() max() join(sep) push(x)`, and with `x => ...`: `map filter any all find count sort_by sort_by_desc` |
 | `RawRequest` | `body`, `header("name")` |
 
-Functions: `now()`, `today()` (UTC), `env("UPPER_CASE_NAME")` (a literal
+Functions: `now()`, `today()` (the date in the app's `config { tz }`, UTC
+without one), `journal("text {x}")` (the text of the undo-journal entry of a
+use case declaring `journal:`), `env("UPPER_CASE_NAME")` (a literal
 name, so every variable a script reads shows in the source; fails with
 `StorageError` when unset), `sha256(text)`, `hmac_sha256(key, text)` (hex),
 `secure_eq(a, b)` (constant-time comparison, for signatures),
 `to_json(value)`, `min(a, b)`, `max(a, b)`.
+
+`weekday()` is 1 for Monday to 7 for Sunday. Dates and instants compare
+with `< <= > >= ==`; `d.add_days(-1)` goes back.
 
 Inside `x => ...` nothing that can fail runs (infra and use case calls,
 `fail`, integer division, `env`, `hmac_sha256`): write a `for` loop instead.

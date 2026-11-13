@@ -606,6 +606,9 @@ pub struct LogicSpec {
     pub file: String,
     pub line: usize,
     pub column: usize,
+    /// `owner: none` on the use case: psql calls aren't scoped to the
+    /// caller.
+    pub unscoped: bool,
 }
 
 #[derive(Debug, Clone)]

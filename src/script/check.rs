@@ -37,6 +37,8 @@ pub struct Target<'a> {
     /// `owner: none` on the use case: psql calls aren't scoped to the
     /// caller.
     pub unscoped: bool,
+    /// The use case declares `journal:`: `journal("...")` names its entry.
+    pub journal: bool,
 }
 
 /// What lowering produced: the body, and what it reaches.
@@ -1130,7 +1132,20 @@ impl Lowerer<'_> {
             "today" => {
                 self.positional(args, 0, "today()", pos)?;
                 self.dep("chrono", "0.4");
-                Ok((Ty::Date, "chrono::Utc::now().date_naive()".into()))
+                Ok((Ty::Date, self.today()))
+            }
+            "journal" => {
+                let [text] = self.positional(args, 1, "journal(text)", pos)?[..] else {
+                    unreachable!()
+                };
+                if !self.t.journal {
+                    return err(
+                        pos,
+                        "journal() names the entry of a use case with 'journal: <Journal>'",
+                    );
+                }
+                let text = bare(&self.expect(text, &Ty::Str)?);
+                Ok((Ty::Unit, format!("self.trust_journal.text({})", text)))
             }
             "env" => {
                 let [arg] = self.positional(args, 1, "env(\"NAME\")", pos)?[..] else {
@@ -1735,6 +1750,20 @@ impl Lowerer<'_> {
                     let text = self.expect(text, &Ty::Str)?;
                     (Ty::Bool, format!("{}.{}({}.as_str())", recv, name, text))
                 }
+                "take" | "skip" => {
+                    let [n] = self.positional(args, 1, &sig(&format!("{}(n)", name)), pos)?[..]
+                    else {
+                        unreachable!()
+                    };
+                    let n = bare(&self.expect(n, &Ty::Int)?);
+                    (
+                        Ty::Str,
+                        format!(
+                            "{}.chars().{}(usize::try_from({}).unwrap_or(0)).collect::<String>()",
+                            recv, name, n
+                        ),
+                    )
+                }
                 "split" => {
                     let [sep] = self.positional(args, 1, &sig("split(separator)"), pos)?[..] else {
                         unreachable!()
@@ -1775,29 +1804,7 @@ impl Lowerer<'_> {
                 _ => return unknown(&ty),
             })
             .and_then(|r| self.no_args_check(args, &r, name, pos)),
-            Ty::DateTime | Ty::Date => match name {
-                "add_days" | "add_hours" | "add_minutes" => {
-                    if ty == Ty::Date && name != "add_days" {
-                        return unknown(&ty);
-                    }
-                    let [n] = self.positional(args, 1, &sig(&format!("{}(n)", name)), pos)?[..]
-                    else {
-                        unreachable!()
-                    };
-                    let n = bare(&self.expect(n, &Ty::Int)?);
-                    let unit = name.trim_start_matches("add_");
-                    self.dep("chrono", "0.4");
-                    Ok((
-                        ty.clone(),
-                        format!("({} + chrono::Duration::{}({}))", recv, unit, n),
-                    ))
-                }
-                "date" if ty == Ty::DateTime => {
-                    self.positional(args, 0, "date()", pos)?;
-                    Ok((Ty::Date, format!("{}.date_naive()", recv)))
-                }
-                _ => unknown(&ty),
-            },
+            Ty::DateTime | Ty::Date => self.time_method(&ty, &recv, name, args, pos),
             Ty::Opt(_) => match name {
                 "is_some" | "is_none" => {
                     self.positional(args, 0, &format!("{}()", name), pos)?;
@@ -1844,8 +1851,125 @@ impl Lowerer<'_> {
                     format!("{}.headers.get(&{}.to_lowercase()).cloned()", recv, header),
                 ))
             }
+            Ty::Struct(from) if name.starts_with("to_") => {
+                let target = self
+                    .p
+                    .maps
+                    .iter()
+                    .find(|(f, t)| f == from && format!("to_{}", t.to_snake_case()) == name)
+                    .map(|(_, t)| t.clone());
+                match target {
+                    Some(to) => {
+                        self.positional(args, 0, &format!("{}()", name), pos)?;
+                        Ok((Ty::Struct(to), format!("{}.{}()", recv, name)))
+                    }
+                    None => unknown(&ty),
+                }
+            }
             Ty::List(item) => self.list_method(recv_expr, &recv, item, name, args, pos),
             _ => unknown(&ty),
+        }
+    }
+
+    /// Today's date: in the app's `config { tz }` when it has one.
+    fn today(&self) -> String {
+        if self.p.local_time {
+            "crate::tz::today()".into()
+        } else {
+            "chrono::Utc::now().date_naive()".into()
+        }
+    }
+
+    /// An instant seen in the app's time zone (UTC without `config { tz }`).
+    fn in_app_tz(&self, instant: &str) -> String {
+        if self.p.local_time {
+            format!("crate::tz::local({})", instant)
+        } else {
+            instant.to_string()
+        }
+    }
+
+    fn time_method(
+        &mut self,
+        ty: &Ty,
+        recv: &str,
+        name: &str,
+        args: &[Arg],
+        pos: Pos,
+    ) -> R<(Ty, String)> {
+        self.dep("chrono", "0.4");
+        let date = *ty == Ty::Date;
+        let unknown = || err(pos, format!("a {} has no method '{}'", ty.name(), name));
+        match name {
+            "add_days" | "add_hours" | "add_minutes" | "add_seconds" => {
+                if date && name != "add_days" {
+                    return unknown();
+                }
+                let [n] = self.positional(args, 1, &format!("{}(n)", name), pos)?[..] else {
+                    unreachable!()
+                };
+                let n = bare(&self.expect(n, &Ty::Int)?);
+                let unit = name.trim_start_matches("add_");
+                Ok((
+                    ty.clone(),
+                    format!("({} + chrono::Duration::{}({}))", recv, unit, n),
+                ))
+            }
+            "days_since" | "minutes_since" | "seconds_since" => {
+                if date != (name == "days_since") {
+                    return unknown();
+                }
+                let [other] = self.positional(args, 1, &format!("{}(other)", name), pos)?[..]
+                else {
+                    unreachable!()
+                };
+                let other = bare(&self.expect(other, ty)?);
+                let unit = name.trim_end_matches("_since");
+                Ok((Ty::Int, format!("({} - {}).num_{}()", recv, other, unit)))
+            }
+            "weekday" => {
+                self.positional(args, 0, "weekday()", pos)?;
+                let value = if date {
+                    recv.to_string()
+                } else {
+                    self.in_app_tz(recv)
+                };
+                Ok((
+                    Ty::Int,
+                    format!(
+                        "(chrono::Datelike::weekday(&{}).number_from_monday() as i64)",
+                        value
+                    ),
+                ))
+            }
+            "day" | "month" | "year" => {
+                self.positional(args, 0, &format!("{}()", name), pos)?;
+                let value = if date {
+                    recv.to_string()
+                } else {
+                    self.in_app_tz(recv)
+                };
+                Ok((
+                    Ty::Int,
+                    format!("(chrono::Datelike::{}(&{}) as i64)", name, value),
+                ))
+            }
+            "hour" | "minute" if !date => {
+                self.positional(args, 0, &format!("{}()", name), pos)?;
+                Ok((
+                    Ty::Int,
+                    format!(
+                        "(chrono::Timelike::{}(&{}) as i64)",
+                        name,
+                        self.in_app_tz(recv)
+                    ),
+                ))
+            }
+            "date" if !date => {
+                self.positional(args, 0, "date()", pos)?;
+                Ok((Ty::Date, format!("{}.date_naive()", self.in_app_tz(recv))))
+            }
+            _ => unknown(),
         }
     }
 
@@ -1863,6 +1987,8 @@ impl Lowerer<'_> {
             "split",
             "replace",
             "get",
+            "take",
+            "skip",
         ]
         .contains(&name);
         if !takes_args && !args.is_empty() {

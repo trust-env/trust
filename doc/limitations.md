@@ -133,7 +133,9 @@
   returns at most 1000 rows unless `limit:` says otherwise.
 - `Int` arithmetic other than `/` and `%` wraps on overflow in release
   builds (and panics in debug builds), like Rust.
-- `now()` / `today()` are UTC, whatever `config { tz }` says.
+- No user-defined functions or shared library between scripts, and no
+  error recovery (a failing call ends the script): use `code {}` with
+  `include:` for those.
 
 ## Migrations
 
