@@ -9,8 +9,7 @@
 
 - Git-style module import syntax is recognized by the parser.
 - Code generation currently rejects git imports ("Git imports are not
-  supported yet") — despite this exact form appearing in the top-level
-  README's own DSL example. Only local path imports work.
+  supported yet"). Only local path imports (and `include`) work.
 
 ## `filters` Coverage
 
@@ -22,7 +21,8 @@
   comma can't be matched with `in`.
 - Only on a `list` primary call (`find_many` takes ids, not filters), and
   only on scalar columns (not JSONB lists/structs).
-- `today()` without a zone is the UTC date.
+- `today()` without a zone is the date in the `config { tz }` zone, or in
+  UTC without one.
 
 ## `s3` / `blob` Coverage
 
@@ -117,8 +117,9 @@
 - `code {}` error variants always carry a `String` payload.
 - `RawRequest` is HTTP-only, can't be combined with path parameters, and
   reads the body as UTF-8 text (no binary uploads).
-- `http_client`'s configured headers are static per process; per-request
-  headers (an OAuth token) go through `request(...)` + `send_raw(...)`.
+- `http_client`'s configured headers are static per process. OAuth2 with a
+  refresh token is built in (`oauth2 {}`); other per-request headers go
+  through `request(...)` + `send_raw(...)`.
 
 ## Migrations
 
@@ -131,8 +132,9 @@
   which blocks writes to that table while the index builds — on a large
   existing table, create it `CONCURRENTLY` by hand before deploying.
 - `seed:` files re-run on every startup; they must be idempotent.
-- Each `psql` infra opens its own connection pool (from its own
-  `<INFRA>_DB_URL`), even when several point to the same database.
+- Infras pointing to the same database URL share one connection pool; a
+  `database {}` block sets its size. Infras on different URLs can't share a
+  transaction or a foreign key.
 
 ## HTTP Status Mapping
 
@@ -188,6 +190,7 @@
   needing real arguments must read them itself (from storage, settings).
 - A schedule runs inside one process: with several replicas of the same app,
   every replica runs every job.
+- `tz` defaults to `config { tz }`, else UTC.
 
 ## MCP Adapter
 
@@ -204,3 +207,64 @@
 - Only HTTP adapters are described (not gRPC or MCP).
 - Schemas are inlined (no shared `components/schemas`).
 
+## `journal` (undo)
+
+- Only `psql` rows written through the use case's storages are recorded:
+  calls to an `http_client` (an email sent, an event pushed to Google) are
+  not undone.
+- Undo restores rows by `id` (a deleted row comes back with the same id);
+  every table involved must have an `id: Int` and be on the journal's
+  database.
+- `conflict: refuse` compares whole rows: a change to any column of a row
+  since the entry (other than reaching the undo's own target state) is a
+  conflict.
+
+## `resource`
+
+- A `singleton` resource only has `get` and `upsert`.
+- A resource covers one infra; joins and computed fields need a `code {}`
+  use case.
+
+## `mirror`
+
+- The source is an `ics_feed` infra or a use case whose output has an
+  `items` list; other shapes go through a small `code {}` use case.
+- Items are upserted one by one, and `written` counts every item of the
+  source, changed or not.
+- `scope {}` takes equalities and `> window.from` / `< window.to`
+  comparisons only.
+- Literal values of `map {}` are converted when the mirror runs: one that
+  doesn't fit its field is reported in `error`, not at compile time.
+- Writing back to the source (pushing local rows to an API) is not
+  generated: keep it in `code {}`.
+
+## `ics_feed`
+
+- `VTIMEZONE` definitions are not read: a TZID must be an IANA name or a
+  Windows name from CLDR's table; anything else is read in
+  `timezone_fallback` (with a warning).
+- A recurring event yields at most 5000 occurrences per read.
+- All-day events are skipped unless `all_day: include`.
+- Attendees, organizer, alarms and attachments are not exposed.
+
+## `channel`, `notifications` and `bot`
+
+- Channels: Telegram, webhooks (`discord`, `slack` or plain `json` bodies)
+  and `log`. No e-mail or SMS channel yet: use a `webhook` towards a
+  service that sends them.
+- Routing is fixed in the `.tr` file (no per-user preferences).
+- Bots are Telegram only, read text messages only (no photos, voice or
+  buttons), and run every message as the single `user:` they declare.
+- Bot commands and the default receive `{ text }`; the reply template reads
+  the use case output only.
+
+## `map`
+
+- Values are source fields (possibly nested) or literals: no expressions,
+  no parameters. For a conversion needing either, write a Rust function in a
+  `code { include }` file.
+
+## `config { tz locale }`
+
+- One time zone and one locale per project.
+- Locales: `fr` and `en`.

@@ -4,14 +4,14 @@ This folder contains feature and language documentation for Trust.
 
 ## Contents
 
-- `tutorial.md`: hands-on walkthrough — build, run and call a first service.
-- `language-overview.md`: what Trust is, compilation model, and core concepts.
-- `keywords.md`: all currently recognized DSL keywords, what they do, and how to use them.
-- `features.md`: full feature catalog, including HTTP, gRPC, storage, AI, plugins, and multi-app workflows.
-- `conversions.md`: the exhaustive reference for every `.tr` → Rust conversion — types, names, storage traits, error enums, path params, env interpolation, proto, dependencies.
-- `cli.md`: full CLI reference — every flag, output/exit behavior, and dev mode.
-- `recipes.md`: practical copy-paste patterns for common use cases.
-- `limitations.md`: current known limitations and unsupported behaviors.
+- [`features.md`](features.md): **start here** — the full feature catalog, by theme (types, storage, use cases, resources, undo journal, sync mirrors, HTTP / MCP / gRPC adapters, time and locale, notifications and bots, apps, tooling), each with an example and a link to its reference.
+- [`tutorial.md`](tutorial.md): hands-on walkthrough — build, run and call a first service.
+- [`language-overview.md`](language-overview.md): what Trust is, compilation model, and core concepts.
+- [`keywords.md`](keywords.md): the reference — every DSL construct, its options and behavior.
+- [`conversions.md`](conversions.md): the exhaustive reference for every `.tr` → Rust conversion — types, names, storage traits, error enums, path params, env interpolation, proto, dependencies.
+- [`cli.md`](cli.md): full CLI reference — every flag, output/exit behavior, and dev mode.
+- [`recipes.md`](recipes.md): practical copy-paste patterns for common use cases.
+- [`limitations.md`](limitations.md): current known limitations and unsupported behaviors.
 
 ## Scope
 
@@ -30,4 +30,7 @@ The documentation in this folder is based on the implemented compiler behavior i
 cargo run -- path/to/app.tr
 ```
 
-Generated Rust code is written under `./out`.
+Generated Rust code is written under `./out` (or `--out=<dir>`); `cd out &&
+cargo run` starts it. Larger projects split into files with `include`, and
+use `resource`, `journal`, `mirror`, `schedule`, `mcp`, ... — see
+[features.md](features.md).

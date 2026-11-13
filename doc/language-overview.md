@@ -13,13 +13,25 @@ Trust is a declarative DSL that generates Rust service code.
 ## Main Building Blocks
 
 - `type`: define data models and request/response shapes.
-- `infra`: define storage backends (`psql`, `grpc_client`, or `s3` for blob storage).
-- `use_case`: define application logic through deterministic calls or AI-authored bodies.
-- `adapter`: expose use cases via `http` routes or `grpc` services.
-- `app`: choose what runs together in one generated binary.
-- `import`: reuse exported Trust types from other `.tr` files.
-- `load_balancer`: generate a round-robin reverse proxy.
+- `enum`, derived types (`Omit`, `Pick`, `Partial`, `+ {}`) and `map`:
+  more data shapes and conversions between them.
+- `infra`: storage backends (`psql`, `grpc_client`, `s3`) and outside
+  services (`http_client` with OAuth2, `ics_feed` calendar feeds).
+- `use_case`: application logic — storage `call:`s, hand-written `code {}`
+  (Rust files or modules), `blob:` object operations, or AI-authored bodies.
+- `resource`, `journal`, `mirror`: generated CRUD APIs, an undo log of
+  writes, and sync from external sources.
+- `adapter`: expose use cases via `http` routes, `mcp` tools for AI agents,
+  or `grpc` services.
+- `schedule`, `channel` / `notifications`, `bot`: cron jobs, outbound
+  messages, Telegram bots.
+- `app`: choose what runs together in one generated binary;
+  `load_balancer`: a round-robin reverse proxy.
+- `include`, `import`, `config`: multi-file projects, shared types, project
+  settings (JSON case, time zone, locale).
 - Plugin keyword blocks: add custom syntax/features through dynamically loaded compiler plugins.
+
+The full catalog, with an example per feature: [features.md](features.md).
 
 ## Typical Minimal Example
 

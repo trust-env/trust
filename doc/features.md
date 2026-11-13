@@ -1,306 +1,334 @@
 # Features
 
-## 1. Type System
+Everything Trust can generate today, grouped by theme. Each entry says what
+the feature gives you, shows the smallest useful `.tr` snippet, and links
+to the full reference in [keywords.md](keywords.md). Exact generated shapes
+are in [conversions.md](conversions.md), CLI flags in [cli.md](cli.md), and
+what is *not* supported in [limitations.md](limitations.md).
 
-What it does:
-- Defines domain entities, request, and response shapes.
-- Supports built-in scalar types (`String`, `Uuid`, `Int`, `Float`, `Decimal`, `Regex<pattern>`) and user-defined types.
+A `.tr` project compiles to a Cargo workspace of Rust services (axum, sqlx,
+tonic) that build and run on their own: the database tables are created at
+startup, the configuration comes from the environment, and nothing at
+runtime depends on Trust.
 
-How to use:
-- Create struct types with fields.
-- Use aliases for reusable semantic names (`type UserId = Int`).
-- Use `export` on types you plan to import from other `.tr` files.
+## Contents
 
-Conversions: see [conversions.md §1](conversions.md#1-scalar-type-mapping) —
-notably, `Int` becomes `i64` (not `i32`), `Float` becomes `f64`, `Decimal`
-becomes `rust_decimal::Decimal` (serialized as a JSON string, never a float,
-so money-shaped fields don't drift), and `Regex<pattern>` becomes a plain
-`String` with the pattern discarded (no runtime validation is generated).
-`Float`/`Decimal` are HTTP/`psql` only — not usable on a gRPC-exposed type.
+1. [Projects and files](#1-projects-and-files)
+2. [Types](#2-types)
+3. [PostgreSQL storage](#3-postgresql-storage)
+4. [Other infrastructure](#4-other-infrastructure)
+5. [Use cases](#5-use-cases)
+6. [Declarative shortcuts](#6-declarative-shortcuts)
+7. [HTTP adapter](#7-http-adapter)
+8. [MCP adapter (AI agents)](#8-mcp-adapter-ai-agents)
+9. [gRPC](#9-grpc)
+10. [Time, language and scheduling](#10-time-language-and-scheduling)
+11. [Notifications and bots](#11-notifications-and-bots)
+12. [Apps, binaries and deployment](#12-apps-binaries-and-deployment)
+13. [Compiler tooling](#13-compiler-tooling)
+14. [Extending Trust](#14-extending-trust)
 
-## 2. Import and Reuse
+---
 
-What it does:
-- Reuses exported Trust types across modules.
+## 1. Projects and files
 
-How to use:
-- Use `import X from "./module.tr"` for one item.
-- Use `import { A, B } from "./module.tr"` for many.
+| Feature | What it gives you | Reference |
+|---|---|---|
+| Multi-file projects | `include "./modules/tasks.tr"` makes another file's declarations part of the project; includes are transitive and duplicates are reported with `file:line`. | [`include`](keywords.md#include) |
+| File-relative paths | Every path a file writes (`include`, `code { file }`, `seed`, ...) is relative to that file, so a module carries its own Rust files. | [Paths](keywords.md#paths) |
+| Typed imports | `import { User, Role } from "./shared.tr"` with `export type ...`. | [`import`](keywords.md#import) |
+| Project settings | `config { json_case: "camel" tz: "Europe/Paris" locale: "fr" deps { ... } }`. | [`config`](keywords.md#config) |
+| Order-free declarations | Anything can reference anything declared later or in another file. | [Syntax notes](keywords.md#syntax-notes) |
+| Errors with locations | Parse and generation errors point to `file:line:col`. | — |
 
-Notes:
-- Local module path imports are fully supported.
-- Git import syntax (`import X from "git@..."`) is parsed, but code
-  generation currently rejects it with a clear error — despite appearing in
-  the top-level README's own DSL example. Only local paths work end to end
-  today.
+```tr
+config { json_case: "camel" tz: "Europe/Paris" locale: "fr" }
 
-## 3. Storage Infrastructure
+include "./modules/tasks/tasks.tr"
+include "./modules/inbox/inbox.tr"
+include "./adapters/api.tr"
+```
 
-### PostgreSQL (`psql`)
-What it does:
-- Generates a full CRUD/list storage implementation (`save_one`, `save_many`,
-  `find_one`, `find_many`, `list`, `update_one`, `delete`, `delete_many`).
+## 2. Types
 
-How to use:
-- Declare `infra` with `storage { psql { entity: YourEntity } }`, or the
-  one-line shorthand `infra: storage psql Name { entity: YourEntity }`.
+| Feature | What it gives you | Reference |
+|---|---|---|
+| Scalars | `String`, `Int` (i64), `Float`, `Decimal` (exact, serialized as a string), `Bool`, `Uuid`. | [Type keywords](keywords.md#type-keywords) |
+| Time types | `DateTime` (UTC instant), `Date`, `Time`. | [`DateTime`](keywords.md#datetime), [`Date` and `Time`](keywords.md#date-and-time) |
+| Containers | `Option<T>`, `List<T>`, `Json`; nested structs and lists are stored as JSONB. | [`Option`](keywords.md#option), [`List`](keywords.md#list), [`Json`](keywords.md#json) |
+| Enums | `enum Status { todo doing done }`: text on the wire and in the database, 422 on an unknown value. | [`enum`](keywords.md#enum) |
+| Tagged enums | Variants with fields: `{"type": "moveEvent", ...}`, stored as JSONB. | [Tagged enums](keywords.md#tagged-enums) |
+| Validated text | `Regex<email>`, `Regex<"^[A-Z]{3}$">`: 422 when a request doesn't match. | [`Regex`](keywords.md#regex) |
+| Number ranges | `Int(1..4)`, `Float(0..60)`, `Int(0..)`: 422 out of bounds, bounds in the schemas. | [Number ranges](keywords.md#number-ranges) |
+| Derived types | `Omit<Task, id>`, `Pick<...>`, `Partial<...>`, and `Task + { extra: Int }`. | [Derived types](keywords.md#derived-types) |
+| Conversions | `map InboxItem -> Task { title: title  due: suggestion.due }` gives `item.to_task()`. | [`map`](keywords.md#map) |
 
-### gRPC Client Storage (`grpc_client`)
-What it does:
-- Lets one app call another app's gRPC adapter through the same storage
-  trait mapping `psql` uses — so downstream `use_case`/`call:` syntax is
-  identical regardless of backend. This is the mechanism behind cross-binary
-  calls in a multi-app workspace.
+```tr
+enum Priority { low normal urgent }
+type Task {
+    id: Int
+    user_id: Int
+    title: String
+    priority: Int(1..4)
+    tags: List<String>
+    due: Option<DateTime>
+}
+type NewTask = Omit<Task, id, user_id>
+```
 
-How to use:
-- In `methods`, map storage operations to RPC names — but **only `find_one`
-  actually has codegen today**; other mapped methods parse but error at
-  generation time.
-- Set the static target address with `on`.
+## 3. PostgreSQL storage
 
-### Object Storage (`s3`)
-What it does:
-- Backs blob data (photos, videos, arbitrary files) via MinIO or any other
-  S3-compatible service, generating presigned upload/download URLs so a
-  client uploads/downloads directly — the generated backend never proxies
-  the actual file bytes.
+```tr
+infra TaskInfra {
+    storage {
+        psql {
+            entity: Task
+            owner: user_id
+            unique: [user_id, title]
+            index: [due]
+            references { project_id: ProjectInfra set_null }
+            defaults { status: "todo" priority: 3 domain: guess_domain(title) }
+            stamps { done_at: status == "done" }
+        }
+    }
+}
+```
 
-How to use:
-- Declare `infra` with `storage { s3 { bucket: "..." entity: YourEntity } }`
-  — `entity:` is metadata-only (see [conversions.md §3b](conversions.md#3b-storage-trait-shape-s3)).
-  No shorthand form.
-- Bind a use case to it with `blob: YourInfra.presigned_put_url` (or
-  `presigned_get_url`/`delete`) instead of `call:` — see [Blob Use Cases](#12-blob-use-cases) below.
-- Endpoint/access key/secret key are never in `.tr` source — always three
-  env vars derived from the infra name (`<INFRA>_S3_ENDPOINT`/
-  `_S3_ACCESS_KEY`/`_S3_SECRET_KEY`), scaffolded with local-MinIO defaults
-  in `--dev` mode.
+| Feature | What it gives you | Reference |
+|---|---|---|
+| Generated storage | `save_one`, `find_one`, `list`, `update_one`, `patch_one`, `upsert_one`, `save_or_patch`, `delete`, and the `*_many` variants. | [`psql`](keywords.md#psql) |
+| Automatic migrations | The binary creates tables and adds new columns at startup; `renamed {}` and `dropped: [...]` handle renames and removals. | [`psql`](keywords.md#psql), [Schema options](keywords.md#schema-options) |
+| Seed data | `seed: "./seed/sizes.sql"`, re-run (idempotently) at every start. | [`seed`](keywords.md#seed) |
+| Constraints | `unique`, `index`, foreign keys with `cascade`, `set_null` or `restrict`. | [Schema options](keywords.md#schema-options) |
+| Creation defaults | Literals, `now()`, `today()`, or a call into your own Rust (`guess_domain(title)`). Creation inputs make those fields optional. | [Creation defaults and stamps](keywords.md#creation-defaults-and-stamps) |
+| Derived timestamps | `stamps { done_at: status == "done" }` is set on entering the state, kept, and cleared on leaving it. | [Creation defaults and stamps](keywords.md#creation-defaults-and-stamps) |
+| Ownership | `owner: user_id`: rows belong to the calling user, and other users' rows read as 404. | [`owner`](keywords.md#owner) |
+| Shared pools | `database Main { url pool }`; infras on the same URL share one pool. | [`database`](keywords.md#database) |
+| Transactions | `transaction: true` on a use case, or `begin()` / `in_transaction(&tx)` from code. | [`transaction`](keywords.md#transaction) |
+| Query builder | From code: `query(Query::new().eq("user_id", user).gt("end_at", from).order_by("start_at"))`. | [`code`](keywords.md#code) |
+| Row-or-default | `get_or_default("user_id", user)`: the owner's row, or a fresh one from the defaults. | [`patch_one`, `upsert_one` and `save_or_patch`](keywords.md#patch_one-upsert_one-and-save_or_patch) |
 
-## 4. Use Cases
+## 4. Other infrastructure
 
-What it does:
-- Defines application behavior and error mapping: deterministically
-  (`call`), via AI-authored code (`ai`), or bound to one blob-storage
-  operation (`blob`).
+| Feature | What it gives you | Reference |
+|---|---|---|
+| Object storage | `s3 { bucket entity }` for MinIO and other S3-compatible services: presigned upload and download URLs, and deletion. | [`s3`](keywords.md#s3), [`blob`](keywords.md#blob) |
+| Outbound HTTP | `http_client { base_url headers retry timeout }`: JSON, text and form helpers, retries with backoff. | [`http_client`](keywords.md#http_client) |
+| OAuth2 clients | `oauth2 { token_url client_id client_secret refresh_token }`: a bearer token on every request, cached and renewed (including after a 401). | [`http_client`](keywords.md#http_client) |
+| Paginated APIs | `get_json_paged(path, "items", "nextPageToken")` collects every page. | [`http_client`](keywords.md#http_client) |
+| Calendar feeds | `ics_feed { url timezone_fallback }`: `occurrences(from, to)` with recurrence rules, exceptions, moved and cancelled events, and IANA plus Windows time zones. | [`ics_feed`](keywords.md#ics_feed) |
+| Cross-service calls | `grpc_client`: another Trust app's gRPC adapter, used like a storage. | [`grpc_client`](keywords.md#grpc_client) |
 
-How to use:
-- Deterministic mode: one or more `call` entries. Multiple `call`s run in
-  order, sharing one input; the **last** one shapes the output (see
-  [conversions.md §5](conversions.md#5-use_case-multi-call-semantics)).
-- AI mode: one `ai` block with `prompt`, optionally with `infra:` for
-  storage access. Mutually exclusive with `call`.
-- Optionally provide explicit `input` and `output` types.
-- A `list`-bound `call:` can be narrowed with `filters { field: input.field
-  ... }` — equality-only predicates that make "list X where field = Y"
-  routes possible (e.g. `GET /spots/:spot_id/ratings`). See
-  [conversions.md §5c](conversions.md#5c-filters-and-storagelistquery-predicates).
+```tr
+infra GoogleCalendar { http_client {
+    base_url: "https://www.googleapis.com/calendar/v3"
+    oauth2 { token_url: "https://oauth2.googleapis.com/token" client_id: "${GOOGLE_CLIENT_ID}"
+             client_secret: "${GOOGLE_CLIENT_SECRET}" refresh_token: "${GOOGLE_REFRESH_TOKEN}" }
+    retry: 3
+} }
+infra OutlookIcs { ics_feed { url: "${OUTLOOK_ICS_URL}" timezone_fallback: "Europe/Paris" } }
+```
 
-## 5. HTTP Adapter
+## 5. Use cases
 
-What it does:
-- Exposes use cases as REST endpoints via axum.
+A use case is one operation of the application. It has four forms, which
+can't be mixed:
 
-How to use:
-- Define routes per method and path (path params like `:id` become axum's
-  `{id}` syntax automatically).
-- Attach `input` (bare type or `{ body: Type }` wrapped), `output`, `use_case`.
-- Add route-level `status` mappings and optional `auth`.
+| Form | When to use it | Reference |
+|---|---|---|
+| `call: TaskInfra.list` | Storage operations, with nothing written by hand. Several `call:` lines run in order. | [`call`](keywords.md#call) |
+| `code { file \| module ... }` | Your own Rust, with every surrounding piece generated (errors, wiring, deps). | [`code`](keywords.md#code) |
+| `blob: MediaInfra.presigned_put_url` | One object-storage operation. | [`blob`](keywords.md#blob) |
+| `ai { prompt: '...' }` | A body written once by an LLM at compile time. | [`ai`](keywords.md#ai) |
 
-Supported methods: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`.
+Options of `call:` use cases:
 
-`NotFound`/`StorageError` always map to `404`/`500` and cannot be
-overridden; other error variants resolve via an exact `status {}` entry,
-then the route's `_ ->` wildcard, then a `500` fallback.
+| Feature | What it gives you | Reference |
+|---|---|---|
+| Guessed inputs | No `input:` needed: Trust derives it from the call (create, patch, list...). | [`input`](keywords.md#input) |
+| Filters | `status in ["todo", "doing"]`, `priority >= input.min`, `title contains input.q`, `due < now()`, `day: today()`. Optional inputs filter only when set. | [`filters`](keywords.md#filters) |
+| Sorting and paging | `order_by: priority desc, due`; `limit` and `offset` on every list. | [`order_by`](keywords.md#order_by), [`limit` / `offset`](keywords.md#limit--offset) |
+| Error mapping | `errors { DatabaseError -> Conflict("already exists") }`, then HTTP status mapping per route. | [`errors`](keywords.md#errors), [`status`](keywords.md#status) |
+| Partial updates | `patch_one`: only the fields sent, and `null` clears. `save_or_patch`: creates without an id, patches with one. | [`patch_one`, `upsert_one` and `save_or_patch`](keywords.md#patch_one-upsert_one-and-save_or_patch) |
+| Shaped outputs | `output:` may keep some of the entity's fields and add `action_id`. | [`output`](keywords.md#output) |
 
-## 6. gRPC Adapter
+Hand-written `code {}` use cases get:
 
-What it does:
-- Exposes use cases as gRPC RPC methods, generates `.proto` + tonic server
-  wiring, and vendors `protoc` itself (no system `protoc` install needed).
+| Feature | What it gives you | Reference |
+|---|---|---|
+| Real Rust modules | `module: "./plan.rs"` with `pub async fn execute(deps, user, input)`, helpers and `#[cfg(test)]` tests. | [`code`](keywords.md#code) |
+| Shared code | `include: "./shared/priority.rs"`, visible from every body. | [`code`](keywords.md#code) |
+| Dependencies | `infra: [A, B]`, `infra_set DayData { ... }`, `use_case: [Other]`, `deps { rrule: "0.14" }`, custom `errors { ... }`. | [`code`](keywords.md#code) |
+| Raw requests | `input: RawRequest`: the exact body and headers, e.g. to verify a webhook signature. | [`RawRequest`](keywords.md#rawrequest) |
 
-How to use:
-- Define `grpc { services { rpc ... } on: "..." }` under an adapter.
+```tr
+use_case PlanWeekUseCase {
+    input: PlanRequest
+    output: PlanResult
+    transaction: true
+    journal: Actions
+    code {
+        module: "./plan_week.rs"
+        include: "../shared/planner.rs"
+        infra: [TaskInfra, EventInfra]
+        use_case: [ListSettingsUseCase]
+    }
+}
+```
 
-Limitations (real, not currently in `limitations.md` at equal visibility to
-the `grpc_client` one):
-- Message fields only support `String` and `Int` — `Uuid`, `Float`,
-  `Decimal`, list-shaped outputs, and nested struct fields are a
-  generation-time error.
-- Error mapping is entirely hardcoded (`NotFound` → `Status::not_found`,
-  everything else → `Status::internal`); there is no `status {}` equivalent
-  for `rpc`.
+## 6. Declarative shortcuts
 
-## 7. App Composition and Multi-App Workspaces
+Blocks that generate several use cases, routes and types at once.
 
-What it does:
-- Builds one or many binaries from one Trust source file.
+| Feature | What it gives you | Reference |
+|---|---|---|
+| Resources | `resource Tasks { infra path list create get patch delete }`: CRUD use cases and REST routes in one block. | [`resource`](keywords.md#resource) |
+| Singleton resources | `singleton default { ... } get upsert`: one row per user (settings), with defaults. | [`resource`](keywords.md#resource) |
+| Undo journal | `journal Actions { ... undo: "/actions/:id/toggle" }`: every write of a journaled use case is recorded, and can be undone or redone. A row already in its target state isn't a conflict. | [`journal`](keywords.md#journal) |
+| Sync mirrors | `mirror X { source into key scope map window }`: copies an ICS feed or another use case's items into a table, upserting on a key and deleting what disappeared. Reports `{ configured, written, removed, error }`. | [`mirror`](keywords.md#mirror) |
 
-How to use:
-- Declare multiple `app` blocks when you need separate runtimes.
-- Put different adapters/roles in each app.
+```tr
+resource Tasks { infra: TaskInfra path: "/tasks" journal: Actions list create get save patch delete }
+resource Settings { infra: SettingsInfra path: "/settings" owner: user_id singleton default { margin_min: 10 } get upsert }
 
-Notes:
-- Any file with **at least one** `app` block compiles to a Cargo workspace
-  (`[workspace] members = [...]`) — even with just one `app`. Zero `app`
-  blocks falls back to a single flat crate.
-- Declaration order in the source file never affects what's generated —
-  forward references (an adapter mentioning a use case declared later) work
-  by design and are regression-tested for byte-identical output.
+mirror OutlookMirror {
+    source: OutlookIcs
+    into: EventInfra
+    key: [user_id, kind, external_id]
+    scope { kind: "outlook"  end_at > window.from  start_at < window.to }
+    map { kind: "outlook"  external_id: item.instance_id  title: item.title  start_at: item.start  end_at: item.end }
+    window { from: week_start  days: 28 }
+}
+```
 
-## 8. Load Balancer Generation
+## 7. HTTP adapter
 
-What it does:
-- Generates a round-robin reverse proxy over independently-deployed,
-  already-running backend processes — it never constructs an adapter itself.
+```tr
+adapter Api {
+    http {
+        on: "0.0.0.0:${PORT:-8080}"
+        cors: "${CORS_ORIGINS}"
+        auth: required
+        events: "/events"
+        resources { Tasks Settings Actions TelegramBot }
+        routes {
+            POST "/plan" { use_case: PlanWeekUseCase status { Conflict -> 409 } }
+            GET "/public/stats" { use_case: StatsUseCase auth: none }
+        }
+    }
+}
+```
 
-How to use:
-- Put `load_balancer` inside an `app ... run` block.
-- Configure `targets` (backend addresses) and `on` (its own bind address).
+| Feature | What it gives you | Reference |
+|---|---|---|
+| Routes | `GET/POST/PUT/PATCH/DELETE`; path parameters (`:id`), query strings and bodies are merged into the input. | [`routes`](keywords.md#routes), [`body`](keywords.md#body) |
+| Status mapping | Per-route `status { Error -> 409  _ -> 502 }`; 422 for invalid bodies, 400 for malformed JSON. | [`status`](keywords.md#status) |
+| Authentication | `auth: required` (JWT), `auth { secret header user }` (machines), or permission rows; set once for the adapter, `auth: none` opts out. | [`auth`](keywords.md#auth), [Defaults](keywords.md#defaults) |
+| CORS | `cors: "${CORS_ORIGINS}"`. | [`cors`](keywords.md#cors) |
+| Live updates | `events: "/events"`: a Server-Sent Events stream of every write, filtered per user. | [HTTP adapter options](keywords.md#http-adapter-options) |
+| Response shape | `envelope: false` returns entities and lists bare; `json_case: "camel"` names fields in camelCase. | [HTTP adapter options](keywords.md#http-adapter-options) |
+| Operations | `GET /health`, structured request logs. | [HTTP adapter options](keywords.md#http-adapter-options) |
 
-Notes:
-- `targets` entries are always static string literals — `${VAR}`
-  interpolation only applies to the load balancer's own `on:`, not to
-  `targets`. Changing the backend fleet requires recompiling.
+## 8. MCP adapter (AI agents)
 
-## 9. Auth (Route-Level Authorization)
+| Feature | What it gives you | Reference |
+|---|---|---|
+| Tools | `tools { capture { use_case description } }`: each use case becomes an MCP tool with a JSON schema; errors come back readable. | [`mcp`](keywords.md#mcp) |
+| Resources | `resources { goals { use_case uri description } }`: read-only context for the agent. | [`mcp`](keywords.md#mcp) |
+| Transports | Streamable HTTP (`POST /mcp`) and stdio (`<binary> mcp`). | [`mcp`](keywords.md#mcp) |
+| Remote clients | `oauth { public_url password user }`: an OAuth 2.1 server (discovery, dynamic registration, PKCE, refresh tokens), e.g. for claude.ai connectors. | [`mcp`](keywords.md#mcp) |
 
-What it does:
-- Gates an HTTP route behind a JWT-authenticated permission-row lookup.
+```tr
+adapter Agent {
+    mcp {
+        on: "127.0.0.1:${MCP_PORT}"
+        auth: required
+        oauth { public_url: "${MCP_PUBLIC_URL}" password: "${MCP_OAUTH_PASSWORD}" user: 1 }
+        tools { capture { use_case: CaptureUseCase description: "Add an item to the inbox" } }
+        resources { goals { use_case: ListGoalsUseCase uri: "world://goals" description: "Every goal" } }
+    }
+}
+```
 
-How to use:
-- Add `auth { infra: PermissionInfra target: "..." action: "..." }` inside a
-  route.
+## 9. gRPC
 
-Mechanics:
-- The handler extracts a `UserContext` from the JWT (via the external `auth`
-  crate), then queries `infra:`'s storage for a row matching the user, the
-  given `target`, and the given `action`.
-- No matching row → `403 Forbidden`. A storage failure during the lookup →
-  `500`.
-- Adds the `auth` crate as a dependency; in `--dev` mode, scaffolds
-  `JWT_SECRET=changeme` in `.env` whenever any route needs it.
+| Feature | What it gives you | Reference |
+|---|---|---|
+| gRPC adapter | `grpc { services { rpc GetUser { use_case } } on }`: a `.proto` file plus a tonic server, with `protoc` vendored. | [`grpc`](keywords.md#grpc), [`rpc`](keywords.md#rpc) |
+| gRPC client storage | Another app's gRPC service, called like a storage (`find_one`). | [`grpc_client`](keywords.md#grpc_client) |
 
-## 10. AI Use Case Generation
+## 10. Time, language and scheduling
 
-What it does:
-- Generates a use case's function body through a real, live LLM call made
-  **once, at compile time** — not at runtime. The generated project itself
-  gets no AI-related dependency and never calls out to any provider.
+| Feature | What it gives you | Reference |
+|---|---|---|
+| App time zone | `config { tz: "Europe/Paris" }`: `crate::tz::now_local()`, `today()`, `day_bounds`, `week_bounds`, `local_to_utc` (daylight-saving safe). `today()` in filters and defaults, and schedules, use the zone. | [`config`](keywords.md#config) |
+| Formatting | `config { locale: "fr" }` (or `en`): `fmt_date(t, "EEEE d MMMM")`, `fmt_time`, `fmt_relative_day`, `plural(n, "réunion", "réunions")`. | [`config`](keywords.md#config) |
+| Scheduled jobs | `schedule Jobs { "30 7 * * *" => SendBriefUseCase { send: true } }`: cron with time zones, run inside the app. | [`schedule`](keywords.md#schedule) |
 
-How to use:
-- Add `ai { prompt: '...' }` (optionally with `infra:`) in a use case.
-- Run the compiler with AI flags or the `ANTHROPIC_API_KEY` env var.
+```tr
+schedule Jobs {
+    user: 1
+    "*/15 * * * *" => OutlookMirrorUseCase
+    "30 7 * * *" => DailyMessageUseCase { send: true }
+}
+app Main: run { Api Agent Jobs }
+```
 
-CLI-related flags (full detail in [cli.md](cli.md)):
-- `--ai-provider=anthropic` (only supported value today)
-- `--ai-api-key=...` (flag takes precedence over the `ANTHROPIC_API_KEY` env var)
-- `--ai-model=...` (default `claude-sonnet-4-5`)
-- `--ai-base-url=...` (default `https://api.anthropic.com`)
+## 11. Notifications and bots
 
-## 11. Blob Use Cases
+| Feature | What it gives you | Reference |
+|---|---|---|
+| Channels | `channel Telegram { telegram { token chat } }`, `channel Team { webhook { url format: discord } }`. | [`channel` and `notifications`](keywords.md#channel-and-notifications) |
+| Routed notifications | `notifications Notify { infra default fallback: log routing { conflict: [Team, Telegram] } }`: `deps.notify().send(kind, text)` tries the channels in order, and `send_recorded(...)` also stores the row. | [`channel` and `notifications`](keywords.md#channel-and-notifications) |
+| Telegram bots | `bot TelegramBot { channel path secret user commands on_reply default reply }`: the webhook, the secret check, routing of commands, replies and free text to use cases, and an acknowledgment. | [`bot`](keywords.md#bot) |
 
-What it does:
-- Binds a use case straight to one `s3 {}` infra operation
-  (`presigned_put_url`/`presigned_get_url`/`delete`) instead of a CRUD
-  `call:` chain — the mechanism behind generating direct-to-bucket upload
-  and download URLs.
+```tr
+channel Telegram { telegram { token: "${TELEGRAM_BOT_TOKEN}" chat: "${TELEGRAM_CHAT_ID}" } }
+notifications Notify { infra: NotificationInfra default: Telegram fallback: log }
+bot TelegramBot {
+    channel: Telegram  path: "/webhooks/telegram"  secret: "${TELEGRAM_WEBHOOK_SECRET}"  user: 1
+    commands { journal: AgentJournalUseCase  inbox: CaptureUseCase }
+    on_reply { review: AgentJournalUseCase }
+    default: CaptureUseCase
+    reply: "{result.summary}"
+}
+```
 
-How to use:
-- Add `blob: YourS3Infra.presigned_put_url` (or `presigned_get_url`/
-  `delete`) in a use case. Mutually exclusive with `call` and `ai`.
-- Don't declare `input`/`output` — the shape is always fixed (`{ key:
-  String }` in, `{ url: String }` or `{ key: String }` out depending on
-  operation). See [conversions.md §5b](conversions.md#5b-blob-use-case-semantics).
+## 12. Apps, binaries and deployment
 
-## 12. Plugin Extensibility
+| Feature | What it gives you | Reference |
+|---|---|---|
+| Apps | `app Main: run { Api Agent Jobs }`: one binary per app, several apps in one workspace. | [`app`](keywords.md#app), [`run`](keywords.md#run) |
+| Load balancer | `load_balancer { targets on }`: a round-robin reverse proxy. | [`load_balancer`](keywords.md#load_balancer) |
+| Configuration | `${VAR}` and `${VAR:-default}` everywhere addresses and secrets go; `.env` is loaded at startup. | [Defaults](keywords.md#defaults), [`on`](keywords.md#on) |
+| Service tokens | `<binary> token <user_id> [days]` prints a JWT for scripts and agents. | [cli.md](cli.md#generated-binary-commands) |
+| Offline builds | `--vendor`: private dependencies are copied into the output, so it builds without SSH (Docker, CI). | [cli.md](cli.md) |
 
-What it does:
-- Dynamically loads compiler plugins (`.so`/`cdylib`) over a stable C-ABI +
-  JSON boundary. A plugin registers exactly one new top-level keyword and
-  ships its own Tera codegen templates; the compiler's parser only
-  brace-matches the block and hands the plugin the raw source text — the
-  plugin does its own parsing and its own codegen decisions.
+## 13. Compiler tooling
 
-How to use:
-- Pass one or more `--plugin=/absolute/path/to/libplugin.so` flags.
-- Use the plugin's registered keyword block in your `.tr` source.
+| Feature | What it gives you | Reference |
+|---|---|---|
+| Dev mode | `--dev`: a live `GET /app` documentation page and a scaffolded `.env`. | [cli.md](cli.md#dev-mode---dev) |
+| Typed clients | `--emit-ts=client.ts` (TypeScript types and one client class per adapter) and `--emit-openapi=api.json`. | [cli.md](cli.md) |
+| Output location | `--out=<dir>`, refusing directories it shouldn't wipe. | [cli.md](cli.md) |
+| Debugging | `--verbose` prints tokens and the AST. | [cli.md](cli.md) |
+| Tests in generated code | `#[cfg(test)]` tests of `module:` files run with `cargo test` in the generated crate. | [`code`](keywords.md#code) |
+| End-to-end scenarios | `scenarios/*/run.sh`: CRUD, gRPC + load balancer, AI + plugin, multi-app, cross-binary gRPC, run live. | `scenarios/README.md` |
 
-Scope note: a plugin can add a new top-level construct, but it can't
-currently introduce a new field/expression *type* usable elsewhere in the
-language, and there's no plugin registry — every invocation must pass
-`--plugin=` explicitly.
+## 14. Extending Trust
 
-## 13. App-Platform Features
+| Feature | What it gives you | Reference |
+|---|---|---|
+| Plugins | `--plugin=/path/libplugin.so`: a new top-level keyword with its own templates, over a C ABI and JSON. | [cli.md](cli.md) |
+| AI-written bodies | `ai { prompt }` with `--ai-api-key` (Anthropic), generated once at compile time. | [`ai`](keywords.md#ai) |
 
-Everything a typical user-facing app needs beyond CRUD, all documented in
-[keywords.md](keywords.md):
+---
 
-- **Current user**: routes with `auth` (including the login-only
-  `auth: required`) pass the JWT's user id to use cases.
-- **Ownership**: `owner: <field>` scopes a CRUD use case to that user
-  (stamp on create, filter on list, `NotFound` for others' rows).
-- **Literal filters**: `filters { visibility: "public" }`.
-- **Types**: `Bool`, `DateTime`, `Option<T>`.
-- **Migrations**: every `psql` entity's table is created at startup, with
-  optional idempotent `seed:` data.
-- **CORS**: `cors: "${CORS_ORIGINS}"` on HTTP adapters.
-- **Hand-written logic**: `code { file: "./logic/x.rs" infra: ... }` use
-  cases, with custom error variants and extra crates.
-- **Outbound HTTP**: `http_client` infras (JSON, configured headers).
-- **Webhooks**: the built-in `RawRequest` input gives a `code` use case the
-  raw body and headers, e.g. to verify an HMAC signature.
+## Good to know before you start
 
-## 14. Backend Features for Real Apps
-
-Everything a small product backend needs, declared in `.tr` (details in
-[keywords.md](keywords.md)):
-
-- Types: `List<T>`, `Json`, `Date`, `Time`, `enum`, validated `Regex<...>`,
-  nested structs stored as JSONB.
-- Queries: filter operators (`>=`, `in`, `contains`, `now()`,
-  `today("Europe/Paris")`, ...), `order_by`, optional paging.
-- Writes: `patch_one`, `upsert_one`, `unique` keys, foreign keys, indexes,
-  column renames and drops, `transaction: true`.
-- Logic: `code {}` bodies sharing code through `include`.
-- Time: `schedule {}` cron jobs with time zones.
-- HTTP: shared-secret routes, long-lived service tokens (`<binary> token`),
-  Server-Sent Events (`events:`), `/health`, structured logs, camelCase
-  JSON (`config {}`), unwrapped responses (`envelope: false`), resilient
-  `http_client` (retries, timeouts, text and form bodies).
-- Agents: `mcp {}` adapters expose use cases as MCP tools.
-- Clients: `--emit-ts` (typed TypeScript client) and `--emit-openapi`.
-
-## 15. Dev Mode Artifacts
-
-What it does:
-- Adds a live `GET /app` HTML docs route to every HTTP adapter (method,
-  path, path-params, input/output field tables, error/status table — not a
-  static file, it's baked into the generated handler code) and scaffolds a
-  starter `.env` per app (DB URLs, sniffed `${VAR}` defaults, `JWT_SECRET`
-  if needed).
-
-How to use:
-- Run with `--dev`. Full defaulting rules: [cli.md](cli.md#dev-mode---dev).
-
-## 16. Scenarios and E2E Workflows
-
-What it does:
-- Demonstrates complete, live-executed workflows (not just compile checks):
-  - CRUD HTTP + PSQL (compile + build)
-  - gRPC + load balancer (spawns 3 real OS processes, each its own Postgres,
-    confirms round-robin cycling)
-  - AI + plugin (mocked LLM HTTP server + real dlopen'd plugin)
-  - multi-app workspace (two independent binaries from one `.tr` file)
-  - cross-binary gRPC (two compiled binaries, real Postgres, a live HTTP
-    request that round-trips through gRPC end to end)
-
-How to use:
-- Run scenario scripts under `scenarios/*/run.sh`.
-
-## Practical gotchas worth knowing before you start
-
-- `./out` is fully wiped (`remove_dir_all` + `create_dir_all`) on **every**
-  compile — never hand-edit generated code and expect it to survive.
+- `./out` (or `--out`) is wiped and regenerated on every compile: never
+  hand-edit generated code. Hand-written logic lives in `code {}` files next
+  to your `.tr` files.
 - Private dependencies (`common`, `auth`, ...) come from BH-World over SSH;
-  `--vendor=<dir>` copies local checkouts into the output so it builds
-  without SSH (Docker, CI).
+  `--vendor` makes the output buildable without it.
+- What Trust doesn't do yet: [limitations.md](limitations.md).
