@@ -1,0 +1,9 @@
+{
+  "name": "fastify-bench",
+  "private": true,
+  "main": "server.js",
+  "dependencies": {
+    "fastify": "5.1.0",
+    "pg": "8.13.1"
+  }
+}

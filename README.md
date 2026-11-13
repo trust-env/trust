@@ -22,6 +22,7 @@ It's like Terraform, but for your app layer. And without the 40-minute plan.
 - [CLI](doc/cli.md) — compiler flags, dev mode, generated binary commands
 - [Conversions](doc/conversions.md) — exactly what each construct compiles to
 - [Limitations](doc/limitations.md) — what isn't supported yet
+- [Benchmarks](bench/README.md) — Trust vs hand-written Rust, Go, NestJS, Fastify, FastAPI, with a dashboard
 - [Contributing](CONTRIBUTING.md) — running the test suite, adding new language constructs
 
 ---

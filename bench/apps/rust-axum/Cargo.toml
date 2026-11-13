@@ -1,0 +1,15 @@
+[package]
+name = "rust-axum-bench"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "macros"] }
+tokio = { version = "1", features = ["full"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

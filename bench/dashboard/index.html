@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Trust Bench</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column of control bar → headline tiles → paired charts → tables → method. */
+:root {
+  --bg: #f6f7f8;
+  --surface: #fcfcfb;
+  --ink: #0f1419;
+  --ink-2: #4b5560;
+  --muted: #838b93;
+  --line: #e2e5e8;
+  --axis: #c4c9ce;
+  --accent: #2a78d6;
+  --accent-wash: rgba(42, 120, 214, 0.1);
+  --other: #b8bfc6;
+  --good: #006300;
+  --bad: #b42323;
+  --warn: #fab219; --warn-wash: rgba(250, 178, 25, 0.12); --warn-ink: #8a5a00;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6;
+  --font: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1013; --surface: #171a1e; --ink: #eef0f2; --ink-2: #b9c0c7; --muted: #848c94;
+    --line: #262a2f; --axis: #3a4047; --accent: #3987e5; --accent-wash: rgba(57, 135, 229, 0.14);
+    --other: #4a525b; --good: #2fbf2f; --bad: #ef6b6b; --warn-ink: #fab219;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1013; --surface: #171a1e; --ink: #eef0f2; --ink-2: #b9c0c7; --muted: #848c94;
+  --line: #262a2f; --axis: #3a4047; --accent: #3987e5; --accent-wash: rgba(57, 135, 229, 0.14);
+  --other: #4a525b; --good: #2fbf2f; --bad: #ef6b6b; --warn-ink: #fab219;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.5 var(--font);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding-block: 28px 64px; display: grid; gap: 28px; }
+h1, h2, h3 { margin: 0; text-wrap: balance; font-weight: 600; }
+h1 { font-size: 26px; letter-spacing: -0.01em; }
+h2 { font-size: 17px; }
+h3 { font-size: 14px; }
+p { margin: 0; }
+.num, td.n, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.eyebrow { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+.sub { color: var(--ink-2); max-width: 70ch; }
+.muted { color: var(--muted); }
+
+header.top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px 32px; align-items: end; }
+header.top .meta { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12px; color: var(--ink-2); }
+header.top .meta b { font-weight: 500; color: var(--ink); }
+
+.controls {
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5;
+  display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: center;
+  padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+}
+.seg { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 2px; background: var(--bg); border-radius: 8px; border: 1px solid var(--line); }
+.seg button {
+  font: inherit; font-size: 13px; color: var(--ink-2); background: transparent; border: 0;
+  padding: 5px 10px; border-radius: 6px; cursor: pointer;
+}
+.seg button:hover { color: var(--ink); }
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); font-weight: 500; box-shadow: 0 0 0 1px var(--line); }
+.seg button:focus-visible, .filebtn:focus-within, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.controls .label { font-size: 12px; color: var(--muted); }
+.controls .grow { flex: 1; }
+.filebtn { font-size: 12px; color: var(--ink-2); cursor: pointer; border: 1px dashed var(--axis); border-radius: 6px; padding: 5px 10px; }
+.filebtn input { display: none; }
+.scen-desc { font-size: 12px; color: var(--ink-2); width: 100%; }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.tile { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: grid; gap: 4px; align-content: start; }
+.tile .v { font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }
+.tile .d { font-size: 12px; color: var(--ink-2); }
+.up { color: var(--good); } .down { color: var(--bad); }
+
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr)); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: grid; gap: 12px; align-content: start; min-width: 0; }
+.card header { display: grid; gap: 2px; }
+.card header p { font-size: 12px; color: var(--ink-2); }
+
+/* Horizontal bars: HTML grid so labels and values never collide with marks. */
+.bars { display: grid; gap: 6px; }
+.bar-row { display: grid; grid-template-columns: minmax(96px, 9.5rem) 1fr 5.6rem; gap: 10px; align-items: center; cursor: default; border-radius: 4px; }
+.bar-row:hover { background: var(--accent-wash); }
+.bar-row .name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar-row.me .name { font-weight: 600; }
+.track { position: relative; height: 18px; }
+.track .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--other); border-radius: 0 4px 4px 0; min-width: 2px; }
+.bar-row.me .fill { background: var(--accent); }
+.track .tick { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--ink); border-radius: 1px; }
+.bar-row .val { font-family: var(--mono); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.axisnote { font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+.legend span.me { color: var(--ink); font-weight: 600; }
+svg text { fill: var(--muted); font-size: 11px; font-family: var(--font); }
+svg .grid { stroke: var(--line); stroke-width: 1; }
+svg .base { stroke: var(--axis); stroke-width: 1; }
+
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { font-size: 11px; font-weight: 500; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; cursor: pointer; user-select: none; }
+th[aria-sort="ascending"]::after { content: " ↑"; } th[aria-sort="descending"]::after { content: " ↓"; }
+td.n, th.n { text-align: right; }
+tr.me td { background: var(--accent-wash); }
+tr.me td:first-child { font-weight: 600; }
+.mini { display: inline-block; height: 6px; border-radius: 0 3px 3px 0; background: var(--other); vertical-align: middle; margin-left: 8px; }
+tr.me .mini { background: var(--accent); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; vertical-align: 1px; }
+.pill { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--line); color: var(--ink-2); }
+.pill.err { color: var(--bad); border-color: currentColor; }
+
+details { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+details > summary { padding: 12px 16px; cursor: pointer; font-weight: 600; }
+details > .inner { padding: 0 16px 16px; display: grid; gap: 12px; }
+
+.method { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 16px 28px; }
+.method section { display: grid; gap: 8px; align-content: start; min-width: 0; }
+.method ul { margin: 0; padding-left: 18px; color: var(--ink-2); display: grid; gap: 4px; }
+code, pre { font-family: var(--mono); font-size: 12px; }
+pre { margin: 0; padding: 10px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; overflow-x: auto; }
+.cpus { display: grid; grid-template-columns: repeat(11, minmax(0, 1fr)); gap: 3px; max-width: 360px; }
+.cpus div { font-family: var(--mono); font-size: 10px; text-align: center; padding: 4px 0; border-radius: 3px; background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+.cpus .app { background: var(--accent); color: #fff; border-color: transparent; }
+.cpus .pg { background: var(--s3); color: #fff; border-color: transparent; }
+.cpus .load { background: var(--other); color: var(--ink); border-color: transparent; }
+.cpus-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--ink-2); }
+.cpus-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+
+#tip {
+  position: fixed; z-index: 20; pointer-events: none; background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14); min-width: 160px; max-width: 280px;
+}
+#tip .t { font-weight: 600; margin-bottom: 4px; }
+#tip .r { display: flex; justify-content: space-between; gap: 14px; }
+#tip .r span:last-child { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.warn { color: var(--warn-ink); }
+.warnbox { border: 1px solid var(--warn); background: var(--warn-wash); border-radius: 10px; padding: 10px 14px; font-size: 13px; }
+.empty { padding: 40px 16px; text-align: center; color: var(--ink-2); }
+@media (prefers-reduced-motion: no-preference) { .track .fill { transition: width 0.25s ease; } }
+@media (max-width: 520px) {
+  .bar-row { grid-template-columns: 6.5rem 1fr 4.8rem; gap: 6px; }
+  .tile .v { font-size: 24px; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div style="display:grid;gap:6px;min-width:0">
+      <span class="eyebrow">Benchmark HTTP + PostgreSQL</span>
+      <h1>Trust Bench</h1>
+      <p class="sub">La même API (ping, lecture par id, liste paginée, création) écrite en Trust et dans six autres stacks, lancée dans Docker sur les mêmes cœurs CPU, face au même Postgres.</p>
+    </div>
+    <div class="meta" id="meta"></div>
+  </header>
+
+  <div class="controls" role="toolbar" aria-label="Filtres">
+    <span class="label">Scénario</span>
+    <div class="seg" id="scenarioSeg"></div>
+    <span class="label">Connexions</span>
+    <div class="seg" id="concSeg"></div>
+    <span class="grow"></span>
+    <label class="filebtn">Charger un autre résultat (.json)<input type="file" id="file" accept="application/json,.json"></label>
+    <p class="scen-desc" id="scenDesc"></p>
+  </div>
+
+  <div id="main"></div>
+</div>
+<div id="tip" hidden></div>
+
+<script src="data.js"></script>
+<script>
+(() => {
+  'use strict';
+  const COLORS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7'];
+  const ME = 'trust';
+  const nf = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 });
+  const nf1 = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 1 });
+  const compact = new Intl.NumberFormat('fr-FR', { notation: 'compact', maximumFractionDigits: 1 });
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const ms = (v) => v == null ? '–' : (v < 1 ? v.toFixed(2) : v < 10 ? v.toFixed(1) : nf.format(v)) + ' ms';
+  const mb = (v) => v == null ? '–' : nf1.format(v) + ' Mo';
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+  let data = window.BENCH_RESULTS || null;
+  const state = { scenario: null, conc: null };
+  try { Object.assign(state, JSON.parse(localStorage.getItem('trust-bench-view') || '{}')); } catch (e) {}
+
+  // ------------------------------------------------------------ tooltip
+  const tip = $('#tip');
+  function showTip(ev, html) {
+    tip.innerHTML = html; tip.hidden = false;
+    const pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
+    let x = ev.clientX + pad, y = ev.clientY + pad;
+    if (x + w > innerWidth - 8) x = ev.clientX - w - pad;
+    if (y + h > innerHeight - 8) y = ev.clientY - h - pad;
+    tip.style.left = Math.max(8, x) + 'px'; tip.style.top = Math.max(8, y) + 'px';
+  }
+  const hideTip = () => { tip.hidden = true; };
+  const rows = (pairs) => pairs.map(([k, v]) => `<div class="r"><span>${esc(k)}</span><span>${esc(v)}</span></div>`).join('');
+
+  // ------------------------------------------------------------ data helpers
+  const okApps = () => data.apps.filter((a) => !a.error);
+  const appColor = (id) => css(COLORS[data.apps.findIndex((a) => a.id === id) % COLORS.length]);
+  const appName = (id) => (data.apps.find((a) => a.id === id) || { name: id }).name;
+  const run = (app, scenario, conc) => data.runs.find((r) => r.app === app && r.scenario === scenario && r.connections === conc);
+  const current = () => okApps().map((a) => ({ app: a, r: run(a.id, state.scenario, state.conc) })).filter((x) => x.r);
+
+  function runTip(app, r) {
+    return `<div class="t">${esc(app.name)}</div>` + rows([
+      ['Débit', nf.format(r.rps) + ' req/s'],
+      ['Latence p50', ms(r.latency_ms.p50)], ['p90', ms(r.latency_ms.p90)],
+      ['p99', ms(r.latency_ms.p99)], ['p99,9', ms(r.latency_ms.p999)],
+      ['CPU app', nf1.format(r.cpu_cores) + ' cœurs'], ['RAM pic', mb(r.mem_peak_mb)],
+      ['Succès', (r.success_rate * 100).toFixed(2) + ' %'],
+      ...(r.noisy ? [['⚠ Bruit', `${nf1.format(r.interference_cores)} cœur pris par d’autres process`]] : []),
+    ]);
+  }
+
+  // ------------------------------------------------------------ components
+  function hbars(items, { value, label, best = 'high', tick, tipFn, unitNote }) {
+    const sorted = [...items].sort((a, b) => best === 'high' ? value(b) - value(a) : value(a) - value(b));
+    const max = Math.max(...sorted.map((i) => Math.max(value(i), tick ? tick(i) || 0 : 0))) || 1;
+    const el = document.createElement('div');
+    el.className = 'bars';
+    el.setAttribute('role', 'list');
+    sorted.forEach((it) => {
+      const row = document.createElement('div');
+      row.className = 'bar-row' + (it.app.id === ME ? ' me' : '');
+      row.setAttribute('role', 'listitem');
+      const t = tick ? tick(it) : null;
+      row.innerHTML = `<span class="name">${it.r && it.r.noisy ? '<span class="warn" title="Mesure perturbée">⚠</span> ' : ''}${esc(it.app.name)}</span>
+        <span class="track"><span class="fill" style="width:${(value(it) / max) * 100}%"></span>${t != null ? `<span class="tick" style="left:calc(${(t / max) * 100}% - 1px)"></span>` : ''}</span>
+        <span class="val">${label(it)}</span>`;
+      row.setAttribute('aria-label', `${it.app.name}: ${label(it)}`);
+      if (tipFn) {
+        row.addEventListener('mousemove', (ev) => showTip(ev, tipFn(it)));
+        row.addEventListener('mouseleave', hideTip);
+      }
+      el.appendChild(row);
+    });
+    if (unitNote) {
+      const n = document.createElement('div');
+      n.className = 'axisnote';
+      n.innerHTML = `<span>0</span><span>${esc(unitNote)}</span>`;
+      el.appendChild(n);
+    }
+    return el;
+  }
+
+  function card(title, desc, body, extra) {
+    const c = document.createElement('section');
+    c.className = 'card';
+    c.innerHTML = `<header><h2>${esc(title)}</h2>${desc ? `<p>${desc}</p>` : ''}</header>`;
+    if (extra) c.appendChild(extra);
+    c.appendChild(body);
+    return c;
+  }
+
+  function niceMax(v) {
+    const p = Math.pow(10, Math.floor(Math.log10(v || 1)));
+    for (const m of [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (m * p >= v) return m * p;
+    return 10 * p;
+  }
+
+  function lineChart() {
+    const levels = data.meta.config.connections;
+    const series = okApps().map((a) => ({ app: a, pts: levels.map((c) => run(a.id, state.scenario, c)) }));
+    const box = document.createElement('div');
+    const legend = document.createElement('div');
+    legend.className = 'legend';
+    legend.innerHTML = series.map((s) => `<span class="${s.app.id === ME ? 'me' : ''}"><i style="background:${appColor(s.app.id)}"></i>${esc(s.app.name)}</span>`).join('');
+    const holder = document.createElement('div');
+    holder.style.position = 'relative';
+    box.append(legend, holder);
+
+    const draw = () => {
+      const W = Math.max(280, holder.clientWidth || 520), H = 260;
+      const m = { l: 52, r: 16, t: 12, b: 34 };
+      const ymax = niceMax(Math.max(...series.flatMap((s) => s.pts.map((p) => p ? p.rps : 0))));
+      const x = (i) => m.l + (levels.length === 1 ? (W - m.l - m.r) / 2 : (i * (W - m.l - m.r)) / (levels.length - 1));
+      const y = (v) => H - m.b - (v / ymax) * (H - m.t - m.b);
+      let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="Débit selon le nombre de connexions">`;
+      for (let k = 0; k <= 4; k++) {
+        const v = (ymax * k) / 4, yy = y(v);
+        s += `<line class="${k ? 'grid' : 'base'}" x1="${m.l}" x2="${W - m.r}" y1="${yy}" y2="${yy}"/>`;
+        s += `<text x="${m.l - 8}" y="${yy + 4}" text-anchor="end">${compact.format(v)}</text>`;
+      }
+      levels.forEach((c, i) => { s += `<text x="${x(i)}" y="${H - m.b + 18}" text-anchor="middle">${c}</text>`; });
+      s += `<text x="${W - m.r}" y="${H - 4}" text-anchor="end">connexions simultanées</text>`;
+      s += `<line id="xh" class="base" x1="0" x2="0" y1="${m.t}" y2="${H - m.b}" visibility="hidden"/>`;
+      const order = [...series].sort((a, b) => (a.app.id === ME) - (b.app.id === ME)); // Trust drawn last, on top
+      order.forEach((se) => {
+        const col = appColor(se.app.id);
+        const pts = se.pts.map((p, i) => p ? [x(i), y(p.rps)] : null).filter(Boolean);
+        s += `<polyline fill="none" stroke="${col}" stroke-width="${se.app.id === ME ? 2.5 : 2}" stroke-linejoin="round" stroke-linecap="round" points="${pts.map((p) => p.join(',')).join(' ')}"/>`;
+        pts.forEach(([px, py]) => { s += `<circle cx="${px}" cy="${py}" r="4" fill="${col}" stroke="${css('--surface')}" stroke-width="2"/>`; });
+      });
+      s += `<rect x="${m.l}" y="${m.t}" width="${W - m.l - m.r}" height="${H - m.t - m.b}" fill="transparent" id="hit"/></svg>`;
+      holder.innerHTML = s;
+      const svg = holder.querySelector('svg'), xh = svg.querySelector('#xh');
+      svg.querySelector('#hit').addEventListener('mousemove', (ev) => {
+        const r = svg.getBoundingClientRect();
+        const px = ((ev.clientX - r.left) / r.width) * W;
+        let best = 0;
+        levels.forEach((_, i) => { if (Math.abs(x(i) - px) < Math.abs(x(best) - px)) best = i; });
+        xh.setAttribute('x1', x(best)); xh.setAttribute('x2', x(best)); xh.setAttribute('visibility', 'visible');
+        const list = series.map((se) => [se.app, se.pts[best]]).filter(([, p]) => p).sort((a, b) => b[1].rps - a[1].rps);
+        showTip(ev, `<div class="t">${levels[best]} connexions</div>` + list.map(([a, p]) =>
+          `<div class="r"><span><span class="dot" style="background:${appColor(a.id)}"></span>${esc(a.name)}</span><span>${nf.format(p.rps)}</span></div>`).join(''));
+      });
+      svg.querySelector('#hit').addEventListener('mouseleave', () => { xh.setAttribute('visibility', 'hidden'); hideTip(); });
+    };
+    requestAnimationFrame(draw);
+    new ResizeObserver(() => draw()).observe(holder);
+    return box;
+  }
+
+  function sortableTable(cols, items, rowClass) {
+    const wrap = document.createElement('div');
+    wrap.className = 'tablewrap';
+    let sortKey = null, dir = 1;
+    const render = () => {
+      const list = [...items];
+      if (sortKey != null) {
+        const c = cols[sortKey];
+        list.sort((a, b) => {
+          const va = c.sort ? c.sort(a) : c.get(a), vb = c.sort ? c.sort(b) : c.get(b);
+          return (va > vb ? 1 : va < vb ? -1 : 0) * dir;
+        });
+      }
+      wrap.innerHTML = `<table><thead><tr>${cols.map((c, i) => `<th class="${c.n ? 'n' : ''}" data-i="${i}" ${sortKey === i ? `aria-sort="${dir > 0 ? 'ascending' : 'descending'}"` : ''}>${esc(c.h)}</th>`).join('')}</tr></thead>
+        <tbody>${list.map((it) => `<tr class="${rowClass ? rowClass(it) : ''}">${cols.map((c) => `<td class="${c.n ? 'n' : ''}">${c.html ? c.html(it) : esc(c.get(it))}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+      wrap.querySelectorAll('th').forEach((th) => th.addEventListener('click', () => {
+        const i = +th.dataset.i; dir = sortKey === i ? -dir : 1; sortKey = i; render();
+      }));
+    };
+    render();
+    return wrap;
+  }
+
+  // ------------------------------------------------------------ page
+  function seg(el, options, key) {
+    el.innerHTML = '';
+    options.forEach((o) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = o.label; b.setAttribute('aria-pressed', String(state[key] === o.value));
+      b.addEventListener('click', () => {
+        state[key] = o.value;
+        try { localStorage.setItem('trust-bench-view', JSON.stringify(state)); } catch (e) {}
+        render();
+      });
+      el.appendChild(b);
+    });
+  }
+
+  function render() {
+    const main = $('#main');
+    if (!data || !data.runs) {
+      main.innerHTML = `<div class="empty">Aucun résultat chargé. Lancez <code>python3 bench/bench.py</code> puis rouvrez cette page, ou chargez un fichier <code>bench/results/*.json</code>.</div>`;
+      return;
+    }
+    const cfg = data.meta.config, scs = data.meta.scenarios;
+    if (!scs.some((s) => s.id === state.scenario)) state.scenario = scs[0].id;
+    if (!cfg.connections.includes(state.conc)) state.conc = cfg.connections.includes(64) ? 64 : cfg.connections[0];
+    seg($('#scenarioSeg'), scs.map((s) => ({ label: s.label, value: s.id })), 'scenario');
+    seg($('#concSeg'), cfg.connections.map((c) => ({ label: String(c), value: c })), 'conc');
+    const scen = scs.find((s) => s.id === state.scenario);
+    $('#scenDesc').textContent = `${scen.desc}. ${cfg.duration_s} s de mesure après ${cfg.warmup_s} s de chauffe, ${state.conc} connexions keep-alive.`;
+    const h = data.meta.host;
+    $('#meta').innerHTML = [
+      ['Run', new Date(data.meta.date).toLocaleString('fr-FR', { dateStyle: 'medium', timeStyle: 'short' })],
+      ['Commit', data.meta.trust_commit || '–'], ['CPU', h.cpu], ['Noyau', h.kernel],
+    ].map(([k, v]) => `<span>${k} <b>${esc(v)}</b></span>`).join('');
+
+    main.innerHTML = '';
+    main.style.display = 'grid'; main.style.gap = '16px';
+    const cur = current();
+    const by = Object.fromEntries(cur.map((x) => [x.app.id, x.r]));
+    const me = by[ME];
+
+    // Tiles
+    const tiles = document.createElement('div');
+    tiles.className = 'tiles';
+    const ratioTile = (other, label) => {
+      if (!me || !by[other]) return '';
+      const ratio = me.rps / by[other].rps;
+      const text = ratio >= 1.95 ? `×${nf1.format(ratio)}` : `${nf.format(ratio * 100)} %`;
+      const cls = ratio >= 0.97 ? 'up' : 'down';
+      return `<div class="tile"><span class="eyebrow">${esc(label)}</span><span class="v num ${ratio >= 1.95 ? 'up' : ''}">${text}</span>
+        <span class="d">Débit de Trust rapporté à ${esc(appName(other))} (${nf.format(by[other].rps)} req/s) <span class="${cls}">${ratio >= 1 ? '▲' : '▼'}</span></span></div>`;
+    };
+    const rank = me ? [...cur].sort((a, b) => b.r.rps - a.r.rps).findIndex((x) => x.app.id === ME) + 1 : null;
+    tiles.innerHTML = (me ? `<div class="tile"><span class="eyebrow">Débit Trust</span><span class="v num">${nf.format(me.rps)}</span>
+        <span class="d">req/s · ${rank}<sup>${rank === 1 ? 'er' : 'e'}</sup> sur ${cur.length} · p99 ${ms(me.latency_ms.p99)}</span></div>` : '')
+      + ratioTile('rust-axum', 'vs Rust écrit à la main')
+      + ratioTile('nestjs-express', 'vs NestJS')
+      + ratioTile('go', 'vs Go');
+    main.appendChild(tiles);
+
+    const noisy = cur.filter((x) => x.r.noisy);
+    if (noisy.length) {
+      main.insertAdjacentHTML('beforeend', `<div class="warnbox" role="status"><b>⚠ Mesure perturbée</b> : d’autres programmes utilisaient les CPU de l’app pendant la mesure de ${noisy.map((x) => esc(x.app.name)).join(', ')}. Ces valeurs sont sous-estimées ; relancez ces stacks sur une machine calme.</div>`);
+    }
+
+    if (!cur.length) {
+      main.insertAdjacentHTML('beforeend', '<div class="empty">Pas de mesure pour ce scénario et ce niveau de concurrence.</div>');
+    } else {
+      const g1 = document.createElement('div'); g1.className = 'grid2';
+      g1.appendChild(card('Débit', 'Requêtes réussies par seconde, plus c’est long mieux c’est.',
+        hbars(cur, { value: (i) => i.r.rps, label: (i) => nf.format(i.r.rps), tipFn: (i) => runTip(i.app, i.r), unitNote: 'req/s' })));
+      g1.appendChild(card('Latence p99', '99 % des requêtes répondent en moins de ce temps. Le trait marque la médiane (p50). Plus court est mieux.',
+        hbars(cur, { value: (i) => i.r.latency_ms.p99, tick: (i) => i.r.latency_ms.p50, best: 'low', label: (i) => ms(i.r.latency_ms.p99), tipFn: (i) => runTip(i.app, i.r), unitNote: 'ms' })));
+      main.appendChild(g1);
+
+      const g2 = document.createElement('div'); g2.className = 'grid2';
+      g2.appendChild(card('Montée en charge', `Débit de « ${esc(scen.label)} » selon le nombre de connexions simultanées (axe en échelle logarithmique).`, lineChart()));
+      g2.appendChild(card('Efficacité CPU', 'Requêtes par seconde pour chaque cœur CPU réellement consommé par l’app (mesuré via cgroup). Indépendant de la saturation du générateur de charge.',
+        hbars(cur.filter((i) => i.r.rps_per_core), { value: (i) => i.r.rps_per_core, label: (i) => nf.format(i.r.rps_per_core), tipFn: (i) => runTip(i.app, i.r), unitNote: 'req/s par cœur' })));
+      main.appendChild(g2);
+    }
+
+    // Footprint
+    const appsAll = data.apps;
+    const peakOf = (a) => { const r = by[a.id]; return r ? r.mem_peak_mb : null; };
+    const maxPeak = Math.max(...appsAll.map(peakOf).filter((v) => v != null), 1);
+    const maxLoc = Math.max(...appsAll.map((a) => a.loc || 0), 1);
+    const foot = sortableTable([
+      { h: 'Stack', get: (a) => a.name, html: (a) => `<span class="dot" style="background:${appColor(a.id)}"></span>${esc(a.name)}${a.error ? ' <span class="pill err">échec</span>' : ''}` },
+      { h: 'RAM au repos', n: 1, get: (a) => a.idle_mem_mb ?? Infinity, html: (a) => mb(a.idle_mem_mb) },
+      { h: 'RAM pic (scénario)', n: 1, get: (a) => peakOf(a) ?? Infinity, html: (a) => `${mb(peakOf(a))}<span class="mini" style="width:${((peakOf(a) || 0) / maxPeak) * 60}px"></span>` },
+      { h: 'Démarrage', n: 1, get: (a) => a.startup_ms ?? Infinity, html: (a) => ms(a.startup_ms) },
+      { h: 'Image Docker', n: 1, get: (a) => a.image_mb, html: (a) => mb(a.image_mb) },
+      { h: 'Build image', n: 1, get: (a) => a.build_s, html: (a) => a.build_cold ? `${nf.format(a.build_s)} s` : `<span class="muted" title="Build avec cache Docker">${nf.format(a.build_s)} s*</span>` },
+      { h: 'Code écrit', n: 1, get: (a) => a.loc, html: (a) => `${nf.format(a.loc)} lignes<span class="mini" style="width:${(a.loc / maxLoc) * 60}px"></span>` },
+    ], appsAll, (a) => a.id === ME ? 'me' : '');
+    const trustApp = appsAll.find((a) => a.id === ME);
+    const footNote = document.createElement('p');
+    footNote.className = 'muted';
+    footNote.style.fontSize = '12px';
+    footNote.innerHTML = `Démarrage : de <code>docker run</code> au premier <code>200</code> sur <code>/ping</code>, migrations comprises. « Code écrit » compte les lignes non vides et hors commentaires des fichiers source à la main.`
+      + (trustApp && trustApp.generated_loc ? ` Pour Trust : <code>app.tr</code> + <code>ping.rs</code> ; le compilateur en génère ${nf.format(trustApp.generated_loc)} lignes de Rust.` : '')
+      + (appsAll.some((a) => !a.build_cold) ? ' * build avec cache Docker, relancer avec <code>--no-cache</code> pour un temps à froid.' : '');
+    main.appendChild(card('Empreinte et coût de développement', 'RAM pic mesurée sur le scénario et la concurrence sélectionnés. Cliquez un en-tête pour trier.', foot, null));
+    main.lastChild.appendChild(footNote);
+
+    // Errors
+    appsAll.filter((a) => a.error).forEach((a) => {
+      main.insertAdjacentHTML('beforeend', `<details><summary>${esc(a.name)} : échec du run</summary><div class="inner"><pre>${esc(a.error)}</pre></div></details>`);
+    });
+
+    // All runs
+    const all = data.runs.map((r) => ({ ...r, appObj: data.apps.find((a) => a.id === r.app) }));
+    const det = document.createElement('details');
+    det.innerHTML = `<summary>Toutes les mesures (${all.length})</summary>`;
+    const inner = document.createElement('div'); inner.className = 'inner';
+    const scLabel = Object.fromEntries(scs.map((s) => [s.id, s.label]));
+    inner.appendChild(sortableTable([
+      { h: 'Stack', get: (r) => r.appObj ? r.appObj.name : r.app },
+      { h: 'Scénario', get: (r) => scLabel[r.scenario] || r.scenario },
+      { h: 'Conn.', n: 1, get: (r) => r.connections },
+      { h: 'req/s', n: 1, get: (r) => r.rps, html: (r) => nf.format(r.rps) },
+      { h: 'p50', n: 1, get: (r) => r.latency_ms.p50, html: (r) => ms(r.latency_ms.p50) },
+      { h: 'p99', n: 1, get: (r) => r.latency_ms.p99, html: (r) => ms(r.latency_ms.p99) },
+      { h: 'p99,9', n: 1, get: (r) => r.latency_ms.p999, html: (r) => ms(r.latency_ms.p999) },
+      { h: 'Succès', n: 1, get: (r) => r.success_rate, html: (r) => (r.success_rate * 100).toFixed(2) + ' %' },
+      { h: 'CPU', n: 1, get: (r) => r.cpu_cores, html: (r) => nf1.format(r.cpu_cores) },
+      { h: 'req/s/cœur', n: 1, get: (r) => r.rps_per_core || 0, html: (r) => r.rps_per_core ? nf.format(r.rps_per_core) : '–' },
+      { h: 'RAM pic', n: 1, get: (r) => r.mem_peak_mb, html: (r) => mb(r.mem_peak_mb) },
+      { h: 'Bruit', n: 1, get: (r) => r.interference_cores ?? 0, html: (r) => r.interference_cores == null ? '–' : `${r.noisy ? '<span class="warn">⚠</span> ' : ''}${nf1.format(r.interference_cores)}` },
+    ], all, (r) => r.app === ME ? 'me' : ''));
+    det.appendChild(inner);
+    main.appendChild(det);
+
+    main.appendChild(methodology(cfg, h));
+  }
+
+  function methodology(cfg, host) {
+    const role = {};
+    const expand = (spec) => spec.split(',').flatMap((p) => { const [a, b] = p.split('-').map(Number); return Array.from({ length: (b ?? a) - a + 1 }, (_, i) => a + i); });
+    expand(cfg.app_cpus).forEach((c) => role[c] = 'app');
+    expand(cfg.pg_cpus).forEach((c) => role[c] = 'pg');
+    expand(cfg.load_cpus).forEach((c) => role[c] = 'load');
+    const n = host.threads || 22;
+    const cpuGrid = Array.from({ length: n }, (_, i) => `<div class="${role[i] || ''}" title="CPU ${i}">${i}</div>`).join('');
+    const d = document.createElement('details');
+    d.open = true;
+    d.innerHTML = `<summary>Méthode</summary><div class="inner method">
+      <section><h3>Banc</h3><ul>
+        <li>Chaque stack tourne seule dans un conteneur limité à ${esc(cfg.memory)} de RAM, épinglé sur les mêmes CPU.</li>
+        <li>Postgres ${esc(cfg.postgres.split(':')[1] || '')} (${cfg.seed_rows.toLocaleString('fr-FR')} lignes réinitialisées avant chaque stack), ${cfg.db_pool} connexions de pool par app.</li>
+        <li>Charge : <code>oha</code> en conteneur sur le même réseau Docker, ${cfg.warmup_s} s de chauffe puis ${cfg.duration_s} s de mesure par point.</li>
+        <li>Chaque app doit d’abord passer un test de contrat (mêmes JSON, même 404) avant d’être mesurée.</li>
+      </ul></section>
+      <section><h3>Répartition des CPU</h3>
+        <div class="cpus" aria-label="Répartition des CPU logiques">${cpuGrid}</div>
+        <div class="cpus-legend"><span><i style="background:var(--accent)"></i>app (${esc(cfg.app_cpus)})</span><span><i style="background:var(--s3)"></i>Postgres (${esc(cfg.pg_cpus)})</span><span><i style="background:var(--other)"></i>oha (${esc(cfg.load_cpus)})</span></div>
+        <p class="muted" style="font-size:12px">Les apps reçoivent deux cœurs physiques distincts, sans leur jumeau hyperthread. Node et Python lancent un process par cœur (cluster, workers uvicorn).</p>
+      </section>
+      <section><h3>À garder en tête</h3><ul>
+        <li>Mesures sur une machine de dev (laptop), pas un serveur isolé : comparez les écarts, pas les valeurs absolues.</li>
+        <li>Trust est mesuré avec ses réglages par défaut (logs <code>info</code>, couche de tracing HTTP), comme il serait déployé.</li>
+        <li>NestJS et Fastify utilisent <code>pg</code> sans ORM ; avec TypeORM ou Prisma, l’écart serait plus grand.</li>
+        <li>Les écritures (POST) sont bornées par le <code>fsync</code> de Postgres : les écarts s’y resserrent.</li>
+      </ul></section>
+      <section><h3>Relancer</h3>
+        <pre>python3 bench/bench.py
+python3 bench/bench.py --apps trust,rust-axum \\
+  --scenarios get --connections 64 --duration 5</pre>
+        <p class="muted" style="font-size:12px">Écrit <code>bench/results/latest.json</code> et <code>bench/dashboard/data.js</code>, puis ouvrez <code>bench/dashboard/index.html</code>.</p>
+      </section></div>`;
+    return d;
+  }
+
+  $('#file').addEventListener('change', (ev) => {
+    const f = ev.target.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try { data = JSON.parse(reader.result); render(); }
+      catch (e) { $('#main').innerHTML = `<div class="empty">Ce fichier n’est pas un résultat de bench lisible : ${esc(e.message)}</div>`; }
+    };
+    reader.readAsText(f);
+  });
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
+  new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  render();
+})();
+</script>
+</body>
+</html>

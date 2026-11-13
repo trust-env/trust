@@ -1,0 +1,37 @@
+config { json_case: "camel" }
+
+type User {
+    id: Int
+    name: String
+    email: String
+    age: Int
+}
+
+type PingRequest { }
+type Pong { ok: Bool }
+
+infra UserInfra {
+    storage { psql { entity: User } }
+}
+
+resource Users { infra: UserInfra path: "/users" list create get }
+
+use_case PingUseCase {
+    input: PingRequest
+    output: Pong
+    code { file: "./ping.rs" }
+}
+
+adapter Api {
+    http {
+        on: "0.0.0.0:${APP_PORT}"
+        resources { Users }
+        routes {
+            GET "/ping" { use_case: PingUseCase }
+        }
+    }
+}
+
+app Main: run {
+    Api
+}
