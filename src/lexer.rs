@@ -7,13 +7,62 @@ pub use tokens::*;
 pub struct Lexer {
     chars: Vec<char>,
     position: usize,
+    /// Set right after the identifier `logic` when a `{` follows: the next
+    /// token is that block's raw text (`Token::Script`).
+    capture_script: bool,
 }
 
 impl Lexer {
     pub fn new(input: &String) -> Self {
         let chars = input.chars().collect();
 
-        Lexer { chars, position: 0 }
+        Lexer { chars, position: 0, capture_script: false }
+    }
+
+    /// After `logic`: the whole `{ ... }` block as one `Token::Script`.
+    /// Braces inside strings and `//` comments don't count.
+    fn match_script(&mut self) -> Result<Spanned<Token>, String> {
+        let open = self.position;
+        self.position += 1;
+        let start = self.position;
+        let mut depth = 1;
+        while let Some(c) = self.chars.get(self.position).copied() {
+            match c {
+                '"' => {
+                    self.position += 1;
+                    while let Some(c) = self.chars.get(self.position).copied() {
+                        self.position += 1;
+                        match c {
+                            '\\' => self.position += 1,
+                            '"' => break,
+                            _ => {}
+                        }
+                    }
+                    continue;
+                }
+                '/' if self.chars.get(self.position + 1) == Some(&'/') => {
+                    while let Some(c) = self.chars.get(self.position) {
+                        if *c == '\n' {
+                            break;
+                        }
+                        self.position += 1;
+                    }
+                    continue;
+                }
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let source: String = self.chars[start..self.position].iter().collect();
+                        self.position += 1;
+                        return Ok(Spanned::new(open, self.position, Token::Script(source, start)));
+                    }
+                }
+                _ => {}
+            }
+            self.position += 1;
+        }
+        Err(format!("Unterminated 'logic' block starting at position {}", open))
     }
 
     pub fn run(&mut self) -> Result<Vec<Spanned<Token>>, String> {
@@ -185,6 +234,9 @@ impl Lexer {
 
     fn next_token(&mut self) -> Result<Spanned<Token>, String> {
         self.skip_whitespace();
+        if std::mem::take(&mut self.capture_script) && self.chars.get(self.position) == Some(&'{') {
+            return self.match_script();
+        }
 
         if self.eof() {
             return Ok(Spanned::new(self.position, self.position, Token::Eof));
@@ -201,6 +253,13 @@ impl Lexer {
         };
         match self.match_identifier() {
             Some(token) => {
+                if token == Token::Identifier("logic".to_string()) {
+                    let mut next = self.position;
+                    while self.chars.get(next).is_some_and(|c| c.is_whitespace()) {
+                        next += 1;
+                    }
+                    self.capture_script = self.chars.get(next) == Some(&'{');
+                }
                 return Ok(Spanned::new(
                     self.position - token.to_string().len(),
                     self.position,
@@ -381,6 +440,20 @@ mod tests {
                 Token::CloseAngle,
             ]
         );
+    }
+
+    #[test]
+    fn logic_blocks_lex_as_one_raw_script_token() {
+        let tokens = lex("logic { let a = \"}\" // }\n if a { return 1 } } x").unwrap();
+        assert_eq!(tokens[0], Token::Identifier("logic".to_string()));
+        assert_eq!(
+            tokens[1],
+            Token::Script(" let a = \"}\" // }\n if a { return 1 } ".to_string(), 7)
+        );
+        assert_eq!(tokens[2], Token::Identifier("x".to_string()));
+        // Only a `{` right after makes it a block.
+        assert_eq!(lex("logic: Int").unwrap()[1], Token::Colon);
+        assert!(lex("logic { if a {").unwrap_err().contains("Unterminated 'logic' block"));
     }
 
     #[test]

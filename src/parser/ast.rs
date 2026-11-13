@@ -593,6 +593,24 @@ pub struct CodeSpec {
     pub module: bool,
 }
 
+/// `logic { ... }` — a body written in trust's scripting language (see
+/// `crate::script`), checked and translated to Rust by trust. Lowered into
+/// a `CodeSpec` before generation.
+#[derive(Debug, Clone, Default)]
+pub struct LogicSpec {
+    /// The text between the braces.
+    pub source: String,
+    /// Char offset of `source` in its `.tr` file.
+    pub offset: usize,
+    /// Where the block starts, filled by the loader (empty / 0 otherwise).
+    pub file: String,
+    pub line: usize,
+    pub column: usize,
+    /// `owner: none` on the use case: psql calls aren't scoped to the
+    /// caller.
+    pub unscoped: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct UseCaseService {
     pub name: String,
@@ -621,6 +639,9 @@ pub struct UseCaseService {
     pub owner: Option<String>,
     /// Mutually exclusive with `calls`/`ai`/`blob`: a hand-written body.
     pub code: Option<CodeSpec>,
+    /// Mutually exclusive with the others: a `logic {}` script (becomes
+    /// `code` before generation).
+    pub logic: Option<LogicSpec>,
     /// `order_by: due asc, priority desc` — sort order of a `list` primary
     /// call (`id` always breaks ties).
     pub order_by: Vec<OrderBy>,

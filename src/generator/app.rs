@@ -262,7 +262,7 @@ impl CodeGen {
                 continue;
             }
             let infra_names = context.find_use_case_infra(use_case_name);
-            if infra_names.is_empty() && !context.is_ai_use_case_without_infra(use_case_name) {
+            if infra_names.is_empty() && !context.is_ai_use_case_without_infra(use_case_name) && context.find_use_case_deps(use_case_name).is_empty() {
                 return Err(format!(
                     "UseCase '{}' has no known infra target (missing 'call')",
                     use_case_name
@@ -318,7 +318,7 @@ impl CodeGen {
                 continue;
             }
             let infra_names = context.find_use_case_infra(use_case_name);
-            if infra_names.is_empty() && !context.is_ai_use_case_without_infra(use_case_name) {
+            if infra_names.is_empty() && !context.is_ai_use_case_without_infra(use_case_name) && context.find_use_case_deps(use_case_name).is_empty() {
                 return Err(format!(
                     "UseCase '{}' has no known infra target (missing 'call')",
                     use_case_name
@@ -383,7 +383,7 @@ impl CodeGen {
             }
             if !use_case_bindings.iter().any(|u| u.use_case_name == job.use_case) {
                 let infra_names = context.find_use_case_infra(&job.use_case);
-                if infra_names.is_empty() && !context.is_ai_use_case_without_infra(&job.use_case) {
+                if infra_names.is_empty() && !context.is_ai_use_case_without_infra(&job.use_case) && context.find_use_case_deps(&job.use_case).is_empty() {
                     return Err(format!(
                         "UseCase '{}' has no known infra target (missing 'call')",
                         job.use_case
@@ -579,7 +579,7 @@ impl CodeGen {
                             continue;
                         }
                         let infra_names = context.find_use_case_infra(use_case_name);
-                        if infra_names.is_empty() && !context.is_ai_use_case_without_infra(use_case_name) {
+                        if infra_names.is_empty() && !context.is_ai_use_case_without_infra(use_case_name) && context.find_use_case_deps(use_case_name).is_empty() {
                             return Err(format!(
                                 "UseCase '{}' has no known infra target (missing 'call')",
                                 use_case_name

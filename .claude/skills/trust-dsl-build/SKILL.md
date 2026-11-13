@@ -145,6 +145,10 @@ Useful flags (full table in `doc/cli.md`):
   case to the JWT user (stamp on save, filter on list, `NotFound` for
   others' rows on find/update/delete). Routes exposing it need `auth`.
 - `filters { visibility: "public" }` — literal filters (no input field).
+- `use_case Name { input output logic { let t = TaskInfra.get(input.id) ... return Out { ... } } }`
+  — body in Trust's typed scripting language, checked by `trust` and
+  translated to Rust; prefer it over `code {}` when it can express the
+  logic. Reference: `doc/logic.md` (psql/http_client/use cases only).
 - `use_case Name { input output code { file: "./logic/x.rs" infra: A infra: B errors { E } deps { hex: "0.4" } } }`
   — hand-written `execute` body (`user`, `input`, `self.a`, `self.b` in scope).
   `input: RawRequest` (built-in) gives raw body + headers (webhooks).

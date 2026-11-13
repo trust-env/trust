@@ -350,6 +350,7 @@ mod tests {
             filters: vec![],
             owner: None,
             code: None,
+            logic: None,
             order_by: vec![],
             transaction: false,
             notify: None,

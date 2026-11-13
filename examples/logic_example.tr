@@ -1,0 +1,103 @@
+enum TaskStatus { todo doing done }
+type Task { id: Int, user_id: Int, title: String, status: TaskStatus, estimate: Int, due: Option<DateTime>, tags: List<String> }
+type CloseRequest { id: Int, note: Option<String> }
+type Summary { open: Int, done: Int, titles: List<String>, message: String }
+type Empty {}
+type CheckoutRequest { currency: String }
+type CheckoutResponse { checkout_url: String }
+type WebhookAck { received: Int }
+
+infra TaskInfra { storage { psql { entity: Task owner: user_id } } }
+infra PaymentApi { http_client { base_url: "${PAYMENT_API_URL}" } }
+
+use_case CloseTaskUseCase {
+    input: CloseRequest
+    output: Task
+    transaction: true
+    logic {
+        let task = TaskInfra.get(input.id)
+        if task.status == TaskStatus.done {
+            fail AlreadyDone("task {task.id} is already done")
+        }
+        return TaskInfra.update(Task { status: TaskStatus.done, ..task })
+    }
+}
+
+use_case SummaryUseCase {
+    input: Empty
+    output: Summary
+    logic {
+        let tasks = TaskInfra.query(status != TaskStatus.done, order_by: title, limit: 50)
+        var late = 0
+        for t in tasks {
+            if let due = t.due {
+                if due < now() { late = late + 1 }
+            }
+        }
+        let done = TaskInfra.query(status == TaskStatus.done).len()
+        let titles = tasks.filter(t => t.estimate > 2).sort_by(t => t.title).map(t => t.title.upper())
+        return Summary {
+            open: tasks.len()
+            done: done
+            titles: titles
+            message: "{tasks.len()} open, {late} late, {tasks.map(t => t.estimate).sum()} points"
+        }
+    }
+}
+
+use_case CheckoutUseCase {
+    input: CheckoutRequest
+    output: CheckoutResponse
+    logic {
+        let tasks = TaskInfra.all()
+        if tasks.is_empty() { fail EmptyCart }
+        let purchase = PaymentApi.post("/purchase", { quantity: tasks.len(), currency: input.currency })
+        return CheckoutResponse { checkout_url: purchase.checkout_url.str() ?? "" }
+    }
+}
+
+use_case WebhookUseCase {
+    input: RawRequest
+    output: WebhookAck
+    logic {
+        let signature = input.header("x-signature") ?? fail InvalidSignature("missing signature")
+        let expected = hmac_sha256(env("WEBHOOK_SECRET"), input.body)
+        if not secure_eq(signature, expected) { fail InvalidSignature }
+        return WebhookAck { received: input.body.len() }
+    }
+}
+
+type TagReport { tags: List<String>, top: String, due_soon: Int }
+
+use_case TagReportUseCase {
+    input: Empty
+    output: TagReport
+    logic {
+        let tasks = TaskInfra.all()
+        var tags: List<String> = []
+        for t in tasks {
+            for tag in t.tags {
+                if tag not in tags { tags.push(tag.lower()) }
+            }
+        }
+        let horizon = today().add_days(7)
+        let soon = tasks.count(t => (t.due ?? now()).date() <= horizon)
+        let top = tasks.sort_by_desc(t => t.estimate).first() ?? fail NotFound
+        let summary = SummaryUseCase.run(Empty {})
+        return TagReport { tags: tags, top: "{top.title}: {summary.message}", due_soon: soon }
+    }
+}
+
+adapter Api {
+    http {
+        on: "0.0.0.0:8080"
+        routes {
+            POST "/tasks/close" { use_case: CloseTaskUseCase auth: required status { AlreadyDone -> 409 } }
+            GET "/summary" { use_case: SummaryUseCase auth: required }
+            POST "/checkout" { use_case: CheckoutUseCase auth: required status { EmptyCart -> 409 } }
+            POST "/webhook" { use_case: WebhookUseCase status { InvalidSignature -> 401 } }
+            GET "/tags" { use_case: TagReportUseCase auth: required }
+        }
+    }
+}
+app Main: run { Api }

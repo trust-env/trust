@@ -84,7 +84,35 @@ pub fn parse_file(path: &Path, plugin_keywords: &[String]) -> Result<Vec<Ast>, S
         .run()
         .map_err(|e| located(path, &source, parser.error_offset(), &clean_parse_error(&e)))?;
     let dir = path.parent().unwrap_or(Path::new("."));
-    Ok(asts.into_iter().map(|ast| resolve_ast_paths(ast, dir)).collect())
+    Ok(asts
+        .into_iter()
+        .map(|ast| locate_logic(resolve_ast_paths(ast, dir), path, &source))
+        .collect())
+}
+
+/// Records where each `logic {}` block starts, so its errors point into
+/// the `.tr` file.
+fn locate_logic(ast: Ast, path: &Path, source: &str) -> Ast {
+    match ast {
+        Ast::UseCase(mut use_case) => {
+            if let Some(logic) = &mut use_case.logic {
+                let (mut line, mut column) = (1, 1);
+                for c in source.chars().take(logic.offset) {
+                    if c == '\n' {
+                        line += 1;
+                        column = 1;
+                    } else {
+                        column += 1;
+                    }
+                }
+                logic.file = path.display().to_string();
+                logic.line = line;
+                logic.column = column;
+            }
+            Ast::UseCase(use_case)
+        }
+        other => other,
+    }
 }
 
 /// Drops the token dump the parser appends (the location says it better).
