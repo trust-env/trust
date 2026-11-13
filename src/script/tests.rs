@@ -1,6 +1,56 @@
 use crate::lexer::Lexer;
 use crate::parser::{Ast, CodeSpec, Parser};
 
+#[test]
+fn if_gives_a_value() {
+    let code = rust(
+        "let n = input.id\nlet s = if n > 1 { \"s\" } else { \"\" }\nlet r = if n > 10 { 1.0 } else if n > 5 { 0.5 } else { 0 }\nlet o = if n > 0 { none } else { input.id }\nreturn Out { count: (o ?? 0) + n, message: \"{n} jour{s} {r}\" }",
+    );
+    assert!(
+        code.contains("let s = if n > 1i64 { String::from(\"s\") } else { String::from(\"\") };"),
+        "{code}"
+    );
+    assert!(
+        code.contains(
+            "let r = if n > 10i64 { 1.0f64 } else { if n > 5i64 { 0.5f64 } else { 0f64 } };"
+        ),
+        "{code}"
+    );
+    assert!(
+        code.contains("let o = if n > 0i64 { None } else { Some(input.id) };"),
+        "{code}"
+    );
+    assert!(
+        error("let s = if input.id > 1 { \"s\" }\nfail NotFound")
+            .contains("an 'if' giving a value needs both branches")
+    );
+    assert!(
+        error("let s = if input.id > 1 { \"s\" } else { 1 }\nfail NotFound")
+            .contains("both branches of an 'if' value need the same type")
+    );
+}
+
+#[test]
+fn arguments_carry_no_extra_parentheses() {
+    let code = rust(
+        "let n = input.id\nvar xs: List<Int> = []\nxs.push(n + 1)\nlet a = min(n / 2 + 1, n * 2)\nlet b = max(n.to_float() / 3.0, 1.0)\nlet c = (n + 1) / (n + 2)\nreturn Out { count: a + c + xs.len() + now().timestamp(), message: \"{b}\" }",
+    );
+    assert!(code.contains("xs.push(n + 1i64);"), "{code}");
+    assert!(
+        code.contains("let a = std::cmp::min(n.checked_div(2i64)"),
+        "{code}"
+    );
+    assert!(
+        code.contains("let b = f64::max((n as f64) / 3.0f64, 1.0f64);"),
+        "{code}"
+    );
+    assert!(
+        code.contains("let c = (n + 1i64).checked_div(n + 2i64)"),
+        "{code}"
+    );
+    assert!(code.contains("(chrono::Utc::now()).timestamp()"), "{code}");
+}
+
 const PROJECT: &str = r#"
 enum Status { todo done }
 type Task { id: Int, user_id: Int, title: String, status: Status, points: Int, due: Option<DateTime>, tags: List<String> }

@@ -49,7 +49,9 @@ use_case PlanWeekUseCase {
         var budgets: List<String> = []
         for name in by_domain.keys() {
             for p in by_domain.get(name) ?? [] {
-                budgets.push("{p.name}: {planned.get(p.id) ?? 0.0}/{p.weekly_budget_h} h")
+                let ratio = min((planned.get(p.id) ?? 0.0) / p.weekly_budget_h, 1.0)
+                let state = if ratio >= 1.0 { "plein" } else if ratio > 0.5 { "chargé" } else { "libre" }
+                budgets.push("{p.name}: {planned.get(p.id) ?? 0.0}/{p.weekly_budget_h} h, {state} (#{from.timestamp()})")
             }
         }
 
