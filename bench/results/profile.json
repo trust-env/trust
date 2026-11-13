@@ -138,7 +138,8 @@
           "pct": 1.17
         }
       ],
-      "rps": 237027.8
+      "rps": 237027.8,
+      "netfilter_pct": 7.2
     },
     "trust-get": {
       "samples": 55340678716,
@@ -205,7 +206,8 @@
           "pct": 0.87
         }
       ],
-      "rps": 43216.5
+      "rps": 43216.5,
+      "netfilter_pct": 6.14
     },
     "trust-list": {
       "samples": 52683140661,
@@ -272,7 +274,8 @@
           "pct": 1.14
         }
       ],
-      "rps": 23005.4
+      "rps": 23005.4,
+      "netfilter_pct": 4.09
     },
     "trust-create": {
       "samples": 10470190360,
@@ -348,7 +351,8 @@
         "IO:WalInitSync": 0.1,
         "LWLock:WALInsert": 0.1,
         "IO:WalWrite": 0.1
-      }
+      },
+      "netfilter_pct": 5.51
     },
     "rust-axum-ping": {
       "samples": 59702560059,
@@ -413,7 +417,8 @@
           "pct": 1.19
         }
       ],
-      "rps": 215826.4
+      "rps": 215826.4,
+      "netfilter_pct": 7.39
     },
     "rust-axum-get": {
       "samples": 52481862425,
@@ -480,7 +485,8 @@
           "pct": 0.99
         }
       ],
-      "rps": 47216.7
+      "rps": 47216.7,
+      "netfilter_pct": 6.13
     },
     "rust-axum-list": {
       "samples": 42185167223,
@@ -547,7 +553,8 @@
           "pct": 1.0
         }
       ],
-      "rps": 21946.6
+      "rps": 21946.6,
+      "netfilter_pct": 4.29
     },
     "rust-axum-create": {
       "samples": 7767821361,
@@ -623,7 +630,8 @@
         "LWLock:WALInsert": 0.3,
         "IO:WalWrite": 0.0,
         "LWLock:LockManager": 0.0
-      }
+      },
+      "netfilter_pct": 6.45
     }
   }
 }

@@ -56,6 +56,7 @@ COMPONENTS = [
 ]
 OTHER = ("other", "Autre")
 # tracing's generic future wrapper: its inclusive time is the wrapped work, not tracing.
+NETFILTER = re.compile(r"nf_tables|nft_|nf_conntrack|nf_hook|iptable")
 WRAPPER = re.compile(r"Instrumented<.*> as core::future::future::Future>::poll|drop_in_place<tracing::instrument::Instrumented")
 
 
@@ -71,7 +72,7 @@ def classify(leaf: str) -> str:
 def breakdown(folded: Path) -> dict:
     """Self time by component, plus the share of samples with any tracing frame."""
     self_time: collections.Counter = collections.Counter()
-    tracing_incl = total = 0
+    tracing_incl = netfilter = total = 0
     top: collections.Counter = collections.Counter()
     for line in folded.read_text().splitlines():
         stack, _, n = line.rpartition(" ")
@@ -85,6 +86,10 @@ def breakdown(folded: Path) -> dict:
         # Time inside tracing itself (span creation, enter/exit, filtering): a stack counts
         # once it reaches a tracing function other than the generic future wrapper,
         # whose inclusive time is just the work the span wraps (e.g. a whole SQL query).
+        # Docker's bridge firewall (nf_tables / conntrack) on every packet: a cost of
+        # the bench's container networking, not of the app.
+        if any(NETFILTER.search(f) for f in frames):
+            netfilter += n
         if any(COMPONENTS[1][2].search(f) and not WRAPPER.search(f) for f in frames):
             tracing_incl += n
     pct = lambda v: round(100 * v / total, 2) if total else 0
@@ -92,6 +97,7 @@ def breakdown(folded: Path) -> dict:
         "samples": total,
         "self_pct": {k: pct(v) for k, v in self_time.items()},
         "tracing_cost_pct": pct(tracing_incl),
+        "netfilter_pct": pct(netfilter),
         "top_functions": [{"name": f, "pct": pct(v)} for f, v in top.most_common(12)],
     }
 
@@ -165,14 +171,70 @@ def profile_point(app: dict, scenario: dict, c: int, args) -> dict:
     info["rps"] = round(rps, 1)
     if scenario["id"] == "create":
         info["pg_waits_pct"] = waits.result()
-    FLAME.mkdir(parents=True, exist_ok=True)
-    title = f"{app['name']} · {scenario['label']} · {c} connexions"
-    bench.sh("docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}",
-                 "-v", f"{out}:/out", "-v", f"{FLAME}:/flame", PERF_IMAGE, "sh", "-c",
-             f"/fg/flamegraph.pl --title '{title}' --width 1400 --colors rust /out/{name}.folded > /flame/{name}.svg")
+    render_flame(name, f"{app['name']} · {scenario['label']} · {c} connexions")
     bench.log(f"  {name}: {info['samples']} samples, {rps:,.0f} req/s, "
               f"tracing cost {info["tracing_cost_pct"]} %")
     return info
+
+
+def flamegraph_sh(cmd: str) -> None:
+    FLAME.mkdir(parents=True, exist_ok=True)
+    bench.sh("docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}",
+             "-v", f"{WORK / 'out'}:/out", "-v", f"{FLAME}:/flame", PERF_IMAGE, "sh", "-c", cmd)
+
+
+def fix_svg(path: Path) -> None:
+    """flamegraph.pl writes its UTF-8 title bytes encoded a second time ("Ã©" for "é"):
+    decode them back. Also drop the DOCTYPE, which browsers don't need and some
+    hosts refuse."""
+    text = path.read_text(encoding="utf-8")
+    try:
+        text = text.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass  # already clean
+    text = re.sub(r"<!DOCTYPE[^>]*>\s*", "", text, count=1)
+    path.write_text(text, encoding="utf-8")
+
+
+def render_flame(name: str, title: str) -> None:
+    # --encoding: the titles are UTF-8 (accents, "·"); without it they render as mojibake.
+    flamegraph_sh(f"/fg/flamegraph.pl --encoding=UTF-8 --title '{title}' --width 1400 --colors rust "
+                  f"/out/{name}.folded > /flame/{name}.svg")
+    fix_svg(FLAME / f"{name}.svg")
+
+
+def render_diff(a: str, b: str, scenario: dict) -> None:
+    s = scenario["id"]
+    # -n normalises sample counts, so the diff shows shares, not throughput.
+    flamegraph_sh(f"/fg/difffolded.pl -n /out/{b}-{s}.folded /out/{a}-{s}.folded | /fg/flamegraph.pl "
+                  f"--encoding=UTF-8 --title 'Différentiel {scenario['label']} : rouge = plus de temps dans {a}' "
+                  f"--width 1400 > /flame/diff-{s}.svg")
+    fix_svg(FLAME / f"diff-{s}.svg")
+
+
+def reanalyze() -> int:
+    """Recompute the report and redraw every graph from the stacks already captured."""
+    report = json.loads((bench.RESULTS / "profile.json").read_text())
+    report["meta"]["components"] = [{"id": k, "label": l} for k, l, _ in COMPONENTS] + [
+        {"id": OTHER[0], "label": OTHER[1]}]
+    names = {a["id"]: a["name"] for a in bench.APPS}
+    labels = {s["id"]: s for s in bench.SCENARIOS}
+    for name, info in report["profiles"].items():
+        folded = WORK / "out" / f"{name}.folded"
+        if folded.exists():
+            info.update(breakdown(folded))
+            app_id, _, scen_id = name.rpartition("-")
+            render_flame(name, f"{names.get(app_id, app_id)} · {labels[scen_id]['label']} · "
+                               f"{report['meta']['connections']} connexions")
+    a, b = report["meta"]["apps"]
+    for s in report["meta"]["scenarios"]:
+        if (WORK / "out" / f"{a}-{s['id']}.folded").exists() and (WORK / "out" / f"{b}-{s['id']}.folded").exists():
+            render_diff(a, b, labels[s["id"]])
+    payload = json.dumps(report, indent=2)
+    (bench.RESULTS / "profile.json").write_text(payload)
+    (bench.BENCH / "dashboard" / "profile.js").write_text(f"window.BENCH_PROFILE = {payload};\n")
+    bench.log("rewrote results/profile.json and dashboard/profile.js from the captured stacks")
+    return 0
 
 
 def main() -> int:
@@ -188,7 +250,11 @@ def main() -> int:
     ap.add_argument("--perf-cpus", default="20,21")
     ap.add_argument("--memory", default="1g")
     ap.add_argument("--db-pool", type=int, default=32)
+    ap.add_argument("--reanalyze", action="store_true",
+                    help="recompute results/profile.json from the stacks already captured (no measurement)")
     args = ap.parse_args()
+    if args.reanalyze:
+        return reanalyze()
 
     ids = args.apps.split(",")
     apps = [next(a for a in bench.APPS if a["id"] == i) for i in ids]
@@ -222,15 +288,8 @@ def main() -> int:
         bench.sh("docker", "rm", "-f", bench.APP, bench.PG, check=False)
 
     a, b = ids
-    out = WORK / "out"
     for scenario in scenarios:
-        s = scenario["id"]
-        # -n normalises sample counts, so the diff shows shares, not throughput.
-        bench.sh("docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}",
-                 "-v", f"{out}:/out", "-v", f"{FLAME}:/flame", PERF_IMAGE, "sh", "-c",
-                 f"/fg/difffolded.pl -n /out/{b}-{s}.folded /out/{a}-{s}.folded | /fg/flamegraph.pl "
-                 f"--title 'Différentiel {scenario['label']} : rouge = plus de temps dans {a}' --width 1400 "
-                 f"> /flame/diff-{s}.svg")
+        render_diff(a, b, scenario)
     payload = json.dumps(report, indent=2)
     (bench.RESULTS / "profile.json").write_text(payload)
     (bench.BENCH / "dashboard" / "profile.js").write_text(f"window.BENCH_PROFILE = {payload};\n")

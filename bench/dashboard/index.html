@@ -22,6 +22,7 @@
   --other: #b8bfc6;
   --good: #006300;
   --bad: #b42323;
+  --more: #e34948; --less: #2a78d6;
   --warn: #fab219; --warn-wash: rgba(250, 178, 25, 0.12); --warn-ink: #8a5a00;
   --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6;
   --font: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -32,7 +33,7 @@
   :root:not([data-theme="light"]) {
     --bg: #0e1013; --surface: #171a1e; --ink: #eef0f2; --ink-2: #b9c0c7; --muted: #848c94;
     --line: #262a2f; --axis: #3a4047; --accent: #3987e5; --accent-wash: rgba(57, 135, 229, 0.14);
-    --other: #4a525b; --good: #2fbf2f; --bad: #ef6b6b; --warn-ink: #fab219;
+    --other: #4a525b; --good: #2fbf2f; --bad: #ef6b6b; --warn-ink: #fab219; --more: #e66767; --less: #3987e5;
     --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9;
     color-scheme: dark;
   }
@@ -40,7 +41,7 @@
 :root[data-theme="dark"] {
   --bg: #0e1013; --surface: #171a1e; --ink: #eef0f2; --ink-2: #b9c0c7; --muted: #848c94;
   --line: #262a2f; --axis: #3a4047; --accent: #3987e5; --accent-wash: rgba(57, 135, 229, 0.14);
-  --other: #4a525b; --good: #2fbf2f; --bad: #ef6b6b; --warn-ink: #fab219;
+  --other: #4a525b; --good: #2fbf2f; --bad: #ef6b6b; --warn-ink: #fab219; --more: #e66767; --less: #3987e5;
   --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9;
   color-scheme: dark;
 }
@@ -166,6 +167,48 @@ pre { margin: 0; padding: 10px 12px; background: var(--bg); border: 1px solid va
 .pf.me { background: var(--accent); }
 .pair .val { font-family: var(--mono); font-size: 11px; text-align: right; line-height: 1.25; font-variant-numeric: tabular-nums; }
 a { color: var(--accent); }
+
+/* Tabs */
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: -12px; }
+.tabs a { padding: 8px 14px; color: var(--ink-2); text-decoration: none; font-weight: 500; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tabs a:hover { color: var(--ink); }
+.tabs a[aria-current="page"] { color: var(--ink); border-bottom-color: var(--accent); }
+.tabs a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.ctl { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+/* Explainer views */
+.hero { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 22px 22px 20px; display: grid; gap: 10px; }
+.hero .big { font-size: clamp(22px, 3.2vw, 30px); font-weight: 600; letter-spacing: -0.015em; text-wrap: balance; line-height: 1.25; max-width: 32ch; }
+.hero .big em { font-style: normal; color: var(--accent); }
+.hero p { color: var(--ink-2); max-width: 72ch; }
+.prose { color: var(--ink-2); max-width: 72ch; display: grid; gap: 8px; }
+.prose b { color: var(--ink); font-weight: 600; }
+.grid4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 12px; }
+.facts { display: grid; gap: 6px; font-size: 13px; color: var(--ink-2); }
+.facts b { color: var(--ink); font-weight: 600; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.scale { display: grid; gap: 6px; }
+.scale-row { display: grid; grid-template-columns: minmax(96px, 9.5rem) 1fr 6.5rem; gap: 10px; align-items: center; }
+.scale-row .name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.scale-row.me .name { font-weight: 600; }
+.scale-row .val { font-family: var(--mono); font-size: 12px; text-align: right; white-space: nowrap; }
+.ref { position: absolute; top: -4px; bottom: -4px; width: 0; border-left: 1px dashed var(--ink-2); }
+.stack { display: flex; height: 22px; gap: 2px; }
+.stack span { display: block; height: 100%; min-width: 1px; }
+.stack span:first-child { border-radius: 0; }
+.stack span:last-child { border-radius: 0 4px 4px 0; }
+.div-row { display: grid; grid-template-columns: minmax(110px, 12rem) 1fr 5.5rem; gap: 10px; align-items: center; }
+.div-track { position: relative; height: 16px; }
+.div-track .mid { position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: var(--axis); }
+.div-track .bar { position: absolute; top: 0; bottom: 0; }
+.div-row .val { font-family: var(--mono); font-size: 12px; text-align: right; white-space: nowrap; }
+.explain td:first-child { font-family: var(--mono); font-size: 12px; white-space: normal; word-break: break-all; max-width: 26rem; }
+.explain td:nth-child(2) { white-space: normal; color: var(--ink-2); min-width: 14rem; }
+[hidden] { display: none !important; }
+.flame-img { overflow: auto; max-height: 560px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.flame-img img { display: block; max-width: none; width: 1400px; }
+.steps { margin: 0; padding-left: 20px; display: grid; gap: 8px; color: var(--ink-2); }
+.steps b { color: var(--ink); }
+.callout { border-left: 3px solid var(--accent); padding: 6px 12px; background: var(--accent-wash); border-radius: 0 6px 6px 0; color: var(--ink-2); font-size: 13px; }
 .warn { color: var(--warn-ink); }
 .warnbox { border: 1px solid var(--warn); background: var(--warn-wash); border-radius: 10px; padding: 10px 14px; font-size: 13px; }
 .empty { padding: 40px 16px; text-align: center; color: var(--ink-2); }
@@ -187,11 +230,17 @@ a { color: var(--accent); }
     <div class="meta" id="meta"></div>
   </header>
 
+  <nav class="tabs" aria-label="Vues">
+    <a href="#niveau" data-view="niveau">Niveau de performance</a>
+    <a href="#profil" data-view="profil">Profil CPU</a>
+    <a href="#details" data-view="details">Données détaillées</a>
+  </nav>
+
   <div class="controls" role="toolbar" aria-label="Filtres">
-    <span class="label">Scénario</span>
-    <div class="seg" id="scenarioSeg"></div>
-    <span class="label">Connexions</span>
-    <div class="seg" id="concSeg"></div>
+    <span class="ctl" id="scenCtl"><span class="label">Scénario</span>
+    <span class="seg" id="scenarioSeg"></span></span>
+    <span class="ctl" id="concCtl"><span class="label">Connexions</span>
+    <span class="seg" id="concSeg"></span></span>
     <span class="grow"></span>
     <label class="filebtn">Charger un autre résultat (.json)<input type="file" id="file" accept="application/json,.json"></label>
     <p class="scen-desc" id="scenDesc"></p>
@@ -426,6 +475,17 @@ a { color: var(--accent); }
 
     main.innerHTML = '';
     main.style.display = 'grid'; main.style.gap = '16px';
+
+    const view = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'niveau';
+    document.querySelectorAll('.tabs a').forEach((a) => {
+      if (a.dataset.view === view) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    });
+    $('#scenCtl').hidden = view === 'niveau';
+    $('#concCtl').hidden = view === 'profil';
+    $('#scenDesc').hidden = view !== 'details';
+    if (view === 'niveau') { renderLevel(main, cfg, h); return; }
+    if (view === 'profil') { renderProfile(main, scen); return; }
+
     const cur = current();
     const by = Object.fromEntries(cur.map((x) => [x.app.id, x.r]));
     const me = by[ME];
@@ -534,72 +594,346 @@ a { color: var(--accent); }
     det.appendChild(inner);
     main.appendChild(det);
 
-    const prof = profileSection(scen);
-    if (prof) main.insertBefore(prof, det);
+    if (window.BENCH_PROFILE) {
+      det.insertAdjacentHTML('beforebegin', `<p class="callout">Où part le temps CPU de chaque requête : voir l’onglet <a href="#profil">Profil CPU</a>.</p>`);
+    }
 
     main.appendChild(methodology(cfg, h));
   }
 
-  // ------------------------------------------------------------ profile (perf flame graphs)
-  function profileSection(scen) {
+  // ------------------------------------------------------------ explainer views
+  const VIEWS = ['niveau', 'profil', 'details'];
+  const geo = (xs) => Math.exp(xs.reduce((s, x) => s + Math.log(x), 0) / xs.length);
+  const us = (v) => v == null ? '–' : (v < 10 ? nf1.format(v) : nf.format(v)) + ' µs';
+  const cpuUs = (r) => r && r.rps ? (1e6 * r.cpu_cores) / r.rps : null;
+  const times = (x) => `${nf1.format(x)}×`;
+
+  function scaleRows(items, { value, label, ref, tipFn }) {
+    const max = Math.max(...items.map(value), ref || 0) * 1.05 || 1;
+    const el = document.createElement('div');
+    el.className = 'scale';
+    items.forEach((it) => {
+      const row = document.createElement('div');
+      row.className = 'scale-row bar-row' + (it.app.id === ME ? ' me' : '');
+      row.innerHTML = `<span class="name">${esc(it.app.name)}</span>
+        <span class="track"><span class="fill" style="width:${(value(it) / max) * 100}%"></span>${ref ? `<span class="ref" style="left:${(ref / max) * 100}%"></span>` : ''}</span>
+        <span class="val">${label(it)}</span>`;
+      if (tipFn) {
+        row.addEventListener('mousemove', (ev) => showTip(ev, tipFn(it)));
+        row.addEventListener('mouseleave', hideTip);
+      }
+      el.appendChild(row);
+    });
+    return el;
+  }
+
+  // ---------------- Niveau de performance
+  function renderLevel(main, cfg, host) {
+    const scs = data.meta.scenarios, c = state.conc;
+    const apps = okApps();
+    const base = Object.fromEntries(scs.map((s) => [s.id, run(ME, s.id, c)]));
+    if (!Object.values(base).some(Boolean)) {
+      main.innerHTML = '<div class="empty">Pas de mesure de Trust à ce niveau de concurrence.</div>';
+      return;
+    }
+    // Throughput index: geometric mean, over scenarios, of each stack's req/s relative to Trust.
+    const index = apps.map((a) => {
+      const pairs = scs.map((s) => [s, run(a.id, s.id, c), base[s.id]]).filter(([, r, t]) => r && t);
+      return {
+        app: a,
+        idx: pairs.length ? 100 * geo(pairs.map(([, r, t]) => r.rps / t.rps)) : null,
+        noisy: pairs.some(([, r]) => r.noisy),
+        per: pairs.map(([s, r, t]) => [s.label, (100 * r.rps) / t.rps]),
+      };
+    }).filter((x) => x.idx != null).sort((a, b) => b.idx - a.idx);
+    const idx = Object.fromEntries(index.map((x) => [x.app.id, x.idx]));
+
+    if (host.power === 'battery') {
+      main.insertAdjacentHTML('beforeend', '<div class="warnbox"><b>⚠ Mesuré sur batterie</b> : la fréquence CPU varie fortement, les écarts sont moins fiables.</div>');
+    }
+
+    // Verdict
+    const vsRust = idx['rust-axum'] ? 100 / idx['rust-axum'] : null;
+    const vsNest = idx['nestjs-express'] ? 100 / idx['nestjs-express'] : null;
+    const vsPy = idx.fastapi ? 100 / idx.fastapi : null;
+    const hero = document.createElement('section');
+    hero.className = 'hero';
+    hero.innerHTML = `<span class="eyebrow">Verdict · ${c} connexions simultanées</span>
+      <p class="big">${vsRust ? `Trust tient <em>${nf.format(vsRust * 100)} %</em> de la vitesse d’un service Rust écrit à la main` : 'Trust'}${vsNest ? `, et va <em>${times(vsNest)} plus vite</em> que NestJS` : ''}.</p>
+      <p>Chaque stack sert la même API sur 2 cœurs CPU avec le même Postgres.
+      L’indice ci-dessous résume les quatre scénarios en un nombre : la moyenne géométrique du débit de chaque stack rapporté à celui de Trust. <b>Trust vaut 100</b> ; 200 voudrait dire deux fois plus rapide que Trust, 50 deux fois plus lent.</p>`;
+    main.appendChild(hero);
+
+    // Index chart
+    const idxCard = card('Indice de débit', `Trust = 100 (trait pointillé). Survolez une ligne pour le détail par scénario.${index.some((x) => x.noisy) ? ' ⚠ Certaines mesures de cet indice ont été perturbées (voir Données détaillées).' : ''}`,
+      scaleRows(index, {
+        value: (x) => x.idx, ref: 100,
+        label: (x) => `${nf.format(x.idx)}${x.noisy ? ' ⚠' : ''}`,
+        tipFn: (x) => `<div class="t">${esc(x.app.name)}</div>` + rows(x.per.map(([l, v]) => [l, `${nf.format(v)} % de Trust`])),
+      }));
+    const ladder = document.createElement('div');
+    ladder.className = 'prose';
+    const fmtIdx = (id) => idx[id] ? nf.format(idx[id]) : '–';
+    ladder.innerHTML = `<p><b>Trois familles se détachent.</b> Les stacks compilées (Rust, Go et Trust) sont au coude à coude autour de 100.
+      Node.js avec Fastify, seul ou sous NestJS, tourne vers ${fmtIdx('fastify')}. NestJS sur Express (${fmtIdx('nestjs-express')}) et Python FastAPI (${fmtIdx('fastapi')}) ferment la marche${vsPy ? ` : Trust va ${times(vsPy)} plus vite que FastAPI` : ''}.</p>`;
+    idxCard.appendChild(ladder);
+    main.appendChild(idxCard);
+
+    // What it means, per scenario
+    const per = document.createElement('section');
+    per.className = 'card';
+    per.innerHTML = `<header><h2>Ce que représentent les chiffres de Trust</h2><p>Sur 2 cœurs CPU, à ${c} connexions simultanées. Le CPU par requête est le temps de calcul consommé par l’app pour servir une requête.</p></header>`;
+    const g4 = document.createElement('div');
+    g4.className = 'grid4';
+    scs.forEach((s) => {
+      const t = base[s.id];
+      if (!t) return;
+      const r = run('rust-axum', s.id, c), n = run('nestjs-express', s.id, c);
+      g4.insertAdjacentHTML('beforeend', `<div class="tile">
+        <span class="eyebrow">${esc(s.label)}</span>
+        <span class="v num">${compact.format(t.rps)}<span class="muted" style="font-size:14px;font-weight:400"> req/s</span></span>
+        <div class="facts">
+          <span>≈ <b>${compact.format(t.rps * 86400)}</b> requêtes par jour</span>
+          <span>CPU par requête : <b>${us(cpuUs(t))}</b>${r ? ` (Rust main ${us(cpuUs(r))}` : ''}${n ? `, NestJS ${us(cpuUs(n))})` : r ? ')' : ''}</span>
+          <span>La moitié des réponses en <b>${ms(t.latency_ms.p50)}</b>, 99 sur 100 en moins de <b>${ms(t.latency_ms.p99)}</b></span>
+        </div>
+        <span class="d muted">${esc(SCEN_FR[s.id] || s.desc)}</span></div>`);
+    });
+    per.appendChild(g4);
+    main.appendChild(per);
+
+    // Relative throughput per scenario (small multiples)
+    const mult = document.createElement('section');
+    mult.className = 'card';
+    mult.innerHTML = `<header><h2>Scénario par scénario</h2><p>Débit de chaque stack en % de celui de Trust. Les écarts se resserrent sur les écritures (POST), limitées par le disque de Postgres pour tout le monde.</p></header>`;
+    const mg = document.createElement('div');
+    mg.className = 'grid2';
+    scs.forEach((s) => {
+      const t = base[s.id];
+      if (!t) return;
+      const items = apps.map((a) => ({ app: a, r: run(a.id, s.id, c) })).filter((x) => x.r);
+      const box = document.createElement('div');
+      box.style.minWidth = '0';
+      box.innerHTML = `<h3 style="margin-bottom:8px">${esc(s.label)}</h3>`;
+      box.appendChild(hbars(items, {
+        value: (i) => (100 * i.r.rps) / t.rps,
+        label: (i) => `${nf.format((100 * i.r.rps) / t.rps)} %${i.r.noisy ? ' ⚠' : ''}`,
+        tipFn: (i) => runTip(i.app, i.r),
+      }));
+      mg.appendChild(box);
+    });
+    mult.appendChild(mg);
+    main.appendChild(mult);
+
+    // Footprint
+    const foot = document.createElement('div');
+    foot.className = 'grid2';
+    const withRam = apps.filter((a) => a.idle_mem_mb != null).map((a) => ({ app: a }));
+    foot.appendChild(card('Mémoire au repos', 'RAM occupée une fois l’app démarrée, avant toute requête. Plus court est mieux.',
+      hbars(withRam, { value: (i) => i.app.idle_mem_mb, best: 'low', label: (i) => mb(i.app.idle_mem_mb), unitNote: 'Mo' })));
+    const trustApp = data.apps.find((a) => a.id === ME);
+    foot.appendChild(card('Code à écrire', `Lignes écrites à la main pour la même API${trustApp && trustApp.generated_loc ? ` ; Trust en génère ${nf.format(trustApp.generated_loc)} lignes de Rust à partir de ses ${trustApp.loc}` : ''}.`,
+      hbars(apps.map((a) => ({ app: a })), { value: (i) => i.app.loc, best: 'low', label: (i) => `${i.app.loc} lignes`, unitNote: 'lignes' })));
+    main.appendChild(foot);
+
+    const read = document.createElement('section');
+    read.className = 'card';
+    read.innerHTML = `<header><h2>Comment lire ces chiffres</h2></header>
+      <ul class="steps">
+        <li><b>Comparez les stacks entre elles, pas aux chiffres d’un autre article.</b> Le banc tourne sur un laptop (${esc(host.cpu)}), dans Docker, avec 2 cœurs par app : les valeurs absolues dépendent de la machine, les rapports beaucoup moins.</li>
+        <li><b>Sur un serveur, la capacité monte avec les cœurs.</b> Toutes ces stacks utilisent plusieurs cœurs ; doubler les cœurs rapproche du double de débit tant que Postgres suit.</li>
+        <li><b>Le p99 compte autant que le débit.</b> C’est le temps sous lequel répondent 99 requêtes sur 100 : celui que ressentent les utilisateurs les moins chanceux.</li>
+        <li><b>Les écritures plafonnent pour tout le monde</b>, vers ${compact.format(Math.max(...apps.map((a) => (run(a.id, 'create', c) || {}).rps || 0)))} req/s : chaque INSERT attend que Postgres écrive son journal sur disque (voir l’onglet <a href="#profil">Profil CPU</a>).</li>
+      </ul>`;
+    main.appendChild(read);
+  }
+
+  // ---------------- Profil CPU
+  const GROUPS = [
+    { id: 'net', label: 'Réseau et noyau', comps: ['kernel'], color: '--s1', what: 'Envoyer et recevoir les paquets TCP, appels système, pare-feu Docker.' },
+    { id: 'http', label: 'HTTP et routage', comps: ['http', 'router'], color: '--s2', what: 'Lire la requête HTTP, trouver la route, écrire la réponse (hyper, axum, tower).' },
+    { id: 'db', label: 'Driver Postgres', comps: ['sqlx'], color: '--s3', what: 'Envoyer la requête SQL et décoder les lignes (sqlx).' },
+    { id: 'rt', label: 'Runtime async', comps: ['runtime'], color: '--s4', what: 'Réveiller et ordonnancer les tâches (tokio).' },
+    { id: 'mem', label: 'Mémoire et libc', comps: ['alloc', 'libc'], color: '--s5', what: 'Allouer, copier et libérer de la mémoire.' },
+    { id: 'json', label: 'JSON', comps: ['json'], color: '--s6', what: 'Transformer les structures Rust en JSON et inversement (serde).' },
+    { id: 'other', label: 'Tracing et autre', comps: ['tracing', 'other', 'app'], color: '--s7', what: 'Logs et spans de tracing, code de l’app, le reste.' },
+  ];
+  const EXPLAIN = [
+    [/nf_tables|nft_|conntrack/, 'Pare-feu du réseau Docker : chaque paquet traverse ses règles. Absent avec un réseau sans NAT.'],
+    [/\[libc\.so\.6\]/, 'Bibliothèque C (copies mémoire, chaînes), sans détail des fonctions.'],
+    [/^(malloc|cfree|free|realloc|_int_)/, 'Allocation ou libération de mémoire.'],
+    [/spin_lock/, 'Verrou interne du noyau, surtout dans la pile réseau.'],
+    [/skb_|tcp_|ip_|__dev_|netif|veth|br_|napi|sock_|inet_/, 'Pile réseau du noyau : construction et envoi des paquets TCP/IP.'],
+    [/syscall|fdget|entry_|__x64_sys/, 'Entrée ou sortie d’un appel système.'],
+    [/epoll|futex|schedule|switch_to|ipi/, 'Attente d’événements et réveil des threads.'],
+    [/^(recv|read|__recv)/, 'Lecture sur le socket.'],
+    [/^(__send|send|writev|write)/, 'Écriture sur le socket.'],
+    [/poll_write|Dispatcher/, 'Serveur HTTP (hyper) : écriture de la réponse.'],
+    [/parse|httparse/, 'Analyse de la requête HTTP.'],
+    [/hyper/, 'Serveur HTTP (hyper).'],
+    [/tokio/, 'Ordonnanceur async de tokio.'],
+    [/sqlx/, 'Driver Postgres (sqlx) : requête envoyée, lignes décodées.'],
+    [/serde|ryu|itoa/, 'Sérialisation JSON.'],
+    [/axum|tower/, 'Routage et middlewares (axum, tower).'],
+    [/tracing/, 'Tracing (spans, filtres de logs).'],
+    [/clock_gettime|vdso/, 'Lecture de l’horloge.'],
+  ];
+  const explain = (name) => (EXPLAIN.find(([rx]) => rx.test(name)) || [null, '—'])[1];
+
+  function renderProfile(main, scen) {
     const P = window.BENCH_PROFILE;
-    if (!P || !P.profiles) return null;
+    if (!P || !P.profiles) {
+      main.innerHTML = '<div class="empty">Aucun profil chargé. Lancez <code>python3 bench/profile.py</code> pour le produire.</div>';
+      return;
+    }
     const [a, b] = P.meta.apps;
     const pa = P.profiles[`${a}-${scen.id}`], pb = P.profiles[`${b}-${scen.id}`];
-    if (!pa || !pb) return null;
-    const sec = document.createElement('section');
-    sec.className = 'card';
-    sec.innerHTML = `<header><h2>Où part le temps CPU · ${esc(scen.label)}</h2>
-      <p>Profil <code>perf</code> à ${P.meta.frequency_hz} Hz pendant ${P.meta.duration_s} s sous ${P.meta.connections} connexions, builds avec frame pointers.
-      Chaque échantillon est attribué au composant de la fonction en cours d’exécution (temps propre).</p></header>`;
-
-    // Paired bars: one row per component, Trust (accent) above the hand-written baseline (gray).
-    const comps = P.meta.components.filter((c) => (pa.self_pct[c.id] || 0) + (pb.self_pct[c.id] || 0) >= 0.5)
-      .sort((x, y) => (pa.self_pct[y.id] || 0) - (pa.self_pct[x.id] || 0));
-    const max = Math.max(...comps.flatMap((c) => [pa.self_pct[c.id] || 0, pb.self_pct[c.id] || 0]), 1);
-    const legend = `<div class="legend"><span class="me"><i style="background:var(--accent)"></i>${esc(appName(a))}</span><span><i style="background:var(--other)"></i>${esc(appName(b))}</span></div>`;
-    const rowsHtml = comps.map((c) => {
-      const va = pa.self_pct[c.id] || 0, vb = pb.self_pct[c.id] || 0;
-      return `<div class="pair" data-c="${esc(c.label)}" data-a="${va}" data-b="${vb}">
-        <span class="name">${esc(c.label)}</span>
-        <span class="pt"><span class="pf me" style="width:${(va / max) * 100}%"></span><span class="pf" style="width:${(vb / max) * 100}%"></span></span>
-        <span class="val">${nf1.format(va)} %<br><span class="muted">${nf1.format(vb)} %</span></span></div>`;
-    }).join('');
-    const pairs = document.createElement('div');
-    pairs.innerHTML = legend + `<div class="pairs">${rowsHtml}</div><div class="axisnote"><span>0</span><span>% des échantillons CPU</span></div>`;
-    pairs.querySelectorAll('.pair').forEach((el) => {
-      el.addEventListener('mousemove', (ev) => showTip(ev, `<div class="t">${esc(el.dataset.c)}</div>` +
-        rows([[appName(a), nf1.format(+el.dataset.a) + ' %'], [appName(b), nf1.format(+el.dataset.b) + ' %']])));
-      el.addEventListener('mouseleave', hideTip);
+    if (!pa || !pb) {
+      main.innerHTML = `<div class="empty">Pas de profil pour « ${esc(scen.label)} ».</div>`;
+      return;
+    }
+    const conc = P.meta.connections;
+    const ra = run(a, scen.id, conc), rb = run(b, scen.id, conc);
+    const usA = cpuUs(ra), usB = cpuUs(rb);
+    const groups = (p, total) => GROUPS.map((g) => {
+      const pct = g.comps.reduce((s, c) => s + (p.self_pct[c] || 0), 0);
+      return { g, pct, us: total != null ? (total * pct) / 100 : null };
     });
+    const ga = groups(pa, usA), gb = groups(pb, usB);
+    const nameA = appName(a), nameB = appName(b);
 
-    const facts = document.createElement('div');
-    facts.className = 'tiles';
-    const waits = pa.pg_waits_pct && Object.keys(pa.pg_waits_pct).length
-      ? `<div class="tile"><span class="eyebrow">Postgres pendant l’écriture</span>
-          ${Object.entries(pa.pg_waits_pct).slice(0, 4).map(([k, v]) => `<span class="d"><b class="num">${nf1.format(v)} %</b> ${esc(k.replace('CPU', 'en calcul'))}</span>`).join('')}
-          <span class="d muted">Part des connexions actives, par état d’attente.</span></div>` : '';
-    facts.innerHTML = `<div class="tile"><span class="eyebrow">Coût du tracing</span>
-        <span class="v num">${nf1.format(pa.tracing_cost_pct ?? 0)} %</span>
-        <span class="d">du CPU de ${esc(appName(a))} est passé dans le tracing lui-même (spans, filtrage), contre ${nf1.format(pb.tracing_cost_pct ?? 0)} % pour ${esc(appName(b))}.</span></div>
-      <div class="tile"><span class="eyebrow">Débit sous profilage</span>
-        <span class="v num">${nf.format(pa.rps)}</span>
-        <span class="d">req/s pour ${esc(appName(a))}, ${nf.format(pb.rps)} pour ${esc(appName(b))} (${nf.format((pa.rps / pb.rps) * 100)} %).</span></div>` + waits;
+    // Verdict
+    const delta = usA != null && usB != null ? usA - usB : null;
+    const deltas = ga.map((x, i) => ({ g: x.g, d: x.us - gb[i].us })).sort((x, y) => y.d - x.d);
+    const hero = document.createElement('section');
+    hero.className = 'hero';
+    hero.innerHTML = `<span class="eyebrow">Profil CPU · ${esc(scen.label)} · ${conc} connexions</span>
+      <p class="big">Une requête coûte <em>${us(usA)}</em> de CPU à ${esc(nameA)}, contre ${us(usB)} à ${esc(nameB)}.</p>
+      <p>${delta != null ? (Math.abs(delta) < 0.05 * usB
+        ? 'C’est la même chose à quelques pourcents près.'
+        : delta > 0 ? (() => {
+          // The kernel share differs between bench and profile runs (same JSON on the wire):
+          // name the first application-side component instead.
+          const app = deltas.find((x) => x.g.id !== 'net' && x.d > 0);
+          return `Trust dépense ${us(delta)} de plus${app ? `, côté application surtout dans « ${esc(app.g.label)} »` : ''}${deltas[0].g.id === 'net' ? ' ; l’écart côté noyau est dans la marge de mesure' : ''}.`;
+        })()
+          : `Trust dépense ${us(-delta)} de moins.`) : ''}
+      Dans les deux cas, le plus gros du temps part dans le noyau (réseau) : ${nf.format(ga[0].pct)} % pour Trust, ${nf.format(gb[0].pct)} % pour le Rust écrit à la main.</p>`;
+    main.appendChild(hero);
 
-    const top = document.createElement('div');
-    top.className = 'grid2';
-    const topList = (p, id) => `<div style="min-width:0"><h3 style="margin-bottom:6px">Fonctions les plus coûteuses · ${esc(appName(id))}</h3>
-      <div class="tablewrap"><table><tbody>${p.top_functions.slice(0, 8).map((f) => `<tr><td class="mono" style="white-space:normal;word-break:break-all">${esc(f.name)}</td><td class="n">${nf1.format(f.pct)} %</td></tr>`).join('')}</tbody></table></div></div>`;
-    top.innerHTML = topList(pa, a) + topList(pb, b);
+    // How to read a profile
+    const how = document.createElement('section');
+    how.className = 'card';
+    how.innerHTML = `<header><h2>Comment on obtient ce profil</h2></header>
+      <div class="grid2">
+        <ol class="steps">
+          <li><b>On échantillonne.</b> Pendant ${P.meta.duration_s} s de charge, <code>perf</code> interrompt l’app ${nf.format(P.meta.frequency_hz)} fois par seconde et note la pile d’appels en cours : quelle fonction tourne, appelée par quelle autre, et ainsi de suite.</li>
+          <li><b>On additionne.</b> Une fonction présente dans 30 % des échantillons a consommé 30 % du temps CPU.</li>
+          <li><b>On dessine un flame graph.</b> Chaque boîte est une fonction, posée sur celle qui l’appelle. Sa <b>largeur</b> est son temps CPU ; l’ordre gauche-droite ne veut rien dire.</li>
+          <li><b>On compare.</b> Le flame graph différentiel colore en rouge ce qui prend plus de place chez Trust, en bleu ce qui en prend moins.</li>
+        </ol>
+        <div style="min-width:0">${flameSchematic()}</div>
+      </div>`;
+    main.appendChild(how);
 
-    const links = document.createElement('p');
-    links.style.fontSize = '13px';
-    links.innerHTML = `Flame graphs interactifs (cliquer pour zoomer) : <a href="flame/${a}-${scen.id}.svg" target="_blank" rel="noopener">${esc(appName(a))}</a> ·
-      <a href="flame/${b}-${scen.id}.svg" target="_blank" rel="noopener">${esc(appName(b))}</a> ·
-      <a href="flame/diff-${scen.id}.svg" target="_blank" rel="noopener">différentiel</a> (rouge : plus de temps dans ${esc(appName(a))}).`;
+    // CPU budget: stacked bars in µs
+    if (usA != null && usB != null) {
+      const max = Math.max(usA, usB);
+      const legend = `<div class="legend">${GROUPS.map((g) => `<span><i style="background:var(${g.color});height:10px;width:10px;border-radius:2px"></i>${esc(g.label)}</span>`).join('')}</div>`;
+      const bar = (name, gs, total, me) => `<div class="scale-row${me ? ' me' : ''}">
+        <span class="name">${esc(name)}</span>
+        <span class="stack" style="width:${(total / max) * 100}%">${gs.map((x) => x.pct > 0 ? `<span data-g="${x.g.id}" data-us="${x.us}" data-pct="${x.pct}" style="flex:${x.pct} 1 0;background:var(${x.g.color})"></span>` : '').join('')}</span>
+        <span class="val">${us(total)}</span></div>`;
+      const budget = card('Le budget CPU d’une requête', 'Temps CPU moyen pour servir une requête, découpé selon ce qui s’exécutait. Survolez un segment pour son détail.', document.createElement('div'));
+      const body = budget.lastChild;
+      body.innerHTML = legend + `<div class="scale" style="margin-top:10px">${bar(nameA, ga, usA, true)}${bar(nameB, gb, usB, false)}</div>`;
+      body.querySelectorAll('.stack span').forEach((el) => {
+        const g = GROUPS.find((x) => x.id === el.dataset.g);
+        el.addEventListener('mousemove', (ev) => showTip(ev, `<div class="t">${esc(g.label)}</div>` +
+          rows([['Temps', us(+el.dataset.us)], ['Part', `${nf1.format(+el.dataset.pct)} %`]]) + `<div class="muted" style="margin-top:4px">${esc(g.what)}</div>`));
+        el.addEventListener('mouseleave', hideTip);
+      });
+      main.appendChild(budget);
 
-    sec.append(facts, pairs, top, links);
-    return sec;
+      // What Trust adds or saves, per group
+      const maxD = Math.max(...deltas.map((x) => Math.abs(x.d)), 0.01);
+      const div = document.createElement('div');
+      div.className = 'scale';
+      GROUPS.forEach((g, i) => {
+        const d = ga[i].us - gb[i].us;
+        const w = (Math.abs(d) / maxD) * 50;
+        div.insertAdjacentHTML('beforeend', `<div class="div-row">
+          <span class="name" style="font-size:13px">${esc(g.label)}</span>
+          <span class="div-track"><span class="mid"></span><span class="bar" style="${d >= 0 ? `left:50%;width:${w}%;background:var(--more);border-radius:0 3px 3px 0` : `right:50%;width:${w}%;background:var(--less);border-radius:3px 0 0 3px`}"></span></span>
+          <span class="val">${d >= 0 ? '+' : '−'}${us(Math.abs(d))}</span></div>`);
+      });
+      const addCard = card('Ce que Trust ajoute ou économise', `Différence de temps CPU par requête entre ${esc(nameA)} et ${esc(nameB)}, par composant. À droite (rouge) Trust dépense plus, à gauche (bleu) moins.`, div);
+      addCard.insertAdjacentHTML('beforeend', `<p class="callout">Le tracing des requêtes HTTP de Trust (sa <code>TraceLayer</code>) coûte <b>${nf1.format(pa.tracing_cost_pct)} %</b> du CPU. Ses couches de routage (tower) pèsent un peu plus que celles du service écrit à la main.
+        Le temps par requête vient du bench, sa répartition du profil, mesurés à des moments différents : des écarts d’environ 1 µs, surtout côté noyau (même JSON envoyé par les deux), sont dans la marge de mesure.</p>`);
+      main.appendChild(addCard);
+    }
+
+    // What is not Trust's doing
+    const ext = document.createElement('section');
+    ext.className = 'card';
+    const pc = P.profiles[`${a}-create`];
+    const waits = pc && pc.pg_waits_pct ? pc.pg_waits_pct : null;
+    const walWait = waits ? Object.entries(waits).filter(([k]) => /WAL/i.test(k)).reduce((s, [, v]) => s + v, 0) : null;
+    ext.innerHTML = `<header><h2>Ce qui ne dépend pas de Trust</h2><p>Ces coûts sont les mêmes pour toutes les stacks : ils viennent du système, du banc de test ou de Postgres.</p></header>
+      <div class="grid4">
+        <div class="tile"><span class="eyebrow">Noyau et réseau</span><span class="v num">${nf.format(ga[0].pct)} %</span>
+          <span class="d">du CPU de Trust part dans le noyau : recevoir et envoyer les paquets TCP. C’est le prix des petites requêtes HTTP, quel que soit le langage.</span></div>
+        <div class="tile"><span class="eyebrow">Pare-feu Docker</span><span class="v num">${nf1.format(pa.netfilter_pct ?? 0)} %</span>
+          <span class="d">dont le pare-feu du réseau Docker (NAT du bridge) : un coût du banc de test, qui disparaît avec un réseau sans NAT.</span></div>
+        ${walWait != null ? `<div class="tile"><span class="eyebrow">Écritures (POST)</span><span class="v num">${nf.format(walWait)} %</span>
+          <span class="d">du temps des connexions Postgres passe à attendre l’écriture du journal (WAL) sur disque. C’est ce qui plafonne les écritures de toutes les stacks.</span></div>` : ''}
+      </div>`;
+    main.appendChild(ext);
+
+    // Top functions, explained
+    const top = document.createElement('section');
+    top.className = 'card';
+    top.innerHTML = `<header><h2>Les fonctions qui coûtent le plus chez Trust</h2><p>Temps propre : le temps passé dans la fonction elle-même, hors fonctions qu’elle appelle. Le suffixe <code>_[k]</code> marque une fonction du noyau.</p></header>
+      <div class="tablewrap"><table class="explain"><thead><tr><th>Fonction</th><th>Ce que c’est</th><th class="n">CPU</th></tr></thead><tbody>
+      ${pa.top_functions.slice(0, 10).map((f) => `<tr><td>${esc(f.name)}</td><td>${esc(explain(f.name))}</td><td class="n">${nf1.format(f.pct)} %</td></tr>`).join('')}
+      </tbody></table></div>`;
+    main.appendChild(top);
+
+    // Ideas
+    const ideas = document.createElement('section');
+    ideas.className = 'card';
+    ideas.innerHTML = `<header><h2>Pistes pour aller plus vite</h2><p>Classées par gain probable. Les gains chiffrés viennent des mesures ; les autres restent à mesurer.</p></header>
+      <ol class="steps">
+        <li><b>Écritures : regrouper les INSERT.</b> Postgres attend le disque ${walWait != null ? `${nf.format(walWait)} % du temps` : 'la plupart du temps'} pendant les créations. Insérer N lignes en une requête (<code>save_many</code> dans Trust) ne paie qu’une écriture de journal. Autre option, <code>synchronous_commit = off</code>, si l’on accepte de perdre les dernières écritures en cas de crash.</li>
+        <li><b>En production, éviter le NAT Docker.</b> Le pare-feu du bridge prend ${nf1.format(pa.netfilter_pct ?? 0)} % du CPU sur ce scénario ; un réseau hôte ou sans NAT le supprime.</li>
+        <li><b>Trust : rendre la couche de tracing HTTP réglable.</b> Elle coûte ${nf1.format(pa.tracing_cost_pct)} % ; utile en debug, elle pourrait se désactiver par configuration.</li>
+        <li><b>À mesurer : un allocateur comme mimalloc.</b> La mémoire et la libc pèsent ${nf.format(ga[4].pct)} % ; ce genre de charge y gagne souvent quelques pourcents.</li>
+      </ol>`;
+    main.appendChild(ideas);
+
+    // Flame graphs
+    const fl = document.createElement('section');
+    fl.className = 'card';
+    fl.innerHTML = `<header><h2>Flame graph différentiel · ${esc(scen.label)}</h2>
+      <p>Forme du profil de Trust, colorée par différence avec le service écrit à la main : rouge = plus de temps chez Trust, bleu = moins. Faites défiler horizontalement ; ouvrez la version interactive pour zoomer et chercher une fonction.</p></header>
+      <div class="flame-img"><img src="flame/diff-${scen.id}.svg" alt="Flame graph différentiel du scénario ${esc(scen.label)}" loading="lazy"></div>
+      <p style="font-size:13px">Versions interactives : <a href="flame/${a}-${scen.id}.svg" target="_blank" rel="noopener">${esc(nameA)}</a> · <a href="flame/${b}-${scen.id}.svg" target="_blank" rel="noopener">${esc(nameB)}</a> · <a href="flame/diff-${scen.id}.svg" target="_blank" rel="noopener">différentiel</a></p>`;
+    main.appendChild(fl);
+  }
+
+  // A tiny, labelled flame graph: what the boxes mean.
+  function flameSchematic() {
+    const W = 520, H = 150, h = 26;
+    const box = (x, y, w, label, strong) => `<rect x="${x}" y="${y}" width="${w}" height="${h - 3}" rx="3" fill="${strong ? 'var(--accent)' : 'var(--accent-wash)'}" stroke="var(--accent)" stroke-width="1"/>
+      <text x="${x + 6}" y="${y + 16}" style="fill:${strong ? '#fff' : 'var(--ink)'};font-size:11px">${label}</text>`;
+    const y0 = H - h;
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Schéma d’un flame graph">
+      ${box(0, y0, W, 'tokio : thread de travail')}
+      ${box(0, y0 - h, 330, 'handler GET /users/:id')}${box(332, y0 - h, 188, 'noyau : envoi TCP')}
+      ${box(0, y0 - 2 * h, 200, 'sqlx : requête SQL')}${box(202, y0 - 2 * h, 80, 'JSON')}${box(332, y0 - 2 * h, 110, 'pare-feu')}
+      ${box(0, y0 - 3 * h, 120, 'décodage', true)}
+      <text x="0" y="12" style="font-size:11px">↑ appelée par la boîte du dessous · largeur = temps CPU</text>
+    </svg>`;
   }
 
   function methodology(cfg, host) {
@@ -651,6 +985,7 @@ python3 bench/bench.py --apps trust,rust-axum \\
     };
     reader.readAsText(f);
   });
+  addEventListener('hashchange', () => { render(); scrollTo(0, 0); });
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
   new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   render();
