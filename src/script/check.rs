@@ -914,6 +914,47 @@ impl Lowerer<'_> {
                 variant,
                 fields,
             } => self.variant_value(ty, variant, fields, pos),
+            ExprKind::If(cond, then, otherwise) => {
+                let cond = bare(&self.expect(cond, &Ty::Bool)?);
+                // A `none` / `[]` / number branch takes the other one's type.
+                let literal = |e: &Expr| {
+                    matches!(e.kind, ExprKind::None | ExprKind::Int(_))
+                        || matches!(&e.kind, ExprKind::List(i) if i.is_empty())
+                };
+                // `none` against a `T` is an `Option<T>`.
+                let fit = |e: &Expr, other: &Ty| match (&e.kind, other) {
+                    (ExprKind::None, Ty::Opt(_)) | (_, Ty::Never) => other.clone(),
+                    (ExprKind::None, t) => Ty::opt(t.clone()),
+                    (_, t) => t.clone(),
+                };
+                let (l, r) = if literal(then) {
+                    let r = self.expr(otherwise, expected)?;
+                    (self.expr(then, Some(&fit(then, &r.0)))?, r)
+                } else {
+                    let l = self.expr(then, expected)?;
+                    let r = self.expr(otherwise, Some(&fit(otherwise, &l.0)))?;
+                    (l, r)
+                };
+                let (ty, a, b) = if l.0 == Ty::Never {
+                    (r.0, l.1, r.1)
+                } else if r.0 == Ty::Never {
+                    (l.0, l.1, r.1)
+                } else {
+                    self.unify(l, r, pos, BinOp::Eq).map_err(|_| {
+                        ScriptError::new(
+                            pos,
+                            "both branches of an 'if' value need the same type".to_string(),
+                        )
+                    })?
+                };
+                if matches!(ty, Ty::Unit) {
+                    return err(pos, "an 'if' value needs values in its branches");
+                }
+                Ok((
+                    ty,
+                    format!("(if {} {{ {} }} else {{ {} }})", cond, bare(&a), bare(&b)),
+                ))
+            }
             ExprKind::Try(inner) => {
                 self.need_try(pos, "'try'")?;
                 // `let r: Try<T> = try ...` and `try ... ?? fallback` decode into T.
@@ -1380,7 +1421,10 @@ impl Lowerer<'_> {
                         ty,
                         format!(
                             "{}.{}({}).ok_or_else(|| {}::StorageError(String::from(\"division by zero\")))?",
-                            l.1, method, r.1, self.error
+                            l.1,
+                            method,
+                            bare(&r.1),
+                            self.error
                         ),
                     ));
                 }
@@ -1643,9 +1687,9 @@ impl Lowerer<'_> {
                     );
                 }
                 let code = if l.0 == Ty::Float {
-                    format!("f64::{}({}, {})", name, l.1, r.1)
+                    format!("f64::{}({}, {})", name, bare(&l.1), bare(&r.1))
                 } else {
-                    format!("std::cmp::{}({}, {})", name, l.1, r.1)
+                    format!("std::cmp::{}({}, {})", name, bare(&l.1), bare(&r.1))
                 };
                 Ok((l.0, code))
             }
@@ -2599,6 +2643,10 @@ impl Lowerer<'_> {
                     ),
                 ))
             }
+            "timestamp" if !date => {
+                self.positional(args, 0, "timestamp()", pos)?;
+                Ok((Ty::Int, format!("{}.timestamp()", recv)))
+            }
             "format" => {
                 let [pattern] = self.positional(args, 1, "format(pattern)", pos)?[..] else {
                     unreachable!()
@@ -2835,7 +2883,7 @@ impl Lowerer<'_> {
                 };
                 self.check_mutable(&place, pos)?;
                 let value = self.expect(value, &item)?;
-                (Ty::Unit, format!("{}.push({})", place.code, value))
+                (Ty::Unit, format!("{}.push({})", place.code, bare(&value)))
             }
             "filter_map" => {
                 let [_] = self.positional(args, 1, "filter_map(x => optional)", pos)?[..] else {

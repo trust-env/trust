@@ -349,6 +349,30 @@ impl Parser {
         })
     }
 
+    /// After `if` in a value: `c { a } else { b }` / `else if ...`.
+    fn if_value(&mut self, pos: Pos) -> R<Expr> {
+        let cond = self.expr(false)?;
+        self.expect_sym("{")?;
+        let then = self.expr(true)?;
+        self.expect_sym("}")?;
+        if !self.eat_word("else") {
+            return self.expected("'else': an 'if' giving a value needs both branches");
+        }
+        let otherwise = if self.is_word("if") {
+            let pos = self.advance().pos;
+            self.if_value(pos)?
+        } else {
+            self.expect_sym("{")?;
+            let value = self.expr(true)?;
+            self.expect_sym("}")?;
+            value
+        };
+        Ok(Expr {
+            kind: ExprKind::If(Box::new(cond), Box::new(then), Box::new(otherwise)),
+            pos,
+        })
+    }
+
     fn fail_rest(&mut self) -> R<(String, Option<Expr>)> {
         let variant = self.ident("an error name (fail NotFound, fail Conflict(\"...\"))")?;
         let message = if self.eat_sym("(") {
@@ -727,6 +751,7 @@ impl Parser {
                 "true" => ExprKind::Bool(true),
                 "false" => ExprKind::Bool(false),
                 "none" => ExprKind::None,
+                "if" => return self.if_value(pos),
                 w if KEYWORDS.contains(&w) => {
                     return Err(ScriptError::new(pos, format!("unexpected '{}'", w)));
                 }
