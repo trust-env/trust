@@ -86,7 +86,11 @@ jobs:
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
 
+      # A fresh runner has none of the generated projects' crates.io
+      # dependencies cached: let the e2e builds download them.
       - name: Run e2e tests
+        env:
+          CARGO_NET_OFFLINE: "false"
         run: cargo test --test 'e2e_*' --verbose
 
   coverage:

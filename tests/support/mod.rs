@@ -141,16 +141,20 @@ pub fn patch_local_dependencies(project: &GeneratedProject) {
         .unwrap_or_else(|e| panic!("failed to vendor runtime crates: {}", e));
 }
 
-/// Runs a real `cargo build` (offline — every dependency this workspace
-/// needs is already in the local registry cache or under `runtime/`)
-/// against the generated project's own `Cargo.toml`. Shares one
+/// Runs a real `cargo build` against the generated project's own
+/// `Cargo.toml`. Offline by default — every dependency is expected in the
+/// local registry cache or under `runtime/` — unless `CARGO_NET_OFFLINE` is
+/// already set (CI sets it to `false` so a fresh runner can download the
+/// crates.io dependencies of generated projects). Shares one
 /// `CARGO_TARGET_DIR` across every e2e test (rather than each generated
 /// project getting its own inside its own temp dir) so common dependencies
 /// (axum, tokio, sqlx, ...) are only ever compiled once, not once per test.
 pub fn cargo_build(project: &GeneratedProject) -> Output {
+    let offline = std::env::var("CARGO_NET_OFFLINE").unwrap_or_else(|_| "true".to_string());
     Command::new("cargo")
-        .args(["build", "--offline", "--manifest-path"])
+        .args(["build", "--manifest-path"])
         .arg(project.root.join("Cargo.toml"))
+        .env("CARGO_NET_OFFLINE", offline)
         .env("CARGO_TARGET_DIR", repo_root().join("target/e2e-tests"))
         .output()
         .expect("failed to spawn cargo build")

@@ -17,6 +17,12 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// Offline builds by default; CI sets `CARGO_NET_OFFLINE=false` so a fresh
+/// runner can download crates.io dependencies.
+fn cargo_net_offline() -> String {
+    std::env::var("CARGO_NET_OFFLINE").unwrap_or_else(|_| "true".to_string())
+}
+
 fn assert_success(output: &Output, label: &str) {
     assert!(
         output.status.success(),
@@ -33,7 +39,8 @@ fn build_note_plugin() -> PathBuf {
     let target_dir = repo_root().join("target/e2e-plugin");
 
     let output = Command::new("cargo")
-        .args(["build", "--offline", "--manifest-path"])
+        .args(["build", "--manifest-path"])
+        .env("CARGO_NET_OFFLINE", cargo_net_offline())
         .arg(&manifest_path)
         .env("CARGO_TARGET_DIR", &target_dir)
         .output()
@@ -93,7 +100,8 @@ note {
     // Strongest possible proof: the whole generated project, plugin output
     // included, still compiles as a real Rust crate.
     let build_output = Command::new("cargo")
-        .args(["build", "--offline", "--manifest-path"])
+        .args(["build", "--manifest-path"])
+        .env("CARGO_NET_OFFLINE", cargo_net_offline())
         .arg(generated_root.join("Cargo.toml"))
         .env("CARGO_TARGET_DIR", repo_root().join("target/e2e-tests"))
         .output()
