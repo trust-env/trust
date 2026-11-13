@@ -133,9 +133,9 @@
   returns at most 1000 rows unless `limit:` says otherwise.
 - `Int` arithmetic other than `/` and `%` wraps on overflow in release
   builds (and panics in debug builds), like Rust.
-- No user-defined functions or shared library between scripts, and no
-  error recovery (a failing call ends the script): use `code {}` with
-  `include:` for those.
+- No functions written in `logic` itself: shared rules are Rust files
+  declared with `extern fn`, whose signatures Trust trusts (rustc checks
+  them). No error recovery yet: a failing call ends the script.
 
 ## Migrations
 

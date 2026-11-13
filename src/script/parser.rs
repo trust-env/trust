@@ -28,6 +28,60 @@ pub fn parse(tokens: Vec<Token>) -> R<Vec<Stmt>> {
     Ok(body)
 }
 
+/// A top-level `logic {}` block: `extern fn` declarations only.
+pub fn parse_library(tokens: Vec<Token>) -> R<Vec<ExternFn>> {
+    let mut parser = Parser { tokens, i: 0 };
+    let mut out = Vec::new();
+    while !parser.at_eof() {
+        let pos = parser.pos();
+        if !(parser.eat_word("extern") && parser.eat_word("fn")) {
+            return parser.expected("'extern fn name(arg: Type) -> Type from \"./file.rs\"'");
+        }
+        let name = parser.ident("a function name")?;
+        parser.expect_sym("(")?;
+        let mut params = Vec::new();
+        while !parser.eat_sym(")") {
+            if !params.is_empty() {
+                parser.expect_sym(",")?;
+            }
+            let param = parser.ident("a parameter name")?;
+            parser.expect_sym(":")?;
+            let by_ref = parser.eat_sym("&");
+            params.push((param, parser.type_expr()?, by_ref));
+        }
+        parser.expect_sym("->")?;
+        let ret = parser.type_expr()?;
+        if !parser.eat_word("from") {
+            return parser.expected("'from \"./file.rs\"'");
+        }
+        let from = match parser.advance().tok {
+            Tok::Str(pieces) => match pieces.as_slice() {
+                [Piece::Text(path)] => path.clone(),
+                _ => {
+                    return Err(ScriptError::new(
+                        pos,
+                        "the path can't interpolate".to_string(),
+                    ));
+                }
+            },
+            other => {
+                return Err(ScriptError::new(
+                    pos,
+                    format!("expected a quoted path, found {}", Parser::describe(&other)),
+                ));
+            }
+        };
+        out.push(ExternFn {
+            name,
+            params,
+            ret,
+            from,
+            pos,
+        });
+    }
+    Ok(out)
+}
+
 struct Parser {
     tokens: Vec<Token>,
     i: usize,

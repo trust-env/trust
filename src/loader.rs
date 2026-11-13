@@ -111,8 +111,28 @@ fn locate_logic(ast: Ast, path: &Path, source: &str) -> Ast {
             }
             Ast::UseCase(use_case)
         }
+        Ast::LogicLibrary(mut logic) => {
+            place(&mut logic, path, source);
+            Ast::LogicLibrary(logic)
+        }
         other => other,
     }
+}
+
+/// Fills where `logic` starts in its file.
+fn place(logic: &mut crate::parser::LogicSpec, path: &Path, source: &str) {
+    let (mut line, mut column) = (1, 1);
+    for c in source.chars().take(logic.offset) {
+        if c == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    logic.file = path.display().to_string();
+    logic.line = line;
+    logic.column = column;
 }
 
 /// Drops the token dump the parser appends (the location says it better).
@@ -127,7 +147,7 @@ fn clean_parse_error(error: &str) -> String {
 /// A path written in a `.tr` file: relative to that file; for projects
 /// written before that rule, a path that only exists relative to the
 /// working directory is kept as is.
-fn resolve_written_path(dir: &Path, path: &str) -> String {
+pub(crate) fn resolve_written_path(dir: &Path, path: &str) -> String {
     let resolved = resolve_path(dir, path);
     if !Path::new(&resolved).exists() && Path::new(path).exists() {
         return resolve_path(Path::new("."), path);

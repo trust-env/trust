@@ -253,7 +253,7 @@ fn options_must_be_unwrapped() {
 #[test]
 fn struct_literals_need_every_required_field() {
     let e = error("let t = Task { title: \"a\" }\nfail NotFound");
-    assert!(e.contains("Task is missing user_id, status, points (only Option, List and id fields may be left out)"), "{e}");
+    assert!(e.contains("Task is missing status, points (only Option, List, id and owner fields may be left out)"), "{e}");
     assert!(
         error("let t = Note { text: \"a\", nope: 1 }\nfail NotFound")
             .contains("'Note' has no field 'nope'")
@@ -440,4 +440,118 @@ fn use_cases_added_by_desugaring_can_be_run() {
     )
     .unwrap();
     assert!(code.contains("self.toggle_actions_use_case.execute(user, ActionsToggleRequest { id: input.id }).await?"), "{code}");
+}
+
+#[test]
+fn coalesce_fallbacks_have_no_extra_parentheses() {
+    let code = rust(
+        "let n = NoteInfra.find(input.id)\nlet m = n ?? Note { text: \"\" }\nreturn Out { count: m.id + (input.id.to_string().to_int() ?? input.id + 1), message: \"\" }",
+    );
+    assert!(!code.contains("None => ("), "{code}");
+    let code = rust("let t = TaskInfra.get(1)\nlet d = t.due ?? now().add_days(1)\nfail NotFound");
+    assert!(
+        code.contains("None => (chrono::Utc::now()) + chrono::Duration::days(1i64) }"),
+        "{code}"
+    );
+}
+
+#[test]
+fn coalescing_two_options_is_an_option() {
+    let code = rust(
+        "let ts = TaskInfra.all()\nlet t = ts.find(t => t.points > 3) ?? ts.find(t => t.points > 1)\nlet u = ts.first() ?? ts.last() ?? fail NotFound\nreturn Out { count: (t ?? u).points, message: \"\" }",
+    );
+    assert!(
+        code.contains("Some(trust_value) => Some(trust_value), None => ts.iter().find("),
+        "{code}"
+    );
+    // Right-associative: `a ?? b ?? fail X` is `a ?? (b ?? fail X)`.
+    assert!(code.contains("None => match ts.last().cloned() { Some(trust_value) => trust_value, None => return Err("), "{code}");
+}
+
+#[test]
+fn owner_fields_may_be_left_out_of_literals() {
+    let code = rust(
+        "let t = TaskInfra.create(Task { title: \"a\", status: Status.todo, points: 1 })\nreturn Out { count: t.id, message: \"\" }",
+    );
+    assert!(
+        code.contains("..Default::default() }; trust_row.user_id = user;"),
+        "{code}"
+    );
+    // Note has no owner: nothing to fill for it.
+    assert!(error("let n = Note { }\nfail NotFound").contains("Note is missing text"));
+}
+
+/// A project with a top-level `logic { extern fn ... }` over `rules.rs`.
+fn with_library(library: &str, body: &str) -> Result<CodeSpec, String> {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = dir.path().join("rules.rs");
+    std::fs::write(
+        &rules,
+        "pub fn score(title: &str, points: i64) -> i64 { title.len() as i64 + points }\n",
+    )
+    .unwrap();
+    let library = library.replace("@RULES@", &rules.display().to_string());
+    let src = format!(
+        "{}\nlogic {{\n{}\n}}\nuse_case SubjectUseCase {{ input: Ref output: Out logic {{\n{}\n}} }}",
+        PROJECT, library, body
+    );
+    let tokens = Lexer::new(&src).run()?;
+    let asts = Parser::new(tokens).run()?;
+    let asts = super::lower_all(asts)?;
+    assert!(
+        !asts.iter().any(|a| matches!(a, Ast::LogicLibrary(_))),
+        "libraries are consumed by lowering"
+    );
+    asts.into_iter()
+        .find_map(|a| match a {
+            Ast::UseCase(u) if u.name == "SubjectUseCase" => u.code,
+            _ => None,
+        })
+        .ok_or_else(|| "no code".to_string())
+}
+
+#[test]
+fn extern_fns_call_declared_rust_and_include_its_file() {
+    let code = with_library(
+        "extern fn score(title: &String, points: Int) -> Int from \"@RULES@\"",
+        "let t = TaskInfra.get(input.id)\nlet all = TaskInfra.all().map(x => score(x.title, x.points))\nreturn Out { count: score(t.title, t.points) + score(\"x\" + \"y\", 1) + all.sum(), message: \"\" }",
+    )
+    .unwrap();
+    let body = code.inline.unwrap();
+    assert!(body.contains("crate::score(&t.title, t.points)"), "{body}");
+    // A lambda parameter is already a reference.
+    assert!(body.contains("crate::score(&x.title, x.points)"), "{body}");
+    assert!(
+        body.contains(
+            "crate::score(&format!(\"{}{}\", String::from(\"x\"), String::from(\"y\")), 1i64)"
+        ),
+        "{body}"
+    );
+    assert_eq!(code.includes.len(), 1);
+    assert!(code.includes[0].ends_with("rules.rs"));
+}
+
+#[test]
+fn extern_fns_are_type_checked() {
+    let decl = "extern fn score(title: &String, points: Int) -> Int from \"@RULES@\"";
+    let e = with_library(decl, "return Out { count: score(1, 2), message: \"\" }").unwrap_err();
+    assert!(e.contains("expected String, found Int"), "{e}");
+    let e = with_library(decl, "return Out { count: score(\"a\"), message: \"\" }").unwrap_err();
+    assert!(e.contains("expected score(&String, Int)"), "{e}");
+    let e = with_library("extern fn now() -> Int from \"@RULES@\"", "fail NotFound").unwrap_err();
+    assert!(e.contains("'now' is a built-in function"), "{e}");
+    let e = with_library(&format!("{}\n{}", decl, decl), "fail NotFound").unwrap_err();
+    assert!(e.contains("extern fn 'score' is declared twice"), "{e}");
+    let e = with_library(
+        "extern fn f(a: Int) -> Int from \"./nope.rs\"",
+        "fail NotFound",
+    )
+    .unwrap_err();
+    assert!(e.contains("nope.rs' doesn't exist"), "{e}");
+    let e = with_library(
+        "extern fn f(a: Int) -> Nope from \"@RULES@\"",
+        "fail NotFound",
+    )
+    .unwrap_err();
+    assert!(e.contains("unknown type 'Nope'"), "{e}");
 }
