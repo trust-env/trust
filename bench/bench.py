@@ -35,6 +35,10 @@ RESULTS = BENCH / "results"
 NETWORK = "trust-bench"
 PG = "trust-bench-pg"
 APP = "trust-bench-app"
+LOAD = "trust-bench-load"
+# Every bench container runs under this cgroup, so the CPU time of everything
+# else on the bench CPUs can be told apart exactly.
+SLICE = "trustbench.slice"
 PG_IMAGE = "postgres:17-alpine"
 OHA_IMAGE = "ghcr.io/hatoo/oha:1.16.0"
 HOST_PORT = 18080
@@ -60,6 +64,13 @@ APPS = [
 SEED_ROWS = 10_000
 # Cores' worth of foreign CPU time on the app's CPUs above which a run is flagged.
 NOISY_INTERFERENCE = 0.1
+# Same on the app's hyperthread siblings: an active desktop (shell, browser,
+# terminal) already puts about 0.2 core there, a background build far more.
+NOISY_SIBLING = 0.35
+# Same, summed over the Postgres and load-generator CPUs (they have headroom).
+NOISY_REST = 0.6
+# Scheduling priority of the bench containers (see boost); --nice overrides it.
+NICE = -10
 CREATE_BODY = '{"name":"Ada Lovelace","email":"ada@example.com","age":36}'
 # oha's --rand-regex-url draws a fresh URL per request (ids 1..9999).
 SCENARIOS = [
@@ -144,7 +155,8 @@ def generated_loc(ctx: Path) -> int:
 
 def cgroup(container: str) -> Path:
     cid = sh("docker", "inspect", "--format", "{{.Id}}", container).strip()
-    for candidate in (Path(f"/sys/fs/cgroup/system.slice/docker-{cid}.scope"),
+    for candidate in (Path(f"/sys/fs/cgroup/{SLICE}/docker-{cid}.scope"),
+                      Path(f"/sys/fs/cgroup/system.slice/docker-{cid}.scope"),
                       Path(f"/sys/fs/cgroup/docker/{cid}")):
         if candidate.exists():
             return candidate
@@ -162,6 +174,11 @@ def mem_bytes(cg: Path) -> int:
     return int((cg / "memory.current").read_text())
 
 
+def slice_usec() -> int:
+    d = Path("/sys/fs/cgroup") / SLICE
+    return cpu_usec(d) if (d / "cpu.stat").exists() else 0
+
+
 def cpu_busy_seconds(cpus: list[int] | None = None) -> float:
     """Busy time (all but idle/iowait) of some CPUs, or of all of them, from /proc/stat."""
     hz = os.sysconf("SC_CLK_TCK")
@@ -172,9 +189,25 @@ def cpu_busy_seconds(cpus: list[int] | None = None) -> float:
             continue
         if cpus is not None and int(name[3:]) not in cpus:
             continue
-        values = [int(v) for v in fields[:8]]
-        busy += sum(values) - values[3] - values[4]
+        # user + nice + system only: irq/softirq time is mostly the network
+        # stack serving the app's own traffic, never charged to its cgroup.
+        values = [int(v) for v in fields[:3]]
+        busy += sum(values)
     return busy / hz
+
+
+def boost(container: str, nice: int) -> str:
+    """Raise the scheduling priority of every thread in a container.
+
+    The bench CPUs are not isolated: a background `cargo build` (often niced)
+    still lands on them. At nice -10 against a nice 5 build, the scheduler
+    gives the bench ~28x the CPU weight. Threads created later inherit it.
+    """
+    if not nice:
+        return ""
+    return sh("docker", "exec", "--privileged", "-u", "0", container, "sh", "-c",
+       f"for t in /proc/[0-9]*/task/[0-9]*; do renice -n {nice} -p ${{t##*/}} >/dev/null 2>&1; done; "
+       "cut -d' ' -f19 /proc/1/stat")
 
 
 def host_busy_cores(seconds: float = 1.0) -> float:
@@ -198,14 +231,34 @@ def wait_quiet(max_busy: float, timeout: float) -> float:
     return busy
 
 
-class Sampler(threading.Thread):
-    """Peak memory and CPU time of a container while a load runs, plus the CPU
-    time other processes took on the app's own CPUs (interference)."""
+def siblings(cpus: list[int]) -> list[int]:
+    """Hyperthread siblings of some CPUs (sharing their physical core), excluding them."""
+    out = set()
+    for c in cpus:
+        f = Path(f"/sys/devices/system/cpu/cpu{c}/topology/thread_siblings_list")
+        if f.exists():
+            out.update(cpu_list(f.read_text().strip()))
+    return sorted(out - set(cpus))
 
-    def __init__(self, cg: Path, app_cpus: list[int]):
+
+class Sampler(threading.Thread):
+    """Peak memory and CPU time of the app while a load runs, and what other
+    programs took meanwhile, from three places:
+
+    - the app's own CPUs (time stolen outright),
+    - their hyperthread siblings (sharing the app's physical cores),
+    - the Postgres and load-generator CPUs (slowing the rest of the chain).
+
+    Every bench container lives under SLICE, so "other" is exact: busy time on
+    those CPUs minus what the slice used.
+    """
+
+    def __init__(self, cg: Path, args):
         super().__init__(daemon=True)
         self.cg, self.peak, self.stop_flag = cg, 0, threading.Event()
-        self.app_cpus = app_cpus
+        self.app_cpus = cpu_list(args.app_cpus)
+        self.sib_cpus = siblings(self.app_cpus)
+        self.rest_cpus = sorted(set(cpu_list(args.pg_cpus)) | set(cpu_list(args.load_cpus)))
 
     def run(self):
         while not self.stop_flag.is_set():
@@ -215,6 +268,8 @@ class Sampler(threading.Thread):
     def __enter__(self):
         self.t0, self.cpu0 = time.monotonic(), cpu_usec(self.cg)
         self.busy0 = cpu_busy_seconds(self.app_cpus)
+        self.sib0 = cpu_busy_seconds(self.sib_cpus) if self.sib_cpus else 0.0
+        self.rest0, self.slice0 = cpu_busy_seconds(self.rest_cpus), slice_usec()
         self.start()
         return self
 
@@ -225,6 +280,11 @@ class Sampler(threading.Thread):
         self.wall = time.monotonic() - self.t0
         foreign = cpu_busy_seconds(self.app_cpus) - self.busy0 - self.cpu_seconds
         self.interference_cores = max(0.0, foreign / self.wall)
+        sib = (cpu_busy_seconds(self.sib_cpus) - self.sib0) if self.sib_cpus else 0.0
+        self.sibling_cores = max(0.0, sib / self.wall)
+        others_in_slice = (slice_usec() - self.slice0) / 1e6 - self.cpu_seconds  # postgres + oha
+        rest = cpu_busy_seconds(self.rest_cpus) - self.rest0 - others_in_slice
+        self.rest_cores = max(0.0, rest / self.wall)
 
 
 def http(method: str, path: str, body: str | None = None) -> tuple[int, object]:
@@ -239,7 +299,7 @@ def start_postgres(cpus: str) -> None:
     sh("docker", "rm", "-f", PG, check=False)
     sh("docker", "network", "create", NETWORK, check=False)
     log(f"starting {PG_IMAGE} on cpus {cpus}")
-    sh("docker", "run", "-d", "--name", PG, "--network", NETWORK, "--network-alias", "db",
+    sh("docker", "run", "-d", "--name", PG, "--cgroup-parent", SLICE, "--network", NETWORK, "--network-alias", "db",
        "--cpuset-cpus", cpus, "--shm-size", "512m",
        "-e", "POSTGRES_USER=bench", "-e", "POSTGRES_PASSWORD=bench", "-e", "POSTGRES_DB=bench",
        PG_IMAGE, "-c", "max_connections=300", "-c", "shared_buffers=512MB")
@@ -249,6 +309,7 @@ def start_postgres(cpus: str) -> None:
             # pg_isready answers during the init restart too; a real query settles it.
             if subprocess.run(["docker", "exec", PG, "psql", "-U", "bench", "-d", "bench", "-c", "select 1"],
                               capture_output=True).returncode == 0:
+                boost(PG, NICE)  # backends forked later inherit the postmaster's priority
                 return
         time.sleep(0.5)
     raise RuntimeError("postgres did not start")
@@ -276,14 +337,16 @@ def start_app(app: dict, image: str, cpus: str, memory: str, pool: int) -> float
     env = {"DATABASE_URL": "postgres://bench:bench@db:5432/bench", "APP_PORT": "8080",
            "DB_POOL": str(pool), "DATABASE_POOL_SIZE": str(pool), "WORKERS": str(workers), **app["env"]}
     t0 = time.monotonic()
-    sh("docker", "run", "-d", "--name", APP, "--network", NETWORK, "--network-alias", "app",
+    sh("docker", "run", "-d", "--name", APP, "--cgroup-parent", SLICE, "--network", NETWORK, "--network-alias", "app",
        "--cpuset-cpus", cpus, "--memory", memory, "-p", f"127.0.0.1:{HOST_PORT}:8080",
        *[x for k, v in env.items() for x in ("-e", f"{k}={v}")], image)
     deadline = t0 + 60
     while time.monotonic() < deadline:
         try:
             if http("GET", "/ping")[0] == 200:
-                return (time.monotonic() - t0) * 1000
+                startup = (time.monotonic() - t0) * 1000
+                boost(APP, NICE)
+                return startup
         except Exception:
             pass
         time.sleep(0.01)
@@ -308,10 +371,21 @@ def check_contract() -> None:
 
 
 def oha(scenario: dict, connections: int, seconds: float, cpus: str) -> dict:
-    out = sh("docker", "run", "--rm", "--network", NETWORK, "--cpuset-cpus", cpus, OHA_IMAGE,
-             "--no-tui", "--output-format", "json", "-z", f"{seconds}s", "-c", str(connections),
-             *scenario["args"])
-    return json.loads(out[out.index("{"):])
+    # Detached, so its threads can be reniced like the app's before the load ramps up.
+    sh("docker", "rm", "-f", LOAD, check=False)
+    sh("docker", "run", "-d", "--name", LOAD, "--cgroup-parent", SLICE, "--network", NETWORK,
+       "--cpuset-cpus", cpus, OHA_IMAGE, "--no-tui", "--output-format", "json",
+       "-z", f"{seconds}s", "-c", str(connections), *scenario["args"])
+    try:
+        try:
+            boost(LOAD, NICE)
+        except RuntimeError:
+            pass  # a very short run may already be over
+        sh("docker", "wait", LOAD)
+        out = sh("docker", "logs", LOAD)
+        return json.loads(out[out.index("{"):])
+    finally:
+        sh("docker", "rm", "-f", LOAD, check=False)
 
 
 def summarize(raw: dict) -> dict:
@@ -357,7 +431,15 @@ def main() -> int:
                     help="keep the other contenders of results/latest.json and replace only the ones run now")
     ap.add_argument("--quiet-timeout", type=float, default=600,
                     help="seconds to wait for a quiet machine before measuring anyway (flagged noisy)")
+    ap.add_argument("--retry-noisy", action="store_true",
+                    help="measure again only the points results/latest.json flags noisy (no rebuild)")
+    ap.add_argument("--nice", type=int, default=NICE,
+                    help="nice value given to the app and postgres threads (0 leaves them alone)")
     args = ap.parse_args()
+    globals()["NICE"] = args.nice
+    pin_harness(args)
+    if args.retry_noisy:
+        return retry_noisy(args)
 
     wanted = args.apps.split(",")
     apps = [a for a in APPS if a["id"] in wanted]
@@ -378,7 +460,7 @@ def main() -> int:
             "config": {"duration_s": args.duration, "warmup_s": args.warmup, "connections": levels,
                        "app_cpus": args.app_cpus, "pg_cpus": args.pg_cpus, "load_cpus": args.load_cpus,
                        "memory": args.memory, "db_pool": args.db_pool, "seed_rows": SEED_ROWS,
-                       "postgres": PG_IMAGE, "load_generator": OHA_IMAGE},
+                       "postgres": PG_IMAGE, "load_generator": OHA_IMAGE, "nice": args.nice},
             "scenarios": [{k: s[k] for k in ("id", "label", "desc")} for s in scenarios],
         },
         "apps": [],
@@ -395,9 +477,11 @@ def main() -> int:
             built[app["dir"]] = build_image(app, ctx, args.no_cache)
 
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    previous_apps: dict[str, dict] = {}
     if args.merge and (RESULTS / "latest.json").exists():
         # Re-measure some contenders and keep everyone else from the last report.
         previous = json.loads((RESULTS / "latest.json").read_text())
+        previous_apps = {a["id"]: a for a in previous["apps"]}
         rerun = {a["id"] for a in apps}
         report["apps"] = [a for a in previous["apps"] if a["id"] not in rerun]
         report["runs"] = [r for r in previous["runs"] if r["app"] not in rerun]
@@ -407,6 +491,10 @@ def main() -> int:
     try:
         for app in apps:
             info = {k: app[k] for k in ("id", "name", "family")} | built[app["dir"]]
+            old = previous_apps.get(app["id"], {})
+            if not info["build_cold"] and old.get("build_cold"):
+                # A cached build says nothing about build cost: keep the cold timing.
+                info["build_s"], info["build_cold"] = old["build_s"], True
             info["loc"] = count_loc([BENCH / "apps" / app["dir"] / f for f in app["sources"]])
             info["sources"] = [f"bench/apps/{app['dir']}/{f}" for f in app["sources"]]
             if app["dir"] == "trust":
@@ -445,11 +533,73 @@ def main() -> int:
     return 0
 
 
+def retry_noisy(args) -> int:
+    """Measure again only the points of results/latest.json flagged noisy."""
+    report = json.loads((RESULTS / "latest.json").read_text())
+    todo = [r for r in report["runs"] if r.get("noisy")]
+    if not todo:
+        log("no noisy point in results/latest.json")
+        return 0
+    log(f"{len(todo)} noisy points to measure again")
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    by_id = {a["id"]: a for a in APPS}
+    scen = {s["id"]: s for s in SCENARIOS}
+    start_postgres(args.pg_cpus)
+    try:
+        for app_id in dict.fromkeys(r["app"] for r in todo):
+            app, info = by_id[app_id], next(a for a in report["apps"] if a["id"] == app_id)
+            if sh("docker", "image", "inspect", info["image"], check=False, capture=True).startswith("[]"):
+                raise RuntimeError(f"image {info['image']} is missing: run a full bench first")
+            try:
+                reset_db()
+                start_app(app, info["image"], args.app_cpus, args.memory, args.db_pool)
+                check_contract()
+                cg = cgroup(APP)
+                time.sleep(1)
+                log(f"{app_id}: up")
+                for old in [r for r in todo if r["app"] == app_id]:
+                    best = None
+                    for attempt in range(args.noisy_retries + 1):
+                        run = measure(app, scen[old["scenario"]], old["connections"], cg, args)
+                        # Keep the least disturbed attempt if none comes out clean.
+                        if best is None or noise(run) < noise(best):
+                            best = run
+                        if not run["noisy"]:
+                            break
+                    best["remeasured"] = True
+                    report["runs"][report["runs"].index(old)] = best
+            except Exception as e:
+                log(f"{app_id} FAILED: {e}")
+            finally:
+                sh("docker", "rm", "-f", APP, check=False)
+            save(report, stamp)
+    finally:
+        if not args.keep:
+            sh("docker", "rm", "-f", PG, check=False)
+    left = sum(1 for r in report["runs"] if r.get("noisy"))
+    log(f"done: {len(todo) - left} of {len(todo)} points now clean")
+    return 0
+
+
+def pin_harness(args) -> None:
+    """Keep this script and the docker CLIs it spawns off the bench CPUs (and
+    the app's hyperthread siblings), so the harness never counts as noise."""
+    used = set(cpu_list(args.app_cpus)) | set(cpu_list(args.pg_cpus)) | set(cpu_list(args.load_cpus))
+    used |= set(siblings(cpu_list(args.app_cpus)))
+    free = set(range(os.cpu_count() or 1)) - used
+    if free:
+        os.sched_setaffinity(0, free)
+
+
+def noise(run: dict) -> float:
+    return run.get("interference_cores", 0) + run.get("sibling_cores", 0) + run.get("rest_cores", 0) / 3
+
+
 def measure(app: dict, scenario: dict, c: int, cg: Path, args) -> dict:
     busy_before = wait_quiet(args.max_busy, args.quiet_timeout) if args.max_busy else None
     if args.warmup:
         oha(scenario, c, args.warmup, args.load_cpus)
-    with Sampler(cg, cpu_list(args.app_cpus)) as sample:
+    with Sampler(cg, args) as sample:
         raw = oha(scenario, c, args.duration, args.load_cpus)
     # Divide by oha's own load time, not the sampler's wall time:
     # the latter includes the load container starting up idle.
@@ -461,13 +611,18 @@ def measure(app: dict, scenario: dict, c: int, cg: Path, args) -> dict:
     # Noise: other processes on the app's CPUs during the run, and
     # elsewhere on the host just before it.
     run["interference_cores"] = round(sample.interference_cores, 2)
+    run["sibling_cores"] = round(sample.sibling_cores, 2)
+    run["rest_cores"] = round(sample.rest_cores, 2)
     run["host_busy_before"] = round(busy_before, 2) if busy_before is not None else None
-    run["noisy"] = run["interference_cores"] > NOISY_INTERFERENCE or (
-        busy_before is not None and args.max_busy > 0 and busy_before > args.max_busy)
+    run["noisy"] = (run["interference_cores"] > NOISY_INTERFERENCE
+                    or run["sibling_cores"] > NOISY_SIBLING
+                    or run["rest_cores"] > NOISY_REST
+                    or (busy_before is not None and args.max_busy > 0 and busy_before > args.max_busy))
     log(f"  {scenario['id']:<6} c={c:<4} {run['rps']:>10,.0f} req/s  "
         f"p99 {run['latency_ms']['p99']} ms  ok {run['success_rate']:.2%}  "
         f"cpu {run['cpu_cores']}  mem {run['mem_peak_mb']} MB"
-        + (f"  NOISY (others: {run['interference_cores']} cores on app CPUs)" if run["noisy"] else ""))
+        + (f"  NOISY (others on app CPUs {run['interference_cores']}, HT siblings {run['sibling_cores']}, "
+           f"postgres/load CPUs {run['rest_cores']})" if run["noisy"] else ""))
     return run
 
 

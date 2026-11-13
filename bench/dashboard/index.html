@@ -157,6 +157,15 @@ pre { margin: 0; padding: 10px 12px; background: var(--bg); border: 1px solid va
 #tip .t { font-weight: 600; margin-bottom: 4px; }
 #tip .r { display: flex; justify-content: space-between; gap: 14px; }
 #tip .r span:last-child { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.pairs { display: grid; gap: 8px; margin-top: 8px; }
+.pair { display: grid; grid-template-columns: minmax(110px, 12rem) 1fr 4.6rem; gap: 10px; align-items: center; border-radius: 4px; }
+.pair:hover { background: var(--accent-wash); }
+.pair .name { font-size: 13px; }
+.pt { display: grid; gap: 2px; }
+.pf { display: block; height: 9px; background: var(--other); border-radius: 0 3px 3px 0; min-width: 2px; }
+.pf.me { background: var(--accent); }
+.pair .val { font-family: var(--mono); font-size: 11px; text-align: right; line-height: 1.25; font-variant-numeric: tabular-nums; }
+a { color: var(--accent); }
 .warn { color: var(--warn-ink); }
 .warnbox { border: 1px solid var(--warn); background: var(--warn-wash); border-radius: 10px; padding: 10px 14px; font-size: 13px; }
 .empty { padding: 40px 16px; text-align: center; color: var(--ink-2); }
@@ -193,6 +202,7 @@ pre { margin: 0; padding: 10px 12px; background: var(--bg); border: 1px solid va
 <div id="tip" hidden></div>
 
 <script src="data.js"></script>
+<script src="profile.js"></script>
 <script>
 (() => {
   'use strict';
@@ -211,6 +221,7 @@ pre { margin: 0; padding: 10px 12px; background: var(--bg); border: 1px solid va
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const ms = (v) => v == null ? '–' : (v < 1 ? v.toFixed(2) : v < 10 ? v.toFixed(1) : nf.format(v)) + ' ms';
   const mb = (v) => v == null ? '–' : nf1.format(v) + ' Mo';
+  const noiseOf = (r) => (r.interference_cores || 0) + (r.sibling_cores || 0) + (r.rest_cores || 0);
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
   let data = window.BENCH_RESULTS || null;
@@ -244,7 +255,11 @@ pre { margin: 0; padding: 10px 12px; background: var(--bg); border: 1px solid va
       ['p99', ms(r.latency_ms.p99)], ['p99,9', ms(r.latency_ms.p999)],
       ['CPU app', nf1.format(r.cpu_cores) + ' cœurs'], ['RAM pic', mb(r.mem_peak_mb)],
       ['Succès', (r.success_rate * 100).toFixed(2) + ' %'],
-      ...(r.noisy ? [['⚠ Bruit', `${nf1.format(r.interference_cores)} cœur pris par d’autres process`]] : []),
+      ...(r.noisy ? [
+        ['⚠ Autres process sur les CPU app', nf1.format(r.interference_cores) + ' cœur'],
+        ...(r.sibling_cores != null ? [['… sur leurs jumeaux HT', nf1.format(r.sibling_cores) + ' cœur'],
+          ['… sur les CPU Postgres / oha', nf1.format(r.rest_cores) + ' cœur']] : []),
+      ] : []),
     ]);
   }
 
@@ -498,12 +513,78 @@ pre { margin: 0; padding: 10px 12px; background: var(--bg); border: 1px solid va
       { h: 'CPU', n: 1, get: (r) => r.cpu_cores, html: (r) => nf1.format(r.cpu_cores) },
       { h: 'req/s/cœur', n: 1, get: (r) => r.rps_per_core || 0, html: (r) => r.rps_per_core ? nf.format(r.rps_per_core) : '–' },
       { h: 'RAM pic', n: 1, get: (r) => r.mem_peak_mb, html: (r) => mb(r.mem_peak_mb) },
-      { h: 'Bruit', n: 1, get: (r) => r.interference_cores ?? 0, html: (r) => r.interference_cores == null ? '–' : `${r.noisy ? '<span class="warn">⚠</span> ' : ''}${nf1.format(r.interference_cores)}` },
+      { h: 'Bruit (cœurs)', n: 1, get: noiseOf, html: (r) => r.interference_cores == null ? '–'
+        : `<span title="CPU app ${r.interference_cores} · jumeaux HT ${r.sibling_cores ?? '–'} · Postgres/oha ${r.rest_cores ?? '–'}">${r.noisy ? '<span class="warn">⚠</span> ' : ''}${nf1.format(noiseOf(r))}</span>` },
     ], all, (r) => r.app === ME ? 'me' : ''));
     det.appendChild(inner);
     main.appendChild(det);
 
+    const prof = profileSection(scen);
+    if (prof) main.insertBefore(prof, det);
+
     main.appendChild(methodology(cfg, h));
+  }
+
+  // ------------------------------------------------------------ profile (perf flame graphs)
+  function profileSection(scen) {
+    const P = window.BENCH_PROFILE;
+    if (!P || !P.profiles) return null;
+    const [a, b] = P.meta.apps;
+    const pa = P.profiles[`${a}-${scen.id}`], pb = P.profiles[`${b}-${scen.id}`];
+    if (!pa || !pb) return null;
+    const sec = document.createElement('section');
+    sec.className = 'card';
+    sec.innerHTML = `<header><h2>Où part le temps CPU · ${esc(scen.label)}</h2>
+      <p>Profil <code>perf</code> à ${P.meta.frequency_hz} Hz pendant ${P.meta.duration_s} s sous ${P.meta.connections} connexions, builds avec frame pointers.
+      Chaque échantillon est attribué au composant de la fonction en cours d’exécution (temps propre).</p></header>`;
+
+    // Paired bars: one row per component, Trust (accent) above the hand-written baseline (gray).
+    const comps = P.meta.components.filter((c) => (pa.self_pct[c.id] || 0) + (pb.self_pct[c.id] || 0) >= 0.5)
+      .sort((x, y) => (pa.self_pct[y.id] || 0) - (pa.self_pct[x.id] || 0));
+    const max = Math.max(...comps.flatMap((c) => [pa.self_pct[c.id] || 0, pb.self_pct[c.id] || 0]), 1);
+    const legend = `<div class="legend"><span class="me"><i style="background:var(--accent)"></i>${esc(appName(a))}</span><span><i style="background:var(--other)"></i>${esc(appName(b))}</span></div>`;
+    const rowsHtml = comps.map((c) => {
+      const va = pa.self_pct[c.id] || 0, vb = pb.self_pct[c.id] || 0;
+      return `<div class="pair" data-c="${esc(c.label)}" data-a="${va}" data-b="${vb}">
+        <span class="name">${esc(c.label)}</span>
+        <span class="pt"><span class="pf me" style="width:${(va / max) * 100}%"></span><span class="pf" style="width:${(vb / max) * 100}%"></span></span>
+        <span class="val">${nf1.format(va)} %<br><span class="muted">${nf1.format(vb)} %</span></span></div>`;
+    }).join('');
+    const pairs = document.createElement('div');
+    pairs.innerHTML = legend + `<div class="pairs">${rowsHtml}</div><div class="axisnote"><span>0</span><span>% des échantillons CPU</span></div>`;
+    pairs.querySelectorAll('.pair').forEach((el) => {
+      el.addEventListener('mousemove', (ev) => showTip(ev, `<div class="t">${esc(el.dataset.c)}</div>` +
+        rows([[appName(a), nf1.format(+el.dataset.a) + ' %'], [appName(b), nf1.format(+el.dataset.b) + ' %']])));
+      el.addEventListener('mouseleave', hideTip);
+    });
+
+    const facts = document.createElement('div');
+    facts.className = 'tiles';
+    const waits = pa.pg_waits_pct && Object.keys(pa.pg_waits_pct).length
+      ? `<div class="tile"><span class="eyebrow">Postgres pendant l’écriture</span>
+          ${Object.entries(pa.pg_waits_pct).slice(0, 4).map(([k, v]) => `<span class="d"><b class="num">${nf1.format(v)} %</b> ${esc(k.replace('CPU', 'en calcul'))}</span>`).join('')}
+          <span class="d muted">Part des connexions actives, par état d’attente.</span></div>` : '';
+    facts.innerHTML = `<div class="tile"><span class="eyebrow">Tracing (inclusif)</span>
+        <span class="v num">${nf1.format(pa.tracing_inclusive_pct)} %</span>
+        <span class="d">du CPU de ${esc(appName(a))} passe sous une fonction de tracing, contre ${nf1.format(pb.tracing_inclusive_pct)} % pour ${esc(appName(b))}.</span></div>
+      <div class="tile"><span class="eyebrow">Débit sous profilage</span>
+        <span class="v num">${nf.format(pa.rps)}</span>
+        <span class="d">req/s pour ${esc(appName(a))}, ${nf.format(pb.rps)} pour ${esc(appName(b))} (${nf.format((pa.rps / pb.rps) * 100)} %).</span></div>` + waits;
+
+    const top = document.createElement('div');
+    top.className = 'grid2';
+    const topList = (p, id) => `<div style="min-width:0"><h3 style="margin-bottom:6px">Fonctions les plus coûteuses · ${esc(appName(id))}</h3>
+      <div class="tablewrap"><table><tbody>${p.top_functions.slice(0, 8).map((f) => `<tr><td class="mono" style="white-space:normal;word-break:break-all">${esc(f.name)}</td><td class="n">${nf1.format(f.pct)} %</td></tr>`).join('')}</tbody></table></div></div>`;
+    top.innerHTML = topList(pa, a) + topList(pb, b);
+
+    const links = document.createElement('p');
+    links.style.fontSize = '13px';
+    links.innerHTML = `Flame graphs interactifs (cliquer pour zoomer) : <a href="flame/${a}-${scen.id}.svg" target="_blank" rel="noopener">${esc(appName(a))}</a> ·
+      <a href="flame/${b}-${scen.id}.svg" target="_blank" rel="noopener">${esc(appName(b))}</a> ·
+      <a href="flame/diff-${scen.id}.svg" target="_blank" rel="noopener">différentiel</a> (rouge : plus de temps dans ${esc(appName(a))}).`;
+
+    sec.append(facts, pairs, top, links);
+    return sec;
   }
 
   function methodology(cfg, host) {
@@ -522,6 +603,8 @@ pre { margin: 0; padding: 10px 12px; background: var(--bg); border: 1px solid va
         <li>Postgres ${esc(cfg.postgres.split(':')[1] || '')} (${cfg.seed_rows.toLocaleString('fr-FR')} lignes réinitialisées avant chaque stack), ${cfg.db_pool} connexions de pool par app.</li>
         <li>Charge : <code>oha</code> en conteneur sur le même réseau Docker, ${cfg.warmup_s} s de chauffe puis ${cfg.duration_s} s de mesure par point.</li>
         <li>Chaque app doit d’abord passer un test de contrat (mêmes JSON, même 404) avant d’être mesurée.</li>
+        <li>Les threads de l’app et de Postgres tournent en <code>nice ${cfg.nice ?? 0}</code>, pour qu’une compilation en tâche de fond ne leur vole pas de CPU.</li>
+        <li>Pendant chaque mesure, le temps CPU pris par d’autres programmes est relevé sur les CPU de l’app, sur leurs jumeaux hyperthread et sur ceux de Postgres et d’oha. Au-delà de 0,1, 0,35 et 0,6 cœur, le point est re-mesuré, puis marqué ⚠ s’il reste perturbé.</li>
       </ul></section>
       <section><h3>Répartition des CPU</h3>
         <div class="cpus" aria-label="Répartition des CPU logiques">${cpuGrid}</div>

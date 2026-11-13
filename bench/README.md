@@ -79,17 +79,51 @@ against that:
 
 - Before each measurement it waits until the rest of the machine uses at most
   `--max-busy` cores (default 2, up to `--quiet-timeout` seconds).
-- During each measurement it records the CPU time other processes took on
-  the app's own CPUs (`/proc/stat` busy time minus the app's cgroup). Above
-  0.1 core the point is flagged `noisy` and measured again (`--noisy-retries`,
-  default 2); a point still noisy after that is kept, and flagged ⚠ in the
-  dashboard.
+- Every bench container (Postgres, app, oha) runs under one cgroup,
+  `trustbench.slice`, so during each measurement the CPU time of *other*
+  programs is known exactly: `/proc/stat` user + nice + system time minus
+  the slice's usage. It is recorded in three places: the app's CPUs
+  (threshold 0.1 core), their hyperthread siblings, which share the app's
+  physical cores (0.35 core, as an active desktop already puts ~0.2 there),
+  and the Postgres + oha CPUs (0.6 core). Above a threshold the point is
+  measured again (`--noisy-retries`, default 2); a point still noisy after
+  that is kept, and flagged ⚠ in the dashboard.
+- The app, Postgres and oha threads run at `nice -10` (`--nice`): a
+  background build at `nice 5` that lands on the bench CPUs then gets about
+  1/28th of the CPU instead of half. Only the bench's own containers are
+  reniced. The harness itself (this script and the docker CLIs it starts) is
+  pinned to the CPUs the bench does not use.
 - Results are saved after every contender. `--merge` re-measures only the
-  contenders given to `--apps` and keeps the others from `results/latest.json`:
+  contenders given to `--apps` and keeps the others from `results/latest.json`;
+  `--retry-noisy` re-measures only the points still flagged:
 
 ```bash
 python3 bench/bench.py --apps trust,go --merge   # redo two contenders
+python3 bench/bench.py --retry-noisy             # redo the flagged points
 ```
+
+## Profiling: where the time goes
+
+`bench/profile.py` samples the call stacks of Trust and of the hand-written
+axum service under the same load, with `perf` (1999 Hz, frame pointers), and
+renders [flame graphs](https://www.brendangregg.com/flamegraphs.html): one
+box per function, as wide as the CPU time spent in it and its callees.
+
+```bash
+python3 bench/profile.py                       # all scenarios, 64 connections
+python3 bench/profile.py --scenarios get --duration 15
+```
+
+It writes `dashboard/flame/<app>-<scenario>.svg` (open in a browser, click to
+zoom), a differential graph `diff-<scenario>.svg` (red: more time in Trust),
+and `dashboard/profile.js`, which the dashboard turns into a CPU breakdown by
+component (HTTP, routing, JSON, sqlx, tracing, runtime, kernel), the most
+expensive functions, and what Postgres waits on during writes.
+
+`perf` runs in a container that shares the app's PID namespace with
+`CAP_PERFMON`, so the host's `perf_event_paranoid` stays untouched. The
+profiled images are the bench images rebuilt with frame pointers and line
+tables, for both contenders alike.
 
 Even so, compare contenders within one report rather than absolute numbers
 across machines.
